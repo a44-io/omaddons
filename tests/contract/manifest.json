@@ -3040,6 +3040,7 @@
     "file errors_ledger schema_version": {"kind":"file_position","nullable":false,"required":true,"types":["string"]},
     "file errors_ledger targets": {"kind":"file_position","nullable":false,"required":true,"types":["object"]},
     "file errors_ledger targets{}": {"kind":"file_position","nullable":false,"types":["object"]},
+    "file errors_ledger targets{}.client": {"kind":"file_position","nullable":true,"required":false,"types":["string"]},
     "file errors_ledger targets{}.clusters": {"kind":"file_position","nullable":false,"required":true,"types":["object"]},
     "file errors_ledger targets{}.clusters{}": {"kind":"file_position","nullable":false,"types":["object"]},
     "file errors_ledger targets{}.clusters{}.addon": {"kind":"file_position","nullable":true,"required":false,"types":["string"]},

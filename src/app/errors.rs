@@ -1340,6 +1340,18 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
     let previous = memo.clone();
     let (acks, ack_note) = ack::read(&world.paths);
     let seen = observe(ctx, &world, &mut memo, &acks, now, &mut warnings)?;
+    // A registered client's entries still filed under its id are read no more
+    // (omad-ky3a0): its memo entry under the key is this read's, so the id's goes; its
+    // dismissals follow its ledger entry below. Never an id another client of this run
+    // is filed under.
+    let registered_ids: Vec<(&str, &str)> = seen
+        .iter()
+        .filter(|s| s.filed_as != s.target.id && !seen.iter().any(|o| o.filed_as == s.target.id))
+        .map(|s| (s.target.id.as_str(), s.filed_as.as_str()))
+        .collect();
+    for (id, _) in &registered_ids {
+        memo.targets.remove(*id);
+    }
     // The ledger learns from the whole observation, never the filtered view (7.1.7).
     let clients: Vec<FullClient<'_>> = seen
         .iter()
@@ -1386,6 +1398,20 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
             memo::store(&world.paths, &next, ctx.actor);
         }
     });
+    // Their dismissals: moved to the key when the stored read carried the ledger entry,
+    // else dropped; when the read was not stored, left for the next one.
+    if ledger.missing.is_none() {
+        let carried: Vec<errors_ledger::Carried> = registered_ids
+            .iter()
+            .filter(|(id, _)| acks.targets.contains_key(*id))
+            .map(|(id, key)| errors_ledger::Carried {
+                id: (*id).to_owned(),
+                key: (*key).to_owned(),
+                moved: ledger.carried.iter().any(|c| c.id == *id && c.moved),
+            })
+            .collect();
+        errors_ledger::carry_acks(&world.paths, &carried, "errors");
+    }
     let found: Vec<Target> = seen.iter().map(|s| s.target.clone()).collect();
     let running_scan = detect_running(&found);
     let (catalog, catalog_warnings) = world.catalog(ctx);

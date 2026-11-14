@@ -2466,6 +2466,7 @@ file errors_ledger revision integer! minimum=0
 file errors_ledger schema_version string!
 file errors_ledger targets object!
 file errors_ledger targets{} object
+file errors_ledger targets{}.client string?
 file errors_ledger targets{}.clusters object!
 file errors_ledger targets{}.clusters{} object
 file errors_ledger targets{}.clusters{}.addon string?

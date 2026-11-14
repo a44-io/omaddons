@@ -86,6 +86,24 @@ pub struct TargetLedger {
     /// it until they do. Omitted when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untracked: bool,
+    /// While the client is filed under its id (unregistered): which client folder it is
+    /// ([`client_identity`], a hash, never the path), so that a change registering it
+    /// carries this entry to its key only for the same client (omad-ky3a0). Omitted under
+    /// a key, and on an entry no read identified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+}
+
+/// A client folder's identity in the ledger: the first 16 hex digits of the SHA-256 of
+/// its path. Equal for the same folder only; the path itself is never kept.
+pub fn client_identity(dir: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+    Sha256::digest(dir.as_os_str().as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// One lifetime of a database file. Session numbers mean something only inside one:
@@ -1350,6 +1368,32 @@ impl LedgerSession {
         sighted
     }
 
+    /// Records that the entry filed under `id` (an unregistered client's) is the client
+    /// folder of `identity`, after a sighting made or kept it. Nothing when none is filed.
+    pub fn identify(&mut self, id: &str, identity: &str) {
+        if let Some(entry) = self.ledger.targets.get_mut(id) {
+            entry.client = Some(identity.to_owned());
+        }
+    }
+
+    /// A client filed under `id` is now registered as `key` (omad-ky3a0): its entry is
+    /// carried to `key` when it is the client folder of `identity` and nothing is filed
+    /// under `key` yet, so its first read under the key is not a first read; otherwise
+    /// it is dropped, since nothing reads it again (a different client given that id
+    /// never inherits its reads). Whether it was carried.
+    pub fn carry(&mut self, id: &str, key: &str, identity: &str) -> bool {
+        let Some(mut entry) = self.ledger.targets.remove(id) else {
+            return false;
+        };
+        let same = entry.client.as_deref() == Some(identity);
+        if !same || self.ledger.targets.contains_key(key) {
+            return false;
+        }
+        entry.client = None;
+        self.ledger.targets.insert(key.to_owned(), entry);
+        true
+    }
+
     /// Adds a change mark (design 7.1.6), only when its generation is the database's
     /// current one, its stamp is the stamp of that generation's newest proved read (after
     /// this session's own sightings), the file was not replaced since, and its run has no
@@ -1726,6 +1770,7 @@ mod tests {
             ]),
             clusters: BTreeMap::from([("c:1".to_owned(), cluster)]),
             untracked: true,
+            client: Some("0123456789abcdef".to_owned()),
         };
         ErrorsLedger {
             identity: crate::limits::LEDGER_IDENTITY,
@@ -2061,6 +2106,8 @@ mod tests {
             "change",
             "changed",
             "clean_sessions",
+            // omad-ky3a0: a hash of the client folder's path (16 hex digits), no text.
+            "client",
             "client_update",
             "client_version",
             "cluster",
@@ -3369,6 +3416,65 @@ mod tests {
             SightMode::Full,
         );
         session.commit().unwrap().ledger
+    }
+
+    /// omad-ky3a0: an entry filed under an id is carried to the key a change registered
+    /// for its client only when its identity is that client folder's and the key holds
+    /// nothing yet; otherwise it is dropped. Identifying needs an entry.
+    #[test]
+    fn an_id_filed_entry_is_carried_only_for_the_same_client() {
+        let (_dir, paths, scopes) = store_home();
+        let here = client_identity(std::path::Path::new("/games/wow/_retail_"));
+        let there = client_identity(std::path::Path::new("/games/other/_retail_"));
+        assert_ne!(here, there);
+        assert_eq!(here.len(), 16);
+        first_commit(&paths, &scopes);
+        // Each case on a session of its own, dropped uncommitted: the file keeps `k`.
+        let identified = || {
+            let mut session = open(&paths, &scopes, "test").unwrap();
+            session.identify("k", &here);
+            session
+        };
+        let mut session = identified();
+        session.identify("nobody", &here);
+        assert!(!session.ledger.targets.contains_key("nobody"));
+        assert_eq!(
+            session.ledger.targets["k"].client.as_deref(),
+            Some(here.as_str())
+        );
+        let reads = session.ledger.targets["k"].clone();
+        drop(session);
+
+        // Another client folder given the same id: dropped, nothing inherited.
+        let mut other = identified();
+        assert!(!other.carry("k", "KEY", &there));
+        assert!(!other.ledger.targets.contains_key("k"));
+        assert!(!other.ledger.targets.contains_key("KEY"));
+        drop(other);
+
+        // An entry under the key already: the id's is dropped, the key's kept.
+        let mut taken = identified();
+        taken
+            .ledger
+            .targets
+            .insert("KEY".to_owned(), TargetLedger::default());
+        assert!(!taken.carry("k", "KEY", &here));
+        assert_eq!(
+            taken.ledger.targets.get("KEY"),
+            Some(&TargetLedger::default())
+        );
+        assert!(!taken.ledger.targets.contains_key("k"));
+        drop(taken);
+
+        // The same client, the key free: carried whole, its identity no longer needed.
+        let mut session = identified();
+        assert!(session.carry("k", "KEY", &here));
+        let moved = &session.ledger.targets["KEY"];
+        assert_eq!(moved.client, None);
+        assert_eq!(moved.databases, reads.databases);
+        assert!(!session.ledger.targets.contains_key("k"));
+        // Nothing filed under the id: nothing to carry.
+        assert!(!session.carry("k", "KEY", &here));
     }
 
     #[test]

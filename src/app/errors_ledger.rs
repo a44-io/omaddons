@@ -498,8 +498,13 @@ pub fn commit(
     let looked: Vec<Looked> = captured
         .clients
         .into_iter()
-        .map(registered)
         .map(|client| {
+            let was = client.filed_as.clone();
+            let client = registered(client);
+            let moved_from = (client.filed_as != was).then_some(was);
+            (client, moved_from)
+        })
+        .map(|(client, moved_from)| {
             let settled = client
                 .dbs
                 .iter()
@@ -514,6 +519,7 @@ pub fn commit(
             let restores = restores_since(paths, &client.target, client.since);
             Looked {
                 client,
+                moved_from,
                 settled,
                 ran,
                 restores,
@@ -539,13 +545,26 @@ pub fn commit(
         }
     };
     let mut regenerated: Vec<(String, Vec<String>)> = Vec::new();
+    let mut carried: Vec<Carried> = Vec::new();
     for Looked {
         client,
+        moved_from,
         settled,
         ran,
         restores,
     } in &looked
     {
+        let identity = ledger::client_identity(&client.target.client_dir);
+        // A client this change registered: what was filed under its id comes to its key
+        // first, so this read is not its first (omad-ky3a0).
+        if let Some(id) = moved_from {
+            let moved = session.carry(id, &client.filed_as, &identity);
+            carried.push(Carried {
+                id: id.clone(),
+                key: client.filed_as.clone(),
+                moved,
+            });
+        }
         let dbs: Vec<DbSighting> = client.dbs.iter().map(|db| db.sighting.clone()).collect();
         // A history that cannot be read whole may hide a restore: nothing appears.
         let (restores, discovered) = match restores {
@@ -572,6 +591,9 @@ pub fn commit(
             discovered,
             SightMode::Light,
         );
+        if client.target.key.is_none() {
+            session.identify(&client.filed_as, &identity);
+        }
         if !sighted.regenerated.is_empty() {
             regenerated.push((client.filed_as.clone(), sighted.regenerated));
         }
@@ -598,10 +620,94 @@ pub fn commit(
         // Still under the evidence lock: a database whose lifetime this read started or
         // ended loses its links in the memo (design 7.3.2). It adds none: it has no
         // attribution.
-        Ok(_accepted) => drop_links(paths, &regenerated, actor),
+        Ok(_accepted) => {
+            drop_links(paths, &regenerated, actor);
+            carry_memo(paths, &carried, actor);
+            carry_acks(paths, &carried, command);
+        }
         Err(why) => {
             trace::emit(|| format!("errors ledger: the light read was not stored: {why:?}"));
         }
+    }
+}
+
+/// What a registration did with a client's id-filed ledger entry (omad-ky3a0): `moved`
+/// to its key, or dropped. The errors memo and the dismissals follow it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Carried {
+    pub id: String,
+    pub key: String,
+    pub moved: bool,
+}
+
+/// Each carried client's id-filed errors memo entry, moved to its key with its ledger
+/// entry (when nothing is filed there yet), else dropped. Best effort, as every memo
+/// write is.
+fn carry_memo(paths: &Paths, carried: &[Carried], actor: Actor) {
+    if carried.is_empty() {
+        return;
+    }
+    let (mut memo, writable) = memo::load(paths);
+    if !writable {
+        return;
+    }
+    let mut changed = false;
+    for c in carried {
+        let Some(entry) = memo.targets.remove(&c.id) else {
+            continue;
+        };
+        changed = true;
+        if c.moved && !memo.targets.contains_key(&c.key) {
+            memo.targets.insert(c.key.clone(), entry);
+        }
+    }
+    if changed {
+        memo::store(paths, &memo, actor);
+    }
+}
+
+/// Each carried client's id-filed dismissals, moved to its key with its ledger entry
+/// (when nothing is filed there yet), else dropped. The dismissals are written only
+/// under the global lock, as `errors dismiss` writes them: taken only when it is free
+/// at once, so this never waits; otherwise the next `errors` carries them.
+pub fn carry_acks(paths: &Paths, carried: &[Carried], command: &str) {
+    if carried.is_empty() {
+        return;
+    }
+    let Ok(_guard) =
+        crate::fsx::GlobalLock::acquire_with_timeout(paths, command, std::time::Duration::ZERO)
+    else {
+        trace::emit(|| "errors dismissals: not carried: the lock is held".to_owned());
+        return;
+    };
+    let Ok((mut acks, loaded_as)) = crate::errors::ack::load_for_write(paths) else {
+        return;
+    };
+    let mut changed = false;
+    for c in carried {
+        let Some(entry) = acks.targets.remove(&c.id) else {
+            continue;
+        };
+        changed = true;
+        if c.moved && !acks.targets.contains_key(&c.key) {
+            acks.targets.insert(c.key.clone(), entry);
+        }
+    }
+    if !changed {
+        return;
+    }
+    let written = (|| -> crate::error::Result<()> {
+        let scopes = crate::engine::fence::table(paths, &[], None)?;
+        let mut s = crate::fsx::WriteSession::untracked(
+            crate::fsx::Writer::Mutating,
+            &scopes,
+            "errors-ack",
+        );
+        crate::fsx::ensure_dir_all(&mut s, paths.state_dir())?;
+        crate::errors::ack::save(&mut s, paths, &acks, loaded_as.as_ref())
+    })();
+    if let Err(error) = written {
+        trace::emit(|| format!("errors dismissals: not carried: {}", error.message));
     }
 }
 
@@ -655,6 +761,8 @@ fn registered(mut client: CapturedClient) -> CapturedClient {
 /// look, and its restores (`None`: the history does not read whole).
 struct Looked {
     client: CapturedClient,
+    /// The id it was filed under, when this change registered it.
+    moved_from: Option<String>,
     settled: Vec<bool>,
     ran: Option<bool>,
     restores: Option<Vec<Restored>>,
@@ -750,6 +858,9 @@ pub struct LedgerView {
     pub ledger: Option<ErrorsLedger>,
     /// Why this run's sightings are not in `ledger`; `None` when they are.
     pub missing: Option<FirstSeenReason>,
+    /// The registered clients whose id-filed entry the stored read carried or dropped
+    /// (omad-ky3a0): their dismissals follow.
+    pub carried: Vec<Carried>,
 }
 
 impl LedgerView {
@@ -1077,6 +1188,8 @@ pub fn full_read(
                     FirstSeenReason::LedgerUnavailable
                 }
             }),
+            // Nothing stored, nothing carried: the next read carries it.
+            carried: Vec::new(),
         }
     };
     // Looked at first, the restores after: a restore that commits after this read is
@@ -1101,7 +1214,24 @@ pub fn full_read(
         Ok(session) => session,
         Err(why) => return unstored(&why, loaded),
     };
+    let mut carried: Vec<Carried> = Vec::new();
     for (client, dbs, restores) in &prepared {
+        let identity = ledger::client_identity(&client.target.client_dir);
+        // A registered client whose reads are still filed under its id (registered with
+        // no light read, as `targets add` does, or by an older build): carried to its key
+        // or dropped (omad-ky3a0); never while another client of this run is filed there.
+        let id = client.target.id.as_str();
+        if id != client.filed_as
+            && !clients.iter().any(|c| c.filed_as == id)
+            && session.ledger.targets.contains_key(id)
+        {
+            let moved = session.carry(id, client.filed_as, &identity);
+            carried.push(Carried {
+                id: id.to_owned(),
+                key: client.filed_as.to_owned(),
+                moved,
+            });
+        }
         // A history that cannot be read whole may hide a restore: nothing appears.
         let (restores, discovered) = match restores {
             Some(restores) => (
@@ -1130,6 +1260,9 @@ pub fn full_read(
             discovered,
             SightMode::Full,
         );
+        if client.target.key.is_none() {
+            session.identify(client.filed_as, &identity);
+        }
         if !sighted.appeared.is_empty() {
             trace::emit(|| {
                 format!(
@@ -1157,6 +1290,7 @@ pub fn full_read(
         return LedgerView {
             ledger: Some(accepted.ledger.clone()),
             missing: None,
+            carried,
         };
     }
     // The lock is let go here: judging happens outside any lock (phase 3).
@@ -1173,6 +1307,7 @@ pub fn full_read(
     LedgerView {
         ledger: Some(ledger),
         missing: None,
+        carried,
     }
 }
 

@@ -179,8 +179,8 @@ fn ledger_bytes(s: &Scene) -> Option<Vec<u8>> {
 }
 
 /// The client's ledger entry, as it is filed now: under its key once a change registered
-/// it. What an `errors` run recorded while it was unregistered stays under its id, as
-/// the errors memo's does, and is no longer read.
+/// it. What an `errors` run recorded while it was unregistered is carried there by that
+/// change's light read (omad-ky3a0, [`s19_a_client_s_reads_follow_it_to_the_key_a_change_registers`]).
 fn client(s: &Scene) -> TargetLedger {
     let ledger: ErrorsLedger = serde_json::from_slice(&ledger_bytes(s).unwrap()).unwrap();
     let mut targets = ledger.targets;
@@ -981,5 +981,118 @@ fn s18_the_order_accounts_are_found_in_changes_nothing() {
         "the same ledger, apart from times and keys",
         &second,
         &first,
+    );
+}
+
+/// The ids each of the client's three error files files something under.
+fn filed(path: PathBuf) -> Vec<String> {
+    let Ok(bytes) = fs::read(path) else {
+        return Vec::new();
+    };
+    let file: Value = serde_json::from_slice(&bytes).unwrap();
+    file["targets"]
+        .as_object()
+        .map(|t| t.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The game adds B to the file read at [`first_read`]: in session 5, saved two hours
+/// after the epoch.
+fn game_adds_b(s: &Scene, epoch: &Epoch) {
+    save(
+        s,
+        epoch,
+        &BugDb::new(Writer::Modern, 5)
+            .entry(a(epoch, 4, 1))
+            .entry(b(epoch, 5, minutes(90))),
+        hours(2),
+    );
+}
+
+/// omad-ky3a0: `errors` read the client while it was unregistered (filed under its id),
+/// a dismissal was made, then the game added B, then the first change registered the
+/// client. Its light read carries what was filed under the id to the key first, so B is
+/// observed, never a first read's baseline; once `errors` ran again, nothing of the
+/// client is filed under its id in the ledger, the memo or the dismissals, and the
+/// dismissal is under the key.
+#[test]
+fn s19_a_client_s_reads_follow_it_to_the_key_a_change_registers() {
+    let log = tlog!();
+    let s = scene(&log);
+    let epoch = Epoch::ago(hours(48));
+    first_read(&log, &s, &epoch);
+    log.run(&s, &["errors", "dismiss", "-t", "retail", "--json"])
+        .ok();
+    let p = paths(&s);
+    for (what, path) in [
+        ("ledger", p.errors_ledger()),
+        ("memo", p.errors_memo()),
+        ("dismissals", p.errors_ack()),
+    ] {
+        log.assert_eq(
+            &format!("{what}: filed under the id"),
+            &filed(path),
+            &vec!["retail".to_owned()],
+        );
+    }
+
+    log.step("the game adds B, then the first change registers the client");
+    game_adds_b(&s, &epoch);
+    install_bar(&log, &s);
+    let target = client(&s);
+    log.json("the client's ledger under its key", &target);
+    log.assert_eq("the light read recorded B", &target.clusters.len(), &1);
+    log.assert_eq("no identity under the key", &target.client, &None);
+    let ran = errors(&log, &s);
+    log.assert_eq(
+        "B",
+        &basis(&at_line(&ran, "Beta", 40)),
+        &(json!("observed"), Value::Null),
+    );
+    for (what, path) in [
+        ("ledger", p.errors_ledger()),
+        ("memo", p.errors_memo()),
+        ("dismissals", p.errors_ack()),
+    ] {
+        let keys = filed(path);
+        log.assert_eq(
+            &format!("{what}: one entry, under the key"),
+            &(keys.len(), keys.iter().any(|k| k == "retail")),
+            &(1, false),
+        );
+    }
+}
+
+/// omad-ky3a0: what was filed under the id belongs to another client folder (here, its
+/// identity says so): the registering change drops it, and the client's first read under
+/// its key baselines B, inheriting nothing.
+#[test]
+fn s20_another_client_given_the_same_id_inherits_nothing() {
+    let log = tlog!();
+    let s = scene(&log);
+    let epoch = Epoch::ago(hours(48));
+    first_read(&log, &s, &epoch);
+    let p = paths(&s);
+    let mut ledger: Value = serde_json::from_slice(&fs::read(p.errors_ledger()).unwrap()).unwrap();
+    log.assert_eq(
+        "identified",
+        &ledger["targets"]["retail"]["client"].is_string(),
+        &true,
+    );
+    ledger["targets"]["retail"]["client"] = json!("ffffffffffffffff");
+    fs::write(p.errors_ledger(), serde_json::to_vec(&ledger).unwrap()).unwrap();
+
+    game_adds_b(&s, &epoch);
+    install_bar(&log, &s);
+    log.assert_eq(
+        "nothing under the id",
+        &filed(p.errors_ledger()).contains(&"retail".to_owned()),
+        &false,
+    );
+    let ran = errors(&log, &s);
+    log.assert_eq(
+        "B, at the client's first read under its key",
+        &basis(&at_line(&ran, "Beta", 40)).0,
+        &json!("baseline"),
     );
 }
