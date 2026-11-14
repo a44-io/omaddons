@@ -643,7 +643,7 @@ fn first_seen_line(e: &ErrorInfo) -> Option<String> {
             date(f.at)
         ),
         (FirstSeenBasis::Baseline, Some(FirstSeenReason::CoverageIncomplete)) => format!(
-            "first found while another account's file could not be read ({}): omaddons cannot say it is new",
+            "first found while a file could not be read whole ({}): omaddons cannot say it is new",
             date(f.at)
         ),
         (FirstSeenBasis::Baseline, _) => format!(
@@ -837,8 +837,9 @@ pub enum FirstSeenReason {
     FirstRead,
     /// `baseline`: in the file at the first complete read after it was reset or put back.
     NewGeneration,
-    /// `baseline`: first found while another of the client's files could not be read
-    /// whole, so "new on this client" could not be established.
+    /// `baseline`: first found while one of the client's files could not be read whole
+    /// (another account's, or this one, which then no longer held it), so "new on this
+    /// client" could not be established.
     CoverageIncomplete,
     /// `unknown`: no complete read of the file has vouched for its absence yet (the file
     /// was being written, held an entry that does not decode, or was cut at a bound), or

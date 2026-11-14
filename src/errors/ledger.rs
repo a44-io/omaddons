@@ -344,8 +344,9 @@ pub enum BaselineReason {
     FirstRead,
     /// In the database at the first proved read of a new generation.
     NewGeneration,
-    /// First found while another database of the client could not vouch for its
-    /// absence, so "new on this client" could not be established.
+    /// First found while a database of the client could not vouch for its absence
+    /// (another account's file, or a read of this one that proved nothing), so "new on
+    /// this client" could not be established.
     CoverageIncomplete,
 }
 
@@ -633,6 +634,24 @@ fn record(
         }
     }
 
+    // A stale read says nothing of absence, nor of a lifetime; what it holds was there
+    // all the same (holding is never in doubt). A family only a stale read knows of is a
+    // baseline, so its return is no appearance (principle 1; RG-13b's model found the
+    // loss: a writer that looked before a restore and recorded after it).
+    for (s, class) in dbs.iter().zip(&classes) {
+        if matches!(class, Class::Stale { .. }) {
+            for e in entries(s) {
+                ledger.families.entry(e.family.clone()).or_insert(Family {
+                    first: FamilyFirst::Baseline {
+                        at: now,
+                        reason: BaselineReason::CoverageIncomplete,
+                    },
+                    last_present_at: now,
+                });
+            }
+        }
+    }
+
     // Step 1c: families first met in a read that proves nothing.
     let mut notes: BTreeMap<&str, (Timestamp, &str, PositiveSighting)> = BTreeMap::new();
     for (s, class) in dbs.iter().zip(&classes) {
@@ -640,9 +659,40 @@ fn record(
             continue;
         }
         let Some(db) = ledger.databases.get_mut(&s.key) else {
+            // No lifetime to note it in: met before any proved read of this file, so it
+            // was there before whatever the first proved read shows. A baseline, never
+            // forgotten (principle 1; RG-13b's model found the loss).
+            for e in entries(s) {
+                ledger.families.entry(e.family.clone()).or_insert(Family {
+                    first: FamilyFirst::Baseline {
+                        at: now,
+                        reason: BaselineReason::CoverageIncomplete,
+                    },
+                    last_present_at: now,
+                });
+            }
             continue;
         };
         db.unproved_stamp = Some(s.stamp.clone());
+        // A degraded read cannot start a lifetime, but its counter and file time can end
+        // one: lower than the lifetime has shown, the file was wiped or put back, from
+        // when it was written. They also raise the maxima, so a later lower read ends it.
+        // Either only ends a lifetime sooner, never lets one run on past a wipe
+        // (principle 1; RG-13b's model found wipes hidden behind degraded reads).
+        let counter_went_down = db
+            .max_session
+            .zip(s.session)
+            .is_some_and(|(max, session)| session < max);
+        let file_went_back = db
+            .max_written_at
+            .zip(s.written_at)
+            .is_some_and(|(max, at)| max.duration_since(at).as_nanos() > RACY_SLACK_COARSE_NS);
+        if counter_went_down || file_went_back {
+            let since = s.written_at.map_or(s.observed_at, |w| w.min(s.observed_at));
+            db.invalidated_at = db.invalidated_at.max(Some(since));
+        }
+        db.max_session = db.max_session.max(s.session);
+        db.max_written_at = db.max_written_at.max(s.written_at);
         let bound = seen_by(s.observed_at, s.written_at);
         for (family, members) in by_family(entries(s)) {
             if ledger.families.contains_key(family) {
@@ -758,14 +808,20 @@ fn record(
         }
     }
 
-    // A note its own database's proved read no longer holds, and no read here does.
+    // A note its own database's proved read no longer holds, and no read here does: the
+    // family was there and is gone, so its return is no appearance. A baseline, never
+    // dropped (principle 1; RG-13b's model found the drop).
     let proved_fresh: BTreeSet<&str> = fresh.iter().map(|s| s.key.as_str()).collect();
-    ledger.families.retain(|family, f| match &f.first {
-        FamilyFirst::Pending(note) => {
-            !proved_fresh.contains(note.database.as_str()) || present.contains(family.as_str())
+    for (family, f) in &mut ledger.families {
+        let gone = matches!(&f.first, FamilyFirst::Pending(note)
+            if proved_fresh.contains(note.database.as_str()) && !present.contains(family.as_str()));
+        if gone {
+            f.first = FamilyFirst::Baseline {
+                at: now,
+                reason: BaselineReason::CoverageIncomplete,
+            };
         }
-        _ => true,
-    });
+    }
 
     for db in ledger.databases.values_mut() {
         db.marks
@@ -935,9 +991,6 @@ fn start_generation(ledger: &mut TargetLedger, s: &DbSighting, client: &ClientNo
             }
         }
     }
-    ledger
-        .families
-        .retain(|_, f| !matches!(&f.first, FamilyFirst::Pending(note) if note.database == s.key));
     ledger.databases.insert(
         s.key.clone(),
         DbLedger {
@@ -956,8 +1009,14 @@ fn start_generation(ledger: &mut TargetLedger, s: &DbSighting, client: &ClientNo
     } else {
         BaselineReason::NewGeneration
     };
+    let pending_here =
+        |f: &Family| matches!(&f.first, FamilyFirst::Pending(note) if note.database == s.key);
     for e in entries(s) {
-        if ledger.families.contains_key(&e.family) {
+        if ledger
+            .families
+            .get(&e.family)
+            .is_some_and(|f| !pending_here(f))
+        {
             continue;
         }
         ledger.families.insert(
@@ -967,6 +1026,17 @@ fn start_generation(ledger: &mut TargetLedger, s: &DbSighting, client: &ClientNo
                 last_present_at: now,
             },
         );
+    }
+    // A family a degraded read of this database met, which the new lifetime's first read
+    // no longer holds: it was there before, so its return is no appearance. Its presence
+    // is never forgotten (principle 1; RG-13b's model found the drop).
+    for f in ledger.families.values_mut() {
+        if pending_here(f) {
+            f.first = FamilyFirst::Baseline {
+                at: now,
+                reason: BaselineReason::CoverageIncomplete,
+            };
+        }
     }
 }
 
@@ -2356,7 +2426,12 @@ mod tests {
             assert_eq!(sighted, Sighted::default(), "{gap:?}");
             let mut expected = ledger.clone();
             expected.families.get_mut("a:1").unwrap().last_present_at = at(220);
-            expected.databases.get_mut(A).unwrap().unproved_stamp = Some("s2".to_owned());
+            let db = expected.databases.get_mut(A).unwrap();
+            db.unproved_stamp = Some("s2".to_owned());
+            // Its counter and file time raise the maxima: a later lower one ends the
+            // lifetime (RG-13b).
+            db.max_session = Some(4);
+            db.max_written_at = Some(at(200));
             expected.families.insert(
                 "a:3".to_owned(),
                 Family {
@@ -2373,6 +2448,44 @@ mod tests {
             );
             assert_eq!(after, expected, "{gap:?}");
         }
+    }
+
+    /// A wipe only a degraded read saw (its counter lower) still ends the lifetime, though
+    /// the counter is back up by the next proved read (RG-13b).
+    #[test]
+    fn a_degraded_read_with_a_lower_counter_ends_the_lifetime() {
+        let ledger = first_read();
+        let (wiped, _) = run(
+            &ledger,
+            &[seen(
+                A,
+                "s2",
+                200,
+                210,
+                Some(1),
+                degraded(Gap::Unstable, vec![]),
+            )],
+            220,
+        );
+        assert_eq!(wiped.databases[A].invalidated_at, Some(at(200)));
+        let (after, sighted) = run(
+            &wiped,
+            &[seen(
+                A,
+                "s3",
+                300,
+                310,
+                Some(3),
+                proved(vec![e("a:9", "e:9")]),
+            )],
+            320,
+        );
+        assert_eq!(sighted.regenerated, [A]);
+        assert!(
+            sighted.appeared.is_empty(),
+            "nothing appears across the wipe"
+        );
+        assert_eq!(baseline(&after, "a:9"), Some(BaselineReason::NewGeneration));
     }
 
     #[test]
@@ -2413,8 +2526,11 @@ mod tests {
         assert_eq!(after.databases[A].unproved_stamp, None);
     }
 
+    /// A family a degraded read met is never forgotten (principle 1): when its database's
+    /// next proved read lacks it, or a new lifetime's first read does, it becomes a
+    /// baseline (`coverage_incomplete`), so its return is no appearance.
     #[test]
-    fn a_pending_note_goes_when_its_databases_next_proved_read_lacks_it() {
+    fn a_pending_note_becomes_a_baseline_when_its_databases_next_proved_read_lacks_it() {
         let ledger = first_read();
         let (noted, _) = run(
             &ledger,
@@ -2444,8 +2560,26 @@ mod tests {
             )],
             310,
         );
-        assert_eq!(basis(&lacking, "a:3"), None);
-        // A new generation drops the database's notes and baselines what its read holds.
+        assert_eq!(
+            baseline(&lacking, "a:3"),
+            Some(BaselineReason::CoverageIncomplete)
+        );
+        // It comes back: a recurrence, not an appearance.
+        let (back, sighted) = run(
+            &lacking,
+            &[seen(
+                A,
+                "s4",
+                400,
+                410,
+                Some(6),
+                proved(vec![e("a:1", "e:1"), e("a:3", "e:3")]),
+            )],
+            410,
+        );
+        assert!(sighted.appeared.is_empty(), "{sighted:?}");
+        assert!(back.clusters.is_empty());
+        // A new generation baselines the database's notes, and what its read holds.
         let (regenerated, sighted) = run(
             &noted,
             &[seen(
@@ -2459,7 +2593,10 @@ mod tests {
             310,
         );
         assert_eq!(sighted.regenerated, [A]);
-        assert_eq!(basis(&regenerated, "a:3"), None);
+        assert_eq!(
+            baseline(&regenerated, "a:3"),
+            Some(BaselineReason::CoverageIncomplete)
+        );
         assert_eq!(
             baseline(&regenerated, "a:4"),
             Some(BaselineReason::NewGeneration)
@@ -2586,8 +2723,11 @@ mod tests {
         assert_eq!(after.families["a:1"].last_present_at, at(320));
     }
 
+    /// A stale sighting records no read, no appearance and no generation; only what it
+    /// holds and the ledger does not know becomes a baseline (holding is never in doubt),
+    /// so a family it alone saw cannot read as new when it returns.
     #[test]
-    fn a_stale_sighting_is_ignored() {
+    fn a_stale_sighting_records_nothing_but_what_it_holds() {
         let ledger = first_read();
         let (newer, _) = run(
             &ledger,
@@ -2614,8 +2754,14 @@ mod tests {
             )],
             320,
         );
-        assert_eq!(after, newer);
         assert_eq!(sighted, Sighted::default());
+        assert_eq!(after.databases, newer.databases);
+        assert_eq!(after.clusters, newer.clusters);
+        assert_eq!(
+            baseline(&after, "a:7"),
+            Some(BaselineReason::CoverageIncomplete)
+        );
+        assert_eq!(after.families.len(), newer.families.len() + 1);
     }
 
     #[test]
