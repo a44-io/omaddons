@@ -15,8 +15,9 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
+use std::time::Duration;
 
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -673,6 +674,42 @@ pub fn installed_primary_interface(
         target.interface,
         table,
     )
+}
+
+/// What the unattended policy's age gate says of one release (design 7.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoGate {
+    /// No wait, or the release has stood for it.
+    Take,
+    /// Too new: it may be taken from `eligible_at`.
+    TooNew { eligible_at: Timestamp },
+}
+
+/// Whether an unattended update may take a release this machine first saw at
+/// `first_seen_at`, waiting `min_age`, as of `now`. There are exactly two ways to take:
+/// no wait at all, or at least `min_age` since the first sight. A release with no first
+/// sight (`None`), or one first seen after `now` (the clock went back), counts as first
+/// seen now. Pure: no clock, no config, no file, and nothing about errors. The planner,
+/// the app's prediction and `status` all call it, so their answers differ only in what
+/// they know. Checked arithmetic: a time past the end of the range is the range's end.
+pub fn auto_gate(now: Timestamp, min_age: Duration, first_seen_at: Option<Timestamp>) -> AutoGate {
+    if min_age.is_zero() {
+        return AutoGate::Take;
+    }
+    let wait = SignedDuration::try_from(min_age).unwrap_or(SignedDuration::MAX);
+    let after = |from: Timestamp| from.checked_add(wait).unwrap_or(Timestamp::MAX);
+    let Some(seen) = first_seen_at.filter(|seen| *seen <= now) else {
+        return AutoGate::TooNew {
+            eligible_at: after(now),
+        };
+    };
+    if now.duration_since(seen) >= wait {
+        AutoGate::Take
+    } else {
+        AutoGate::TooNew {
+            eligible_at: after(seen),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1856,5 +1893,84 @@ mod tests {
                 "{case}: skip_covering finds the covering mark"
             );
         }
+    }
+
+    /// RG-52a: the age gate, one row per rule, and the ends of the range.
+    #[test]
+    fn the_age_gate_takes_with_no_wait_or_enough_of_it_and_holds_the_rest() {
+        let now = at("2026-11-14T12:00:00Z");
+        let six = Duration::from_secs(6 * 3600);
+        let hours = |h: i64| now - SignedDuration::from_hours(h);
+        let too_new = |t: Timestamp| AutoGate::TooNew { eligible_at: t };
+        let second = SignedDuration::from_secs(1);
+        // (case, min_age, first_seen_at, gate)
+        let cases = [
+            (
+                "no wait, first seen now",
+                Duration::ZERO,
+                Some(now),
+                AutoGate::Take,
+            ),
+            (
+                "no wait, no first sight",
+                Duration::ZERO,
+                None,
+                AutoGate::Take,
+            ),
+            ("exactly the wait", six, Some(hours(6)), AutoGate::Take),
+            ("past the wait", six, Some(hours(30)), AutoGate::Take),
+            (
+                "one second short",
+                six,
+                Some(hours(6) + second),
+                too_new(hours(6) + second + SignedDuration::from_hours(6)),
+            ),
+            (
+                "no first sight",
+                six,
+                None,
+                too_new(now + SignedDuration::from_hours(6)),
+            ),
+            (
+                "first seen in the future",
+                six,
+                Some(now + SignedDuration::from_hours(1)),
+                too_new(now + SignedDuration::from_hours(6)),
+            ),
+            (
+                "first seen now",
+                six,
+                Some(now),
+                too_new(now + SignedDuration::from_hours(6)),
+            ),
+        ];
+        for (case, min_age, first_seen, want) in cases {
+            assert_eq!(auto_gate(now, min_age, first_seen), want, "{case}");
+        }
+        // The ends of the range: nothing overflows or panics.
+        let (min, max) = (Timestamp::MIN, Timestamp::MAX);
+        assert_eq!(
+            auto_gate(max, Duration::MAX, None),
+            too_new(max),
+            "the latest time"
+        );
+        assert_eq!(
+            auto_gate(max, Duration::MAX, Some(min)),
+            too_new(max),
+            "a wait past the end"
+        );
+        assert_eq!(
+            auto_gate(max, six, Some(min)),
+            AutoGate::Take,
+            "the longest elapsed time"
+        );
+        assert_eq!(
+            auto_gate(min, six, Some(min)),
+            too_new(min + SignedDuration::from_hours(6))
+        );
+        assert_eq!(
+            auto_gate(min, Duration::from_secs(1), None),
+            too_new(min + second)
+        );
     }
 }
