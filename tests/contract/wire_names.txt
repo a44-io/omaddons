@@ -3271,6 +3271,7 @@ file plan intent<command=remove>.while_running boolean!
 file plan intent<command=skip> variant
 file plan intent<command=skip>.addons array!
 file plan intent<command=skip>.addons[] string
+file plan intent<command=skip>.back boolean!
 file plan intent<command=skip>.release string?!
 file plan intent<command=skip>.revision integer?! minimum=0
 file plan intent<command=skip>.scope object!
@@ -3280,6 +3281,7 @@ file plan intent<command=skip>.scope.targets array!
 file plan intent<command=skip>.scope.targets[] object
 file plan intent<command=skip>.scope.targets[].target string!
 file plan intent<command=skip>.scope.targets[].target_id string!
+file plan intent<command=skip>.to string?!
 file plan intent<command=skip>.tx string?!
 file plan intent<command=skip>.version string?!
 file plan intent<command=skip>.while_running boolean!
@@ -3321,6 +3323,7 @@ file plan intent<command=unpin>.while_running boolean!
 file plan intent<command=unskip> variant
 file plan intent<command=unskip>.addons array!
 file plan intent<command=unskip>.addons[] string
+file plan intent<command=unskip>.back boolean!
 file plan intent<command=unskip>.release string?!
 file plan intent<command=unskip>.revision integer?! minimum=0
 file plan intent<command=unskip>.scope object!
@@ -3330,6 +3333,7 @@ file plan intent<command=unskip>.scope.targets array!
 file plan intent<command=unskip>.scope.targets[] object
 file plan intent<command=unskip>.scope.targets[].target string!
 file plan intent<command=unskip>.scope.targets[].target_id string!
+file plan intent<command=unskip>.to string?!
 file plan intent<command=unskip>.tx string?!
 file plan intent<command=unskip>.version string?!
 file plan intent<command=unskip>.while_running boolean!
@@ -3974,9 +3978,12 @@ input search --limit integer default= arity=1..1
 input search --refresh flag default=false arity=0..0
 input search --source enum(catalog|github|tukui|wowi) default= arity=1..1 repeat
 input search @1 <QUERY> string default= arity=1.. repeat
-input skip --release string default= arity=1..1 conflicts=--version
+input skip --back flag default=false arity=0..0 conflicts=--release,--version
+input skip --release string default= arity=1..1 conflicts=--back,--version
 input skip --revision integer default= arity=1..1 requires=--release
-input skip --version string default= arity=1..1 conflicts=--release
+input skip --to string default= arity=1..1 conflicts=--tx requires=--back
+input skip --tx string default= arity=1..1 conflicts=--to requires=--back
+input skip --version string default= arity=1..1 conflicts=--back,--release
 input skip @1 <ADDON> string default= arity=1.. repeat required
 input status --cached flag default=false arity=0..0 conflicts=--deep
 input status --check flag default=false arity=0..0

@@ -768,6 +768,31 @@ pub const CORPUS: &[Row] = &[
         "a required argument missing",
         error(2, "usage", &["omaddons", "help", "search"], &[0]),
     ),
+    // RG-34c: going back is `--back`; `--to` and `--tx` only say where to.
+    row(
+        Argument,
+        &["skip", "dbm", "--to", "12.1.14", "-t", "retail"],
+        &["skip"],
+        "--to without --back; the fix only reads",
+        error(2, "usage", &["omaddons", "help", "skip"], &[0]),
+    )
+    .by_leaf("omad-regression-guard-ia3r.4.1.3"),
+    row(
+        Argument,
+        &[
+            "skip",
+            "dbm",
+            "--back",
+            "--version",
+            "12.1.14",
+            "-t",
+            "retail",
+        ],
+        &["skip"],
+        "--back goes back, --version marks a label: not both",
+        error(2, "usage", &["omaddons", "help", "skip"], &[0]),
+    )
+    .by_leaf("omad-regression-guard-ia3r.4.1.3"),
     row(
         Argument,
         &["copy", "--from", "era", "--to", "era"],

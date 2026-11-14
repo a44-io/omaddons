@@ -807,7 +807,8 @@ fn a_skip_preview_whose_waiting_release_moved_is_stale() {
 /// 15. The re-tag lifecycle on one WowAce tag, the release key asserted at every step:
 ///     the re-tag is offered as an update; `update` installs revision 1402; `undo` goes
 ///     back to 1390 and marks 1402, not the tag; `outdated` reads `skipped_release`; the
-///     redo puts 1402 back and names the mark it cleared; `skip --release --revision`
+///     redo puts 1402 back and names the mark it cleared; `skip --back` goes back to
+///     1390 and marks 1402, and its undo takes both back; `skip --release --revision`
 ///     marks it again; `unskip --release --revision` clears exactly that.
 ///
 ///     Later slices add steps to this same sequence, in place: RG-55 the re-tag's first
@@ -876,6 +877,29 @@ fn the_re_tag_lifecycle_on_one_tag() {
         &ran.data()["transactions"][0]["skips_cleared"][0]["release"],
         &as_wire(&r1402),
     );
+    log.assert_eq("installed: 1402", &installed(&home), &r1402);
+    log.assert_eq("no mark", &marks(&home, "retail", &key).len(), &0);
+
+    log.step("skip --back goes back to revision 1390 of the same tag and marks 1402 (RG-34c)");
+    let ran = quiet(
+        &log,
+        &home,
+        &["skip", name.as_str(), "--back", "-t", "retail"],
+    );
+    ran.ok();
+    log.assert_eq(
+        "the mark names revision 1402",
+        &ran.data()["targets"][0]["skips_marked"][0]["release"],
+        &as_wire(&r1402),
+    );
+    log.assert_eq("installed: 1390", &installed(&home), &r1390);
+    log.assert_eq(
+        "on the record",
+        &held(&marks(&home, "retail", &key)),
+        &vec![r1402.clone()],
+    );
+    log.step("its undo puts 1402 back and clears the mark");
+    quiet(&log, &home, &["undo"]).ok();
     log.assert_eq("installed: 1402", &installed(&home), &r1402);
     log.assert_eq("no mark", &marks(&home, "retail", &key).len(), &0);
 
@@ -951,4 +975,613 @@ fn the_readme_skip_and_unskip_examples_run_as_shown() {
     .ok();
     quiet(&log, &home, &["unskip", "foo", "-t", "retail"]).ok();
     log.assert_eq("no mark left", &marks(&home, "retail", "foo").len(), &0);
+}
+
+// ---------------------------------------------------------------------------------------
+// `skip --back` (RG-34c): go back one addon to the files installed before.
+
+/// Foo at v0, then updated to v1, the archives of both in the blob cache: the home, and
+/// the update's transaction.
+fn updated(log: &TestLog) -> (Home, String) {
+    let home = behind(log);
+    log.step("update takes Foo to v1");
+    let ran = json(log, &home, &["update", "-t", "retail"]);
+    ran.ok();
+    let tx = ran.data()["targets"][0]["tx"].as_str().unwrap().to_owned();
+    (home, tx)
+}
+
+/// The rollback's mark on Foo, as `skips_marked` spells it.
+fn marked(tag: &str) -> Value {
+    json!([{"addon": "Foo", "version": tag, "release": {"source": "gh:o/foo", "tag": tag}}])
+}
+
+/// The client's record file and AddOns folder, byte for byte: what a refused rollback
+/// leaves as it was.
+fn state_of(home: &Home) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+    let records = home.state().join("targets");
+    let record = fs::read_dir(&records)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .map(|e| fs::read(e.path()).unwrap())
+        .unwrap();
+    let addons = home.client("_retail_").join("Interface/AddOns");
+    let mut files = Vec::new();
+    let mut dirs = vec![addons.clone()];
+    while let Some(dir) = dirs.pop() {
+        for e in fs::read_dir(&dir).unwrap() {
+            let path = e.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                let rel = path.strip_prefix(&addons).unwrap().display().to_string();
+                files.push((rel, fs::read(&path).unwrap()));
+            }
+        }
+    }
+    files.sort();
+    (record, files)
+}
+
+/// The one commands entry of `action`.
+fn command_of(ran: &Ran, action: &str) -> Vec<String> {
+    ran.commands()
+        .into_iter()
+        .find(|c| c.action == action)
+        .unwrap_or_else(|| panic!("no {action} command: {:?}", ran.commands())) // ubs:ignore — the test's own failure
+        .argv
+}
+
+/// 18. `skip --back`: Foo at v1 (history v0 → v1) goes back to v0's files from the local
+///     cache, with no request; v1 is marked by its key; the pin stays; the change is an
+///     update, and undoing it restores v1, removes the mark, and adds none.
+#[test]
+fn back_installs_the_files_before_and_marks_the_release_it_leaves() {
+    let log = tlog!();
+    let (home, _) = updated(&log);
+    log.step("skip foo --back, offline: the archive is in the cache");
+    let ran = quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--back", "-t", "retail", "--offline"],
+    );
+    ran.ok();
+    let t = &ran.data()["targets"][0];
+    log.assert_eq("kind", &t["kind"], &json!("update"));
+    log.assert_eq(
+        "the item",
+        &(
+            &item(&ran)["status"],
+            &item(&ran)["from_version"],
+            &item(&ran)["to_version"],
+        ),
+        &(&json!("updated"), &json!("v1"), &json!("v0")),
+    );
+    log.assert_eq("skips_marked", &t["skips_marked"], &marked("v1"));
+    log.assert_eq("v0", &at(&home, "retail", "foo"), &"v0".to_owned());
+    let made = marks(&home, "retail", "foo");
+    log.assert_eq("marked by key", &held(&made), &vec![gh("foo", "v1")]);
+    log.assert_eq(
+        "origin",
+        &serde_json::to_value(made[0].origin).unwrap(),
+        &json!("rollback"),
+    );
+    log.assert_eq(
+        "not pinned",
+        &record(&home, "retail").addons["foo"].pinned,
+        &false,
+    );
+    let tx = t["tx"].as_str().unwrap().to_owned();
+    log.assert_eq(
+        "undo offered",
+        &command_of(&ran, "undo"),
+        &vec!["omaddons".to_owned(), "undo".to_owned(), tx.clone()],
+    );
+    log.assert_eq(
+        "unskip offered",
+        &command_of(&ran, "unskip"),
+        &["omaddons", "unskip", "--tx", &tx, "-t", "retail"]
+            .map(str::to_owned)
+            .to_vec(),
+    );
+
+    log.step("in words");
+    let (home, _) = updated(&log);
+    let ran = quiet_human(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    ran.ok();
+    says(
+        &log,
+        &ran,
+        "Foo v1 → v0 on retail · the files installed before, from the local cache\nv1 is skipped: update passes over it and resumes at the next release\nundo: omaddons undo ",
+    );
+    says(&log, &ran, "offer v1 again: omaddons unskip --tx ");
+
+    log.step("undo restores v1, takes the mark away, and makes none");
+    let undo = quiet(&log, &home, &["undo"]);
+    undo.ok();
+    log.assert_eq("v1 again", &at(&home, "retail", "foo"), &"v1".to_owned());
+    log.assert_eq("no mark", &marks(&home, "retail", "foo").len(), &0);
+}
+
+/// 19. The command acts only on what it names: with history v0 → v1 → v2 and Foo at v2,
+///     going back from the v0 → v1 update is `plan_stale` and changes nothing; so is a
+///     stored rollback whose addon moved on between its preview and `apply`.
+#[test]
+fn back_from_a_transaction_the_addon_has_moved_on_from_is_plan_stale() {
+    let log = tlog!();
+    let (home, first) = updated(&log);
+    log.step("v2 out, update takes Foo there");
+    newest(&home, "foo", "v2");
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+    let before = state_of(&home);
+    let ran = quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--back", "--tx", &first, "-t", "retail"],
+    );
+    ran.fails(1, "plan_stale");
+    log.assert_eq(
+        "not retryable",
+        &ran.envelope()["error"]["retryable"],
+        &json!(false),
+    );
+    log.assert_eq("nothing changed", &state_of(&home), &before);
+
+    log.step("previewed at v2, then v3 installed before apply");
+    let preview = quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--back", "-t", "retail", "--dry-run"],
+    );
+    preview.ok();
+    let plan_id = preview.data()["plan_id"].as_str().unwrap().to_owned();
+    newest(&home, "foo", "v3");
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+    let before = state_of(&home);
+    let applied = json(&log, &home, &["apply", &plan_id]);
+    applied.fails(1, "plan_stale");
+    log.assert_eq("nothing changed", &state_of(&home), &before);
+    log.assert_eq("no mark", &marks(&home, "retail", "foo").len(), &0);
+}
+
+/// 20. A second `--back` without `--to` is `not_found` naming `--to` (the release before
+///     is the one just rejected, and marked); with `--to` an earlier label it goes
+///     further back, and both releases are marked.
+#[test]
+fn a_second_back_names_to_and_to_goes_further() {
+    let log = tlog!();
+    let home = home_at(&log, false, &[("foo", "Foo")], &["retail"], "v1");
+    log.step("v0 → v1 → v2");
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+    newest(&home, "foo", "v2");
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+    quiet(&log, &home, &["skip", "foo", "--back", "-t", "retail"]).ok();
+    log.assert_eq("at v1", &at(&home, "retail", "foo"), &"v1".to_owned());
+    log.step(
+        "again: the line that put v1 back is the rollback, whose release before is v2, marked",
+    );
+    let again = quiet(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    again.fails(3, "not_found");
+    let error = &again.envelope()["error"];
+    log.assert_eq(
+        "names --to",
+        &error["message"].as_str().unwrap().contains("--to"),
+        &true,
+    );
+    log.assert_eq(
+        "the releases listing",
+        &error["fix_argv"],
+        &json!(["omaddons", "info", "Foo", "--releases", "-t", "retail"]),
+    );
+    log.step("--to v0");
+    let further = json(
+        &log,
+        &home,
+        &["skip", "foo", "--back", "--to", "v0", "-t", "retail"],
+    );
+    further.ok();
+    log.assert_eq("at v0", &at(&home, "retail", "foo"), &"v0".to_owned());
+    log.assert_eq(
+        "both marked",
+        &held(&marks(&home, "retail", "foo")),
+        &vec![gh("foo", "v2"), gh("foo", "v1")],
+    );
+}
+
+/// 21. Refusals before planning: `--to` the installed release, `--to` with `--tx`, a
+///     first install's transaction (no release before it), and more than one addon.
+#[test]
+fn back_refuses_what_it_cannot_go_back_along() {
+    let log = tlog!();
+    let (home, _) = updated(&log);
+    let before = state_of(&home);
+    quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--back", "--to", "v1", "-t", "retail"],
+    )
+    .fails(2, "usage");
+    quiet(
+        &log,
+        &home,
+        &[
+            "skip",
+            "foo",
+            "--back",
+            "--to",
+            "v0",
+            "--tx",
+            "01JB8Q2VA00000000000000001",
+            "-t",
+            "retail",
+        ],
+    )
+    .fails(2, "usage");
+    quiet(
+        &log,
+        &home,
+        &["skip", "foo", "bar", "--back", "-t", "retail"],
+    )
+    .fails(2, "usage");
+    let first = json(&log, &home, &["history", "-t", "retail"]).data()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "install")
+        .unwrap()["tx"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A first install's line names v0 as `to`; Foo is at v1, so it is stale first.
+    quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--back", "--tx", &first, "-t", "retail"],
+    )
+    .fails(1, "plan_stale");
+    log.assert_eq("nothing changed", &state_of(&home), &before);
+
+    log.step("at the first install itself: no release before it");
+    let home = behind(&log);
+    let ran = quiet(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    ran.fails(3, "not_found");
+    log.assert_eq(
+        "the releases listing",
+        &ran.envelope()["error"]["fix_argv"],
+        &json!(["omaddons", "info", "Foo", "--releases", "-t", "retail"]),
+    );
+}
+
+/// 22. A moved tag: GitHub serves other bytes under v0's tag now, and v0's archive is
+///     gone from the cache. The rollback asks `github.com` for that tag's `release.json`
+///     and asset (never `api.github.com`), finds other bytes, answers `hash_mismatch`
+///     and changes nothing. Its fix is the update's undo while that can run, and the
+///     releases listing once the update's snapshot is gone; never a label.
+#[test]
+fn back_through_a_moved_tag_is_a_hash_mismatch() {
+    let log = tlog!();
+    let (home, update) = moved_tag(&log);
+    let before = state_of(&home);
+    let asked = net_log(&home).len();
+    let ran = json(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    ran.fails(1, "hash_mismatch");
+    log.assert_eq("nothing changed", &state_of(&home), &before);
+    log.assert_eq(
+        "the update's undo",
+        &ran.envelope()["error"]["fix_argv"],
+        &json!(["omaddons", "undo", update]),
+    );
+    let requests: Vec<(String, String)> = net_log(&home).entries[asked..]
+        .iter()
+        .map(|e| (e.host.clone(), e.path.clone()))
+        .collect();
+    log.json("requests", &requests);
+    log.assert_eq(
+        "github.com alone",
+        &requests.iter().all(|(host, _)| host == "github.com"),
+        &true,
+    );
+    log.assert_eq(
+        "the tag's release.json",
+        &requests
+            .iter()
+            .any(|(_, path)| path == "/o/foo/releases/download/v0/release.json"),
+        &true,
+    );
+
+    log.step("the update's snapshot pruned: the releases listing");
+    fs::remove_dir_all(
+        home.client("_retail_")
+            .join("Interface/.omaddons/snapshots")
+            .join(&update),
+    )
+    .unwrap();
+    let ran = json(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    ran.fails(1, "hash_mismatch");
+    log.assert_eq(
+        "the releases listing",
+        &ran.envelope()["error"]["fix_argv"],
+        &json!(["omaddons", "info", "Foo", "--releases", "-t", "retail"]),
+    );
+    log.assert_eq("nothing changed", &state_of(&home), &before);
+}
+
+/// Foo at v1 by an update from v0, then v0's tag republished with other bytes and v0's
+/// archive evicted from the cache: the home, and the update's transaction.
+fn moved_tag(log: &TestLog) -> (Home, String) {
+    let home = behind(log);
+    let v0 = record(&home, "retail").addons["foo"]
+        .blob_sha256
+        .clone()
+        .unwrap();
+    log.step("update takes Foo to v1");
+    let ran = json(log, &home, &["update", "-t", "retail"]);
+    ran.ok();
+    let update = ran.data()["targets"][0]["tx"].as_str().unwrap().to_owned();
+    log.step("v0's tag now serves other bytes, and its archive left the cache");
+    common::http::gh_release_v(
+        &home.http,
+        &common::releases::base("foo"),
+        "v0",
+        &[(
+            "Foo.zip",
+            common::binding::MAINLINE_AND_MISTS,
+            vec![
+                (
+                    "Foo/Foo.toc",
+                    "## Interface: 120105, 50504\n## Title: Foo\n## Version: v0\n",
+                ),
+                ("Foo/core.lua", "-- republished\n"),
+            ],
+        )],
+    );
+    fs::remove_file(home.env.cache().join("omaddons/blobs").join(&v0)).unwrap();
+    (home, update)
+}
+
+/// An envelope without what changes from run to run: every ULID, `meta` and the
+/// tool's version.
+fn shape(envelope: &Value) -> Value {
+    let text = common::plans::redact_ulids(&envelope.to_string());
+    let mut shaped: Value = serde_json::from_str(&text).unwrap();
+    shaped["meta"] = json!("<meta>");
+    shaped["tool_version"] = json!("<version>");
+    shaped
+}
+
+/// 27. The envelopes of `skip --back`, their shapes held by snapshots: a rollback from
+///     the cache, `plan_stale` (the addon moved on), `not_found` (no release before a
+///     first install) and `hash_mismatch` (a moved tag).
+#[test]
+fn the_rollback_envelopes() {
+    let log = tlog!();
+    let (home, first) = updated(&log);
+    let ran = quiet(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    ran.ok();
+    insta::assert_json_snapshot!("skip_back_success", shape(ran.envelope()));
+
+    quiet(&log, &home, &["undo"]).ok();
+    newest(&home, "foo", "v2");
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+    let ran = quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--back", "--tx", &first, "-t", "retail"],
+    );
+    ran.fails(1, "plan_stale");
+    insta::assert_json_snapshot!("skip_back_plan_stale", shape(ran.envelope()));
+
+    let home = behind(&log);
+    let ran = quiet(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    ran.fails(3, "not_found");
+    insta::assert_json_snapshot!("skip_back_not_found", shape(ran.envelope()));
+
+    let (home, _) = moved_tag(&log);
+    let ran = json(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    ran.fails(1, "hash_mismatch");
+    insta::assert_json_snapshot!("skip_back_hash_mismatch", shape(ran.envelope()));
+}
+
+/// 23. One addon of a transaction: an update moved Foo and Bar together; going back from
+///     it moves Foo alone, and Bar's folder and record entry are byte-identical.
+#[test]
+fn back_from_a_transaction_of_two_addons_moves_only_the_one_named() {
+    let log = tlog!();
+    let home = home_at(
+        &log,
+        false,
+        &[("foo", "Foo"), ("bar", "Bar")],
+        &["retail"],
+        "v1",
+    );
+    log.step("one update takes both to v1");
+    let ran = json(&log, &home, &["update", "-t", "retail"]);
+    ran.ok();
+    let tx = ran.data()["targets"][0]["tx"].as_str().unwrap().to_owned();
+    let bar = || {
+        let record = record(&home, "retail");
+        let entry = serde_json::to_value(&record.addons["bar"]).unwrap();
+        let folder = home
+            .client("_retail_")
+            .join("Interface/AddOns/Bar/core.lua");
+        (entry, fs::read(folder).unwrap())
+    };
+    let before = bar();
+    quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--back", "--tx", &tx, "-t", "retail"],
+    )
+    .ok();
+    log.assert_eq(
+        "Foo back at v0",
+        &at(&home, "retail", "foo"),
+        &"v0".to_owned(),
+    );
+    log.assert_eq("Bar as it was", &bar(), &before);
+}
+
+/// 24. A pinned addon goes back and stays pinned: the pin rewrote the record's `tx_id`,
+///     and the line that installed v1 is still the one gone back along. While the client
+///     runs, the running policy decides as for an update, and the result says to reload.
+#[test]
+fn a_pinned_addon_stays_pinned_and_a_running_client_reloads() {
+    let log = tlog!();
+    let (mut home, _) = updated(&log);
+    log.step("pin Foo at v1");
+    quiet(&log, &home, &["pin", "foo", "-t", "retail"]).ok();
+    home.retail_running();
+    let ran = quiet(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    ran.ok();
+    let foo = &record(&home, "retail").addons["foo"];
+    log.assert_eq(
+        "v0, pinned",
+        &(foo.version.as_str(), foo.pinned),
+        &("v0", true),
+    );
+    log.assert_eq(
+        "reload",
+        &ran.data()["targets"][0]["reload_required"],
+        &json!("reload"),
+    );
+}
+
+/// 25. A preview binds the rollback: `--dry-run` stores a plan, and `apply` installs
+///     exactly the previewed release and marks exactly the previewed mark.
+#[test]
+fn a_previewed_rollback_applies_exactly_what_it_showed() {
+    let log = tlog!();
+    let (home, _) = updated(&log);
+    let before = state_of(&home);
+    let preview = quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--back", "-t", "retail", "--dry-run"],
+    );
+    preview.ok();
+    log.assert_eq("a preview changes nothing", &state_of(&home), &before);
+    let t = &preview.data()["targets"][0];
+    log.assert_eq("would mark", &t["skips_marked"], &marked("v1"));
+    let plan_id = preview.data()["plan_id"].as_str().unwrap().to_owned();
+    let applied = quiet(&log, &home, &["apply", &plan_id]);
+    applied.ok();
+    // `apply` carries the replayed command's data in `data.result`.
+    let done = &applied.data()["result"]["targets"][0];
+    log.assert_eq("marked", &done["skips_marked"], &marked("v1"));
+    log.assert_eq(
+        "the previewed item",
+        &(
+            &done["items"][0]["from_version"],
+            &done["items"][0]["to_version"],
+        ),
+        &(
+            &item(&preview)["from_version"],
+            &item(&preview)["to_version"],
+        ),
+    );
+    log.assert_eq("v0", &at(&home, "retail", "foo"), &"v0".to_owned());
+}
+
+/// 26. WoWInterface serves only its current file: an addon goes back from the local
+///     cache while its earlier archive is there, and is `not_found`, with nothing
+///     changed, once that archive is evicted.
+#[test]
+fn back_on_wowinterface_needs_the_cached_archive() {
+    use common::wowi::{details, wowi_details, wowi_file};
+    let log = tlog!();
+    let mut home = Home::new(&["wow"]);
+    log.env(&home);
+    let bugsack = |scenario: &std::path::Path, version: &str| {
+        let toc = common::addons::toc(
+            "120105",
+            &["## Title: BugSack", &format!("## Version: {version}")],
+        );
+        let core = format!("-- BugSack {version}");
+        let zip = common::archives::zip_text(&[
+            ("BugSack/BugSack.toc", &toc),
+            ("BugSack/core.lua", &core),
+        ]);
+        let md5 = wowi_file(scenario, 5995, &zip);
+        wowi_details(
+            scenario,
+            &[5995],
+            &[details(5995, "BugSack", version, &md5)],
+        );
+    };
+    log.step("1.0 installed, then 1.1 out and installed");
+    bugsack(&home.http, "1.0");
+    json(&log, &home, &["install", "wowi:5995", "-t", "retail"]).ok();
+    let earlier = record(&home, "retail").addons["bugsack"]
+        .blob_sha256
+        .clone()
+        .unwrap();
+    let newer = home.scenario("newer");
+    bugsack(&newer, "1.1");
+    age_release_memo(&home, jiff::SignedDuration::from_hours(24));
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+    log.assert_eq("at 1.1", &at(&home, "retail", "bugsack"), &"1.1".to_owned());
+
+    log.step("back, from the cache");
+    quiet(&log, &home, &["skip", "bugsack", "--back", "-t", "retail"]).ok();
+    log.assert_eq("at 1.0", &at(&home, "retail", "bugsack"), &"1.0".to_owned());
+    log.assert_eq("marked", &marks(&home, "retail", "bugsack").len(), &1);
+
+    log.step("undone, then the earlier archive evicted");
+    quiet(&log, &home, &["undo"]).ok();
+    fs::remove_file(home.env.cache().join("omaddons/blobs").join(&earlier)).unwrap();
+    let before = state_of(&home);
+    let ran = quiet(&log, &home, &["skip", "bugsack", "--back", "-t", "retail"]);
+    ran.fails(3, "not_found");
+    log.assert_eq("nothing changed", &state_of(&home), &before);
+}
+
+/// 28. A line from before transitions were recorded, its snapshots pruned: nothing tells
+///     what it moved, so going back along it is `not_found` with the releases listing,
+///     and the bare form finds no line that installed the current release.
+#[test]
+fn back_along_a_line_with_no_known_transition_is_not_found() {
+    let log = tlog!();
+    let (home, update) = updated(&log);
+    log.step("the update's line as an older build wrote it, its snapshots pruned");
+    let path = home.state().join("history.jsonl");
+    let mut rewritten = String::new();
+    for line in fs::read_to_string(&path).unwrap().lines() {
+        let mut entry: Value = serde_json::from_str(line).unwrap();
+        if entry["tx"] == update.as_str() {
+            entry.as_object_mut().unwrap().remove("transitions");
+        }
+        rewritten.push_str(&serde_json::to_string(&entry).unwrap());
+        rewritten.push('\n');
+    }
+    fs::write(&path, rewritten).unwrap();
+    fs::remove_dir_all(home.state().join("snapshots").join(&update)).unwrap();
+    fs::remove_dir_all(
+        home.client("_retail_")
+            .join("Interface/.omaddons/snapshots")
+            .join(&update),
+    )
+    .unwrap();
+    let before = state_of(&home);
+    for argv in [
+        &[
+            "skip",
+            "foo",
+            "--back",
+            "--tx",
+            update.as_str(),
+            "-t",
+            "retail",
+        ][..],
+        &["skip", "foo", "--back", "-t", "retail"][..],
+    ] {
+        let ran = quiet(&log, &home, argv);
+        ran.fails(3, "not_found");
+        log.assert_eq(
+            "the releases listing",
+            &ran.envelope()["error"]["fix_argv"],
+            &json!(["omaddons", "info", "Foo", "--releases", "-t", "retail"]),
+        );
+    }
+    log.assert_eq("nothing changed", &state_of(&home), &before);
 }

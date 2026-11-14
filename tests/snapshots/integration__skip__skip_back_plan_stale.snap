@@ -1,0 +1,32 @@
+---
+source: tests/skip.rs
+expression: shape(ran.envelope())
+---
+{
+  "command": "skip",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "plan_stale",
+    "details": {
+      "changed": [
+        "targets"
+      ]
+    },
+    "fix": "omaddons errors -t retail",
+    "fix_argv": [
+      "omaddons",
+      "errors",
+      "-t",
+      "retail"
+    ],
+    "message": "Foo is at v2, not at v1, the release that update installed",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "meta": "<meta>",
+  "ok": false,
+  "schema_version": "1.2",
+  "tool_version": "<version>",
+  "warnings": []
+}

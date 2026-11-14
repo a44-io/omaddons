@@ -1,0 +1,104 @@
+---
+source: tests/skip.rs
+expression: shape(ran.envelope())
+---
+{
+  "command": "skip",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": true
+    },
+    {
+      "action": "unskip",
+      "argv": [
+        "omaddons",
+        "unskip",
+        "--tx",
+        "<ulid>",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons unskip --tx <ulid> -t retail",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "approval": null,
+    "dry_run": false,
+    "plan_expires_at": null,
+    "plan_id": null,
+    "precondition": null,
+    "run": "<ulid>",
+    "summary": {
+      "changed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "targets": 1,
+      "unchanged": 0
+    },
+    "targets": [
+      {
+        "atomic_swap": true,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "bridge_dependencies": [],
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [],
+              "removed": [],
+              "replaced": [
+                "Foo"
+              ],
+              "skipped": []
+            },
+            "from_version": "v1",
+            "name": "Foo",
+            "reason": "explicit",
+            "ref": "gh:o/foo",
+            "request": "foo",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "updated",
+            "to_version": "v0",
+            "unresolved": []
+          }
+        ],
+        "kind": "update",
+        "no_section": false,
+        "reload_required": "none",
+        "skips_marked": [
+          {
+            "addon": "Foo",
+            "release": {
+              "source": "gh:o/foo",
+              "tag": "v1"
+            },
+            "version": "v1"
+          }
+        ],
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "meta": "<meta>",
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.2",
+  "tool_version": "<version>",
+  "warnings": []
+}

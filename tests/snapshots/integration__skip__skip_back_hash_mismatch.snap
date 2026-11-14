@@ -1,0 +1,59 @@
+---
+source: tests/skip.rs
+expression: shape(ran.envelope())
+---
+{
+  "command": "skip",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "hash_mismatch",
+    "details": {
+      "actual": "ecd3a47d6fa7d6d7aec11a0caed42b5d6d61bab44fe150ef4226e775085c084d",
+      "expected": "ea764164e067b42b119353c04a72e857de73a09cbea2a16902a585ebcfed5427",
+      "items": [
+        {
+          "error": {
+            "code": "hash_mismatch",
+            "details": {
+              "actual": "ecd3a47d6fa7d6d7aec11a0caed42b5d6d61bab44fe150ef4226e775085c084d",
+              "expected": "ea764164e067b42b119353c04a72e857de73a09cbea2a16902a585ebcfed5427",
+              "reason": "lock_mismatch"
+            },
+            "fix": "omaddons undo <ulid>",
+            "fix_argv": [
+              "omaddons",
+              "undo",
+              "<ulid>"
+            ],
+            "message": "gh:o/foo: Foo.zip is the archive ecd3a47d6fa7…, not the archive ea764164e067… installed before: its source serves other files under v0 now"
+          },
+          "request": "foo",
+          "target": "retail"
+        }
+      ],
+      "reason": "lock_mismatch",
+      "tried": [
+        {
+          "asset": "Foo.zip",
+          "code": "hash_mismatch",
+          "message": "gh:o/foo: Foo.zip is the archive ecd3a47d6fa7…, not the archive ea764164e067… the lock records"
+        }
+      ]
+    },
+    "fix": "omaddons undo <ulid>",
+    "fix_argv": [
+      "omaddons",
+      "undo",
+      "<ulid>"
+    ],
+    "message": "gh:o/foo: Foo.zip is the archive ecd3a47d6fa7…, not the archive ea764164e067… installed before: its source serves other files under v0 now",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "meta": "<meta>",
+  "ok": false,
+  "schema_version": "1.2",
+  "tool_version": "<version>",
+  "warnings": []
+}

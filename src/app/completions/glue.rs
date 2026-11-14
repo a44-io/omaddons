@@ -51,6 +51,7 @@ const SLOTS: &[Slot] = &[
     slot("pin", "addon", Kind::Addon),
     slot("unpin", "addon", Kind::Addon),
     slot("skip", "addons", Kind::Addon),
+    slot("skip", "tx", Kind::Tx),
     slot("unskip", "addons", Kind::Addon),
     slot("unskip", "tx", Kind::Tx),
     slot("copy", "addons", Kind::Addon),

@@ -1268,3 +1268,87 @@ proptest! {
         }
     }
 }
+
+/// Runs `apply <plan>`; with `racing`, pauses it between its planning and the commit
+/// lock (`engine.stage.synced`) while a pin runs, then lets it finish. The apply's exit
+/// code and envelope, whether the pin committed, and what the client held just before the
+/// apply could write (after the pin, when one ran).
+#[cfg(test)]
+fn apply_racing(
+    log: &TestLog,
+    home: &Home,
+    plan: &str,
+    racing: bool,
+) -> (i32, Value, bool, (Vec<u8>, String)) {
+    let snapshot = |home: &Home| (record_bytes(home), tree_hash(&home.addons("_retail_")));
+    if !racing {
+        let before = snapshot(home);
+        let run = json(log, home, &["apply", plan]).to_run();
+        let envelope = serde_json::from_str(&run.stdout).unwrap();
+        return (run.code, envelope, false, before);
+    }
+    let pause = common::pause::Pause::new(home.env.root());
+    let argv = ["apply", plan];
+    let child = home.spawn(
+        &argv,
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.stage.synced=pause"),
+            pause.env(),
+        ],
+    );
+    pause.reached("engine.stage.synced");
+    let pin = json(log, home, &["pin", "foo", "-t", "retail"]);
+    pin.ok();
+    let committed = !pin.data()["targets"][0]["tx"].is_null();
+    let before = snapshot(home);
+    pause.resume("engine.stage.synced");
+    let run = common::home::wait(child, &argv);
+    let envelope = serde_json::from_str(&run.stdout).unwrap();
+    (run.code, envelope, committed, before)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(8))]
+
+    /// RG-34c: a stored `skip --back` plan (Foo v2 back to v1, v2 marked) does exactly
+    /// what its preview showed, or answers `plan_stale` and writes nothing, whatever
+    /// moves in the memo or commits on the record between the preview and the apply,
+    /// a commit between the apply's planning and its lock included.
+    #[test]
+    fn a_rollback_plan_does_what_it_showed_or_nothing(
+        steps in proptest::collection::vec(between(), 0..3),
+        racing in any::<bool>(),
+    ) {
+        let log = case_log("back");
+        log.json("between", &format!("{steps:?}, racing: {racing}"));
+        let home = behind(&log);
+        json(&log, &home, &["update", "-t", "retail"]).ok();
+        let preview = json(&log, &home, &["skip", "foo", "--back", "-t", "retail", "--dry-run"]);
+        preview.ok();
+        let plan = preview.data()["plan_id"].as_str().unwrap().to_owned();
+        let committed = intervene(&log, &home, &steps, "b");
+        // A record that already moved refuses the apply before it stages, so it never
+        // reaches the lock to race: only an apply still bound to its preview is raced.
+        let racing = racing && !committed;
+        let (code, envelope, raced, before) = apply_racing(&log, &home, &plan, racing);
+        log.json("apply", &envelope);
+        let after = (record_bytes(&home), tree_hash(&home.addons("_retail_")));
+        if committed || raced {
+            prop_assert_eq!(code, 1);
+            prop_assert_eq!(&envelope["error"]["code"], &json!("plan_stale"));
+            prop_assert_eq!(after, before);
+        } else {
+            prop_assert_eq!(code, 0, "{}", envelope);
+            let foo = &common::state::record(&home, "retail").addons["foo"];
+            prop_assert_eq!(foo.version.as_str(), "v1");
+            let rollback: Vec<Value> = selected(
+                &foo.skipped_releases
+                    .iter()
+                    .filter(|m| m.origin == SkipOrigin::Rollback)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            prop_assert_eq!(rollback, vec![json!({"release": {"source": "gh:o/foo", "tag": "v2"}})]);
+        }
+    }
+}

@@ -1,0 +1,30 @@
+---
+source: tests/skip.rs
+expression: shape(ran.envelope())
+---
+{
+  "command": "skip",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {},
+    "fix": "omaddons info Foo --releases -t retail",
+    "fix_argv": [
+      "omaddons",
+      "info",
+      "Foo",
+      "--releases",
+      "-t",
+      "retail"
+    ],
+    "message": "install <ulid> first installed Foo: there is no release before it to go back to; name an earlier version with --to, which installs what the source serves under that label now",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "meta": "<meta>",
+  "ok": false,
+  "schema_version": "1.2",
+  "tool_version": "<version>",
+  "warnings": []
+}

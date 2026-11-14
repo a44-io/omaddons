@@ -18,6 +18,8 @@
 //! token, so a stored `skip` plan whose waiting release moved in the memo before `apply`
 //! is `plan_stale`, never a mark on a release the preview did not show.
 
+mod back;
+
 use std::collections::BTreeMap;
 use std::io::Write;
 
@@ -68,6 +70,24 @@ pub struct SkipArgs {
     /// For a release announced but not seen yet. Takes one addon.
     #[arg(long, value_name = "VERSION")]
     pub version: Option<String>,
+    /// Go back to the release before, and pass over the one it leaves
+    ///
+    /// The very files installed then, from the local cache or held to their recorded
+    /// hash; it never falls back to a label. Takes one addon.
+    #[arg(long, conflicts_with_all = ["release", "version"])]
+    pub back: bool,
+    /// With --back: go back from this transaction, as errors suggests
+    ///
+    /// Its full id, as history gives it. Without it, the transaction that installed the
+    /// current release.
+    #[arg(long, value_name = "TX", requires = "back", conflicts_with = "to")]
+    pub tx: Option<String>,
+    /// With --back: install this earlier version, as its source serves it now
+    ///
+    /// Not promised to be the files once installed under that label. Not for url: or
+    /// file: refs.
+    #[arg(long, value_name = "VERSION", requires = "back")]
+    pub to: Option<String>,
 }
 
 /// `unskip`'s own arguments.
@@ -176,6 +196,8 @@ pub struct SkipOutcome {
     pub locks: Vec<(TxId, u64)>,
     /// For `-v` log lines.
     pub notes: Vec<String>,
+    /// `--back`: what each client's rollback did, for its human lines; empty otherwise.
+    back: Vec<back::BackLine>,
 }
 
 impl Storable for SkipOutcome {
@@ -217,6 +239,16 @@ impl Outcome for SkipOutcome {
     }
 
     fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
+        if self
+            .inner
+            .data
+            .targets
+            .iter()
+            .any(|t| t.kind == Some(TxKind::Update))
+            || !self.back.is_empty()
+        {
+            return back::render_all(w, self, style);
+        }
         let data = &self.inner.data;
         if data.targets.is_empty() {
             writeln!(w, "Nothing to {}.", self.inner.command)?;
@@ -339,6 +371,9 @@ fn numbers_revisions(key: &ReleaseKey) -> bool {
 
 /// Runs `skip`.
 pub fn skip(ctx: &Context, args: &SkipArgs) -> Result<SkipOutcome> {
+    if args.back {
+        return back::run(ctx, args);
+    }
     run(ctx, Mode::Skip(args))
 }
 
@@ -749,6 +784,7 @@ fn run(ctx: &Context, mode: Mode<'_>) -> Result<SkipOutcome> {
         reasons,
         locks,
         notes,
+        back: Vec::new(),
     })
 }
 

@@ -347,8 +347,12 @@ pub const EXTRAS: &[Extras] = &[
                 "omaddons skip dbm --version 12.2.0 -t retail",
                 "every release labelled 12.2.0",
             ),
+            (
+                "omaddons skip dbm --back -t retail",
+                "go back to the files installed before",
+            ),
         ],
-        see_also: &["unskip", "outdated", "update"],
+        see_also: &["unskip", "outdated", "update", "undo"],
     },
     Extras {
         path: "unskip",

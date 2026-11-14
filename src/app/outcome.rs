@@ -296,6 +296,15 @@ impl ItemError {
         }
     }
 
+    /// Replaces the message, on the wire field and the kept original alike, as
+    /// [`Self::set_fix`] does: the command-level error built from this item says the same.
+    pub fn set_message(&mut self, message: String) {
+        if let Some(original) = &mut self.original {
+            original.message.clone_from(&message);
+        }
+        self.message = message;
+    }
+
     /// Back to an error, with its code's exit code and the details it kept.
     pub fn error(&self) -> Error {
         let fix = match &self.fix_argv {

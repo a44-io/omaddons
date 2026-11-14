@@ -2804,7 +2804,7 @@ _omaddons() {
             return 0
             ;;
         omaddons__subcmd__skip)
-            opts="-t -v -h --release --revision --version --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
+            opts="-t -v -h --release --revision --version --back --tx --to --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2819,6 +2819,14 @@ _omaddons() {
                     return 0
                     ;;
                 --version)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tx)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --to)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -3524,6 +3532,7 @@ _omaddons_dynamic() {
         case "$cmdpath $value_of" in
             "copy --from") kind=target ;;
             "copy --to") kind=client ;;
+            "skip --tx") kind=tx ;;
             "unskip --tx") kind=tx ;;
             "errors --addon") kind=addon ;;
             "backup restore --addon") kind=addon ;;

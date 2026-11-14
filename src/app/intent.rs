@@ -599,9 +599,11 @@ pub struct PinIntent {
     pub while_running: bool,
 }
 
-/// `skip`'s and `unskip`'s (only `unskip` takes `tx`). The release a plain `skip` marks
-/// is not here: `apply` asks the release memo again, and the token binds the release the
-/// preview marked (design 7.5.6), so a memo that moved since makes it `plan_stale`.
+/// `skip`'s and `unskip`'s (`tx` is `unskip --tx`, or `skip --back --tx`). The release a
+/// plain `skip` marks is not here: `apply` asks the release memo again, and the token
+/// binds the release the preview marked (design 7.5.6), so a memo that moved since makes
+/// it `plan_stale`. A `skip --back` is replanned the same way: its token binds the
+/// release it goes back to, the one it leaves and the mark (RG-34c).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SkipIntent {
@@ -611,6 +613,12 @@ pub struct SkipIntent {
     pub revision: Option<u32>,
     pub version: Option<String>,
     pub tx: Option<TxId>,
+    /// `skip --back`.
+    #[serde(default)]
+    pub back: bool,
+    /// `skip --back --to`.
+    #[serde(default)]
+    pub to: Option<String>,
     pub while_running: bool,
 }
 
@@ -934,8 +942,25 @@ impl StoredIntent {
             Self::Skip(s) | Self::Unskip(s) => {
                 let command = self.command_path();
                 names(&format!("{command}'s addons"), &s.addons)?;
-                if matches!(self, Self::Skip(_)) && s.tx.is_some() {
-                    return Err("skip takes no --tx".to_owned());
+                if matches!(self, Self::Skip(_)) && s.tx.is_some() && !s.back {
+                    return Err("skip takes --tx only with --back".to_owned());
+                }
+                if matches!(self, Self::Unskip(_)) && (s.back || s.to.is_some()) {
+                    return Err("unskip takes no --back or --to".to_owned());
+                }
+                if s.to.is_some() && !s.back {
+                    return Err("skip's --to goes with --back".to_owned());
+                }
+                if s.back {
+                    if s.release.is_some() || s.version.is_some() {
+                        return Err("skip --back takes no --release or --version".to_owned());
+                    }
+                    if s.to.is_some() && s.tx.is_some() {
+                        return Err("skip --back takes --to or --tx, not both".to_owned());
+                    }
+                    if s.addons.len() != 1 {
+                        return Err("skip --back names exactly one addon".to_owned());
+                    }
                 }
                 if s.addons.is_empty() && s.tx.is_none() {
                     return Err(format!("{command} names at least one addon"));
@@ -1037,7 +1062,9 @@ impl StoredIntent {
                 f.value("--release", s.release.as_deref());
                 f.value("--revision", s.revision.map(|r| r.to_string()).as_deref());
                 f.value("--version", s.version.as_deref());
+                f.switch("--back", s.back);
                 f.value("--tx", s.tx.map(|tx| tx.to_string()).as_deref());
+                f.value("--to", s.to.as_deref());
                 f.switch("--while-running", s.while_running);
                 s.addons.clone()
             }
@@ -1175,7 +1202,10 @@ impl StoredIntent {
                 release: args.release.clone(),
                 revision: args.revision,
                 version: args.version.clone(),
-                tx: None,
+                // The run refused a `--tx` that is not an id before it planned.
+                tx: args.tx.as_deref().and_then(|tx| tx.parse().ok()),
+                back: args.back,
+                to: args.to.clone(),
                 while_running,
             }),
             StorableArgs::Unskip { args, scope } => Self::Unskip(SkipIntent {
@@ -1186,6 +1216,8 @@ impl StoredIntent {
                 version: args.version.clone(),
                 // The run refused a `--tx` that is not an id before it planned.
                 tx: args.tx.as_deref().and_then(|tx| tx.parse().ok()),
+                back: false,
+                to: None,
                 while_running,
             }),
             StorableArgs::Adopt { args, scope, r#ref } => Self::Adopt(AdoptIntent {
@@ -1355,7 +1387,7 @@ impl From<&PinIntent> for UnpinArgs {
     }
 }
 
-/// `skip`'s arguments for `intent` (whose `tx` is always `None`); nothing is defaulted.
+/// `skip`'s arguments for `intent` (whose `tx` is `--back --tx`); nothing is defaulted.
 impl From<&SkipIntent> for SkipArgs {
     fn from(s: &SkipIntent) -> Self {
         Self {
@@ -1363,6 +1395,9 @@ impl From<&SkipIntent> for SkipArgs {
             release: s.release.clone(),
             revision: s.revision,
             version: s.version.clone(),
+            back: s.back,
+            tx: s.tx.map(|tx| tx.to_string()),
+            to: s.to.clone(),
         }
     }
 }
@@ -2739,6 +2774,8 @@ mod tests {
                     revision: None,
                     version: None,
                     tx: None,
+                    back: false,
+                    to: None,
                     while_running: false,
                 }),
                 display: &["omaddons", "skip", "Foo", "Bar"],
@@ -2749,7 +2786,7 @@ mod tests {
                     addons: strings(&["Foo"]),
                     release: Some("wowace:foo@v2".to_owned()),
                     revision: Some(1402),
-                    version: None,
+                    ..SkipArgs::default()
                 }),
                 while_running: false,
                 intent: StoredIntent::Skip(SkipIntent {
@@ -2759,6 +2796,8 @@ mod tests {
                     revision: Some(1402),
                     version: None,
                     tx: None,
+                    back: false,
+                    to: None,
                     while_running: false,
                 }),
                 display: &[
@@ -2772,6 +2811,60 @@ mod tests {
                     "--revision",
                     "1402",
                 ],
+            },
+            Row {
+                name: "go back from one transaction",
+                args: Args::Skip(SkipArgs {
+                    addons: strings(&["Foo"]),
+                    back: true,
+                    tx: Some("01JB8Q2VA00000000000000001".to_owned()),
+                    ..SkipArgs::default()
+                }),
+                while_running: true,
+                intent: StoredIntent::Skip(SkipIntent {
+                    addons: strings(&["Foo"]),
+                    scope: one("retail", RETAIL),
+                    release: None,
+                    revision: None,
+                    version: None,
+                    tx: Some("01JB8Q2VA00000000000000001".parse().unwrap()),
+                    back: true,
+                    to: None,
+                    while_running: true,
+                }),
+                display: &[
+                    "omaddons",
+                    "skip",
+                    "Foo",
+                    "-t",
+                    "retail",
+                    "--back",
+                    "--tx",
+                    "01JB8Q2VA00000000000000001",
+                    "--while-running",
+                ],
+            },
+            Row {
+                name: "go back to a version by its label",
+                args: Args::Skip(SkipArgs {
+                    addons: strings(&["Foo"]),
+                    back: true,
+                    to: Some("1.2".to_owned()),
+                    ..SkipArgs::default()
+                }),
+                while_running: false,
+                intent: StoredIntent::Skip(SkipIntent {
+                    addons: strings(&["Foo"]),
+                    scope: every(),
+                    release: None,
+                    revision: None,
+                    version: None,
+                    tx: None,
+                    back: true,
+                    to: Some("1.2".to_owned()),
+                    while_running: false,
+                }),
+                display: &["omaddons", "skip", "Foo", "--back", "--to", "1.2"],
             },
             Row {
                 name: "unskip a label",
@@ -2788,6 +2881,8 @@ mod tests {
                     revision: None,
                     version: Some("v2".to_owned()),
                     tx: None,
+                    back: false,
+                    to: None,
                     while_running: false,
                 }),
                 display: &["omaddons", "unskip", "Foo", "-t", "era", "--version", "v2"],
@@ -2806,6 +2901,8 @@ mod tests {
                     revision: None,
                     version: None,
                     tx: Some("01JB8Q2VA00000000000000001".parse().unwrap()),
+                    back: false,
+                    to: None,
                     while_running: false,
                 }),
                 display: &["omaddons", "unskip", "--tx", "01JB8Q2VA00000000000000001"],

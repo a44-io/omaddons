@@ -448,6 +448,17 @@ pub const REQUIRES: &[Requirement] = &[
         long: "revision",
         requires: &["release"],
     },
+    // The transaction a rollback goes back from, or the label it goes back to (RG-34c).
+    Requirement {
+        path: "skip",
+        long: "to",
+        requires: &["back"],
+    },
+    Requirement {
+        path: "skip",
+        long: "tx",
+        requires: &["back"],
+    },
     // A purge's confirmation confirms only a purge (omad-launch-week-fixes-bmcx.2).
     Requirement {
         path: "targets rm",

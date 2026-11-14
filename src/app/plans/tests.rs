@@ -303,6 +303,8 @@ fn records_history_is_false_only_for_backup_prune() {
             revision: None,
             version: None,
             tx: None,
+            back: false,
+            to: None,
             while_running: false,
         }),
         StoredIntent::Unskip(crate::app::intent::SkipIntent {
@@ -312,6 +314,8 @@ fn records_history_is_false_only_for_backup_prune() {
             revision: None,
             version: None,
             tx: None,
+            back: false,
+            to: None,
             while_running: false,
         }),
         StoredIntent::Adopt(AdoptIntent {

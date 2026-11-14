@@ -5026,7 +5026,13 @@ impl TargetPlanner<'_> {
                 folders: summary,
                 // The marks an install keeps or lifts follow from the record (its
                 // generation) and the version asked for, which the token binds already.
-                policy: PolicyDelta::default(),
+                // A rollback's mark is a decision of its own: the token binds it, with
+                // the release it was decided against (design 7.5.6, RG-34c).
+                policy: if intent.rollback.is_some() {
+                    PolicyDelta::between(existing, Some(&template))
+                } else {
+                    PolicyDelta::default()
+                },
             },
             ops,
             release,

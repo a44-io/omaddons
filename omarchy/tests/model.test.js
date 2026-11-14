@@ -730,6 +730,18 @@ describe("classifyCliArgv", () => {
     ], (argv) => reasonOf(() => M.cliArgv(argv, opts({ token: TOKEN }))))
   })
 
+  // RG-34c: the rollback `errors` suggests (`skip --back --tx`) is a CLI argv like any
+  // other: the widget previews it whole, and confirms it only through its plan's apply.
+  test("cliArgv previews a suggested rollback and runs it through apply", () => {
+    const argv = ["omaddons", "skip", "Foo", "--back", "--tx", "01M8Q2VA00000000000000000A", "-t", "retail"]
+    const preview = M.cliArgv(argv, opts({ preview: true })).argv
+    for (const word of argv.slice(1)) expect(preview).toContain(word)
+    expect(preview).toContain("--dry-run")
+    expect(reasonOf(() => M.cliArgv(argv, opts({ token: TOKEN })))).toBe("runs_through_apply")
+    const labelled = ["omaddons", "skip", "Foo", "--back", "--to", "1.2", "-t", "retail"]
+    expect(M.cliArgv(labelled, opts({ preview: true })).argv).toContain("--to")
+  })
+
   test("the argv in real envelopes", () => {
     const attention = M.reduceStatus(fixture("status-attention"))
     const remediation = attention.targets[0].issues[0].remediation

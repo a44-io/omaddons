@@ -14,10 +14,14 @@ Options:
       --release <RELEASE-ID>  Pass over exactly this release, by its id from outdated or list -v
       --revision <N>          With --release: the release's source revision (WowAce)
       --version <VERSION>     Pass over every release whose version reads this (a label mark)
+      --back                  Go back to the release before, and pass over the one it leaves
+      --tx <TX>               With --back: go back from this transaction, as errors suggests
+      --to <VERSION>          With --back: install this earlier version, as its source serves it now
 
 Examples:
   omaddons skip plater -t retail                pass over the release waiting now
   omaddons skip dbm --version 12.2.0 -t retail  every release labelled 12.2.0
+  omaddons skip dbm --back -t retail            go back to the files installed before
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons skip --help <==
@@ -49,6 +53,23 @@ Options:
           
           For a release announced but not seen yet. Takes one addon.
 
+      --back
+          Go back to the release before, and pass over the one it leaves
+          
+          The very files installed then, from the local cache or held to their recorded hash; it
+          never falls back to a label. Takes one addon.
+
+      --tx <TX>
+          With --back: go back from this transaction, as errors suggests
+          
+          Its full id, as history gives it. Without it, the transaction that installed the current
+          release.
+
+      --to <VERSION>
+          With --back: install this earlier version, as its source serves it now
+          
+          Not promised to be the files once installed under that label. Not for url: or file: refs.
+
 Examples:
   omaddons skip Plater -t retail                          pass over the release waiting now
   omaddons skip Plater --release gh:Tercioo/Plater-Nameplates@Plater-v662 -t retail
@@ -58,7 +79,7 @@ Examples:
 A mark holds until unskip clears it, an install names that version, or the addon
 moves to another source. update installs the next release as usual.
 
-See also: unskip, outdated, update
+See also: unskip, outdated, update, undo
 
 Global options:
       --json              One JSON envelope on stdout
