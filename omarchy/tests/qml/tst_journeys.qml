@@ -8,7 +8,7 @@ import "../../Model.js" as Model
 import "../../Build.js" as Build
 import "Fixtures.js" as Fixtures
 
-// Six player journeys through the rebuilt widget end to end (1n2p.41, design doc §1.1),
+// Seven player journeys through the rebuilt widget end to end (1n2p.41, design doc §1.1),
 // on the real Service and frame over envelopes the binary wrote (pipeline step 1), by
 // keys and by mouse, at 540 and at 400 px wide, and by keys again with the text zoomed.
 // Each step asserts what the player sees, in the copy table's words, and what the
@@ -25,6 +25,9 @@ import "Fixtures.js" as Fixtures
 //   J6 an undone update stays away (RG-36): with automatic updates on, the update undone
 //      from History; the next background check starts nothing; Updates shows the release
 //      skipped, and Offer again makes it an update row.
+//   J7 an update broke something (RG-65): the bar asks for attention; Errors, the error's
+//      page and what changed before it; Go back, confirmed in the plan sheet; Updates shows
+//      the release skipped, and Offer again makes it an update row.
 //
 // By mouse (omad-y4f8, after the mouse pass .15), every step clicks the item where it
 // shows (a tab, a row, its button, a page's button, a card's, the chooser's line, the
@@ -87,7 +90,8 @@ TestCase {
   function test_every_journey_at_400_with_the_text_zoomed() {
     var journeys = [function() { journeyBeforeRaid(400, false) }, function() { journeyAfterSession(400, false) },
       function() { journeyFindAndInstall(400, false) }, function() { journeyUndoYesterday(400, false) },
-      function() { journeyFirstRun(400, false) }, function() { journeyUndoneUpdateStaysAway(400, false) }]
+      function() { journeyFirstRun(400, false) }, function() { journeyUndoneUpdateStaysAway(400, false) },
+      function() { journeyUpdateBrokeSomething(400, false) }]
     for (var i = 0; i < journeys.length; i++) {
       cleanup()
       zoom = 1.5
@@ -215,6 +219,20 @@ TestCase {
     laidOut()
     mouseMove(item, item.width / 2 - 6, item.height / 2)
     mouseMove(item, item.width / 2, item.height / 2)
+  }
+
+  // The wheel over the content until `item` shows whole, as a player scrolls to it.
+  function wheelTo(item) {
+    var flick = child("contentFlick")
+    for (var tick = 0; tick < 40; tick++) {
+      laidOut()
+      var at = item.mapToItem(flick, 0, 0)
+      if (at.y >= 0 && at.y + item.height <= flick.height) return
+      var centre = flick.mapToItem(testCase, flick.width / 2, flick.height / 2)
+      mouseWheel(testCase, centre.x, centre.y, 0, at.y < 0 ? 120 : -120)
+      tryVerify(function() { return !flick.moving }, 2000)
+    }
+    fail("the wheel never brought " + item.objectName + " into view")
   }
 
   // Row `i`'s own target: the AddonRow in its delegate.
@@ -571,6 +589,107 @@ TestCase {
   function test_j6_an_undone_update_stays_away_by_keys_400() { journeyUndoneUpdateStaysAway(400, false) }
   function test_j6_an_undone_update_stays_away_by_mouse_540() { journeyUndoneUpdateStaysAway(540, true) }
   function test_j6_an_undone_update_stays_away_by_mouse_400() { journeyUndoneUpdateStaysAway(400, true) }
+
+  // ---- J7 an update broke something (RG-65)
+
+  // The reads of one state of J7's scene: `status`, `errors` and `list`.
+  function rollbackReads(name) {
+    var answers = quiet(name + "-status")
+    answers.errors = the(name + "-errors")
+    answers.list = the(name + "-list")
+    return answers
+  }
+
+  function journeyUpdateBrokeSomething(width, mouse) {
+    var broken = rollbackReads("rollback")
+    begin(width, broken)
+    // The bar asks for attention: new Lua errors since Foo's update.
+    compare([service.bar.state, service.bar.mark], ["attention", "attention"])
+    // Errors: Foo's row says what it came after.
+    if (mouse) click(child("tab_errors"))
+    else keyClick("4")
+    settle(broken)
+    var errors = frame.currentView
+    compare(errors.rows[0].addon, "Foo")
+    verify(errors.rows[0].chips.map(function(c) { return c.text }).indexOf(Model.copy("errors.tag.update")) !== -1,
+      "the row's tag: " + JSON.stringify(errors.rows[0].chips))
+    if (mouse) click(rowTarget(0))
+    else {
+      keyClick("j")
+      keyClick("k")
+      keyClick(Qt.Key_Return)
+    }
+    verify(frame.topPage !== null, "the error page opens")
+    var page = frame.current
+    // The section: what changed before this error, how strongly, and its way back.
+    var list = child("errors", page)
+    var section = null
+    for (var i = 0; i < list.count && !section; i++) {
+      var candidate = findChild(list.itemAt(i), "change")
+      if (candidate && candidate.visible) section = candidate
+    }
+    verify(section !== null, "a linked error's section")
+    compare(child("changeHeading", section).text, Model.copy("errors.change.heading"))
+    compare(child("changeWord", section).text, Model.copy("errors.confidence.high"))
+    noCommandLine(child("changeLine", section).text)
+    var goBack = child("changeButtons", section).itemAt(0)
+    compare(goBack.text, Model.copy("errors.change.action.rollback"))
+    // Go back: the envelope's own argv, previewed, and the plan sheet in its words.
+    var appliedBefore = ran("apply").length
+    if (mouse) {
+      wheelTo(goBack)
+      click(goBack)
+    } else keyClick(Qt.Key_Return)
+    var offered = JSON.parse(Fixtures.text("rollback-errors")).data.targets[0].addons[0].errors
+      .filter(function(e) { return e.after_change && e.after_change.commands.length > 0 })[0].after_change.commands[0]
+    var preview = answerChange("skip", "rollback-preview")
+    verify(preview.command.indexOf("--dry-run") !== -1, "a preview first")
+    compare(words(preview.command), offered.argv.slice(1))
+    var s = sheet()
+    compare(s.title, Model.copy("sheet.title.rollback.one", { "addon": "Foo", "client": Model.sheetClient(service.targets, "retail", "") }))
+    compare(s.confirmLabel, Model.copy("sheet.confirm.rollback.one"))
+    noCommandLine(s.title)
+    compare(ran("apply").length, appliedBefore, "nothing runs before Yes")
+    confirmSheet(mouse)
+    answerChange("apply", "rollback-apply")
+    resultLine()
+    var skipped = rollbackReads("rollback-skipped")
+    settle(skipped)
+    if (frame.topPage !== null) {
+      if (mouse) click(child("backButton"))
+      else keyClick(Qt.Key_Escape)
+    }
+    // Updates: Foo's v2, skipped, with Offer again.
+    if (mouse) click(child("tab_updates"))
+    else keyClick("1")
+    settle(skipped)
+    var updates = frame.currentView
+    compare(updates.rows.map(function(r) { return [r.name, r.kind] }), [["Foo", "skipped"]])
+    compare(updates.rows[0].meta, Model.copy("updates.meta.skipped", { "latest": "v2", "version": "v1" }))
+    // Offer again: previewed, confirmed, applied; Foo's update is offered again.
+    if (mouse) {
+      var target = rowTarget(0)
+      pointAt(target)
+      click(child("action_skip", target))
+    } else {
+      frame.cursor = 0
+      frame.cursorActive = true
+      keyClick("S")
+    }
+    var unskip = answerChange("unskip", "rollback-unskip-preview")
+    compare(words(unskip.command).slice(0, 2), ["unskip", "--release=gh:o/foo@v2"])
+    compare(sheet().title, Model.copy("sheet.title.unskip.one", { "addon": "Foo", "client": Model.sheetClient(service.targets, "retail", "") }))
+    confirmSheet(mouse)
+    answerChange("apply", "rollback-unskip-apply")
+    resultLine()
+    settle(rollbackReads("rollback-offered"))
+    compare(frame.currentView.rows.map(function(r) { return [r.name, r.kind] }), [["Foo", "update"]])
+  }
+
+  function test_j7_an_update_broke_something_by_keys_540() { journeyUpdateBrokeSomething(540, false) }
+  function test_j7_an_update_broke_something_by_keys_400() { journeyUpdateBrokeSomething(400, false) }
+  function test_j7_an_update_broke_something_by_mouse_540() { journeyUpdateBrokeSomething(540, true) }
+  function test_j7_an_update_broke_something_by_mouse_400() { journeyUpdateBrokeSomething(400, true) }
 
   // ---- J5 the first run
 

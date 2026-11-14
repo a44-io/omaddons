@@ -4070,6 +4070,22 @@ describe("previewDecision", () => {
     for (const name of found) expect([name, /\bonDoubleClicked\b|\bdoubleClicked\b/.test(fs.readFileSync(path.join(root, name), "utf8"))]).toEqual([name, false])
   })
 
+  // RG-65: a Repeater's `modelData` is a copy whose arrays are no longer arrays, so an
+  // argv taken from it is one the classifier refuses (`malformed`), and the click does
+  // nothing. A button hands the CLI path its view's own object (`root.x[index]`).
+  test("no runtime file hands a Repeater's modelData to the CLI path", () => {
+    const root = path.join(__dirname, "..")
+    const runtime = ["PanelView.qml", "Service.qml", "BarWidget.qml", "RestoreChooser.qml", "SettingsSheet.qml"]
+      .concat(fs.readdirSync(path.join(root, "views")).map((f) => "views/" + f), fs.readdirSync(path.join(root, "ui")).map((f) => "ui/" + f))
+      .filter((f) => f.endsWith(".qml"))
+    const call = /\b(runCli|runCliArgv|runWayBack|installCapture)\(([^)\n]*)\)/g
+    const handed = (text) => [...text.matchAll(call)].filter((m) => /\bmodelData\b/.test(m[2])).map((m) => m[0])
+    expect(handed('onClicked: root.runCli(modelData, "Fix")')).toEqual(['runCli(modelData, "Fix")'])
+    expect(handed("onClicked: root.installCapture(section.modelData)")).toEqual(["installCapture(section.modelData)"])
+    expect(handed('onClicked: root.runCli(root.lastError.fixes[index], "Fix")')).toEqual([])
+    for (const name of runtime) expect([name, handed(fs.readFileSync(path.join(root, name), "utf8"))]).toEqual([name, []])
+  })
+
   // omad-3rre: an install on every client it works on, one sheet over each client's own
   // preview (the binary's, scene F), and what the applies made of it.
   test("an install on several clients: one sheet, each client's items under its name", () => {

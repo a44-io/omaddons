@@ -200,6 +200,7 @@ Item {
       Column {
         id: error
         required property var modelData
+        required property int index
         width: column.width
         spacing: Style.spacing.xs
 
@@ -343,7 +344,9 @@ Item {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
-                onClicked: root.runWayBack(modelData)
+                // The page's own button, not a Repeater's `modelData`: that copy turns its
+                // argv into a list the classifier refuses (RG-65).
+                onClicked: root.runWayBack(root.page.errors[error.index].change.buttons[index])
               }
             }
           }

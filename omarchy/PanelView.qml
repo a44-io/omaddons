@@ -1405,7 +1405,9 @@ Item {
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: root.runCli(modelData, isFix ? "Fix" : "Fix (alternative)")
+                  // The failure's own fix, not `modelData`: the Repeater's copy turns its
+                  // argv into a list the classifier refuses.
+                  onClicked: root.runCli(root.lastError.fixes[index], isFix ? "Fix" : "Fix (alternative)")
                 }
               }
 
@@ -1526,7 +1528,8 @@ Item {
               foreground: root.foreground
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
-              onClicked: root.runCli(modelData, "Fix")
+              // The result's own fix, not `modelData` (see the failure card's).
+              onClicked: root.runCli(root.lastResult.fixes[index], "Fix")
             }
           }
         }

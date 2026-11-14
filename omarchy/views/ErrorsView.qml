@@ -154,6 +154,7 @@ Item {
       Column {
         id: section
         required property var modelData
+        required property int index
         objectName: "errorSection_" + modelData.target
         width: column.width
         spacing: Style.spacing.sm
@@ -188,7 +189,9 @@ Item {
             ? [{ "name": "install", "text": Model.copy("errors.capture.install") }] : []
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: function(name) { if (name === "install") root.installCapture(section.modelData) }
+          // The view's own section, not `modelData`: that copy turns the action's argv
+          // into a list the classifier refuses.
+          onClicked: function(name) { if (name === "install") root.installCapture(root.sections[section.index]) }
         }
 
         Repeater {

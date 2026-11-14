@@ -87,7 +87,14 @@ TestCase {
 
       // `shown` (what the view showed, for a previewed update) is recorded when given.
       function run(name, slots, label, shown) { runs = runs.concat([shown === undefined ? [name, slots, label] : [name, slots, label, shown]]); return "" }
-      function runCliArgv(argv, label) { cliRuns = cliRuns.concat([[argv, label]]); return "" }
+      // As Service.runCliArgv: the classifier first, which takes a real array only (a
+      // Repeater's `modelData` copy is none).
+      function runCliArgv(argv, label) {
+        var verdict = Model.classifyCliArgv(argv)
+        if (!verdict.ok) return "not a command the widget runs (" + verdict.reason + ")"
+        cliRuns = cliRuns.concat([[argv, label]])
+        return ""
+      }
       function readView(view) { reads = reads.concat([view]) }
       function check() { checks++; return checkAccepted }
       function cancelActivity() { cancels++; return true }

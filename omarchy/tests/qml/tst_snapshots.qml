@@ -1080,6 +1080,61 @@ TestCase {
     shoot("errors-page")
   }
 
+  // RG-65, after an update broke something (journey J7's scene, from the real binary):
+  // Foo's row says what it came after; its page says what changed before the error, how
+  // strongly, and offers Go back; Go back's plan sheet.
+  function rollbackScene() {
+    var scene = everyday()
+    scene.status = the("rollback-status")
+    scene.errors = the("rollback-errors")
+    scene.list = the("rollback-list")
+    return scene
+  }
+
+  function test_errors_after_change() {
+    open(rollbackScene(), "errors")
+    verify(frame.currentView.rows[0].chips.some(function(c) { return c.text === Model.copy("errors.tag.update") }), "the row's tag")
+    frame.cursor = 0
+    frame.cursorActive = true
+    shoot("errors-after-change")
+  }
+
+  // Foo's page, the linked error's section in view, its Go back cursored.
+  function whatChanged(scene) {
+    open(scene, "errors")
+    var errors = frame.currentView
+    errors.openPage(errors.rows[0])
+    var page = findChild(frame, "page").item
+    var list = findChild(page, "errors")
+    for (var i = 0; i < list.count; i++) {
+      var section = findChild(list.itemAt(i), "change")
+      if (section && section.visible) return page
+    }
+    fail("no linked error's section")
+  }
+
+  function test_errors_page_what_changed() {
+    whatChanged(rollbackScene())
+    shoot("errors-page-what-changed")
+  }
+
+  function test_errors_page_what_changed_at_400() {
+    panelWidth = 400
+    whatChanged(rollbackScene())
+    shoot("errors-page-what-changed-400")
+  }
+
+  function test_confirm_go_back() {
+    var scene = rollbackScene()
+    var page = whatChanged(scene)
+    scene.skip = the("rollback-preview")
+    verify(page.handleKey("enter", 0), "Enter runs the first way back")
+    settle(scene)
+    verify(service.confirm !== null, "Go back's plan sheet")
+    compare(service.confirm.sheet.confirmLabel, Model.copy("sheet.confirm.rollback.one"))
+    shoot("confirm-go-back")
+  }
+
   function test_issues_long() {
     var scene = everyday()
     scene.status = statusFrom("status-attention", function(env) {

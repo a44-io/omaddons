@@ -3991,6 +3991,88 @@ fn error_link_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         first(&unknowns, "core.lua:12")["after_change"]["evidence"]["unknowns"],
         json!(["running"])
     );
+
+    // Journey J7 (RG-65), one scene from the regression to the release offered again: the
+    // reads of each state the journey shows (`status`, `errors`, `list`), the rollback the
+    // error page offers, previewed and applied with the widget's flags, then Offer again.
+    use support::{apply_of, planned, preview_of, standard};
+    let s = installed();
+    let old = nil("boss.lua", 3, 5, later());
+    save(&s, &BugDb::new(Writer::Modern, 5).entry(old.clone()));
+    errors(&s).expect(0);
+    s.release("foo", "v2", &[folder("Foo", &[])]);
+    s.ok(&["update", "-t", "retail", "--refresh"]);
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6)
+            .entry(old)
+            .entry(nil("core.lua", 12, 6, later()).counter(7)),
+    );
+    let reads = |name: &str| -> (Value, Value) {
+        write_fixture(
+            dir,
+            &format!("{name}-status"),
+            &s.home.exec(&fill(t, "status_full", &[])),
+            0,
+        );
+        let errors = write_fixture(dir, &format!("{name}-errors"), &errors(&s), 0);
+        let list = write_fixture(
+            dir,
+            &format!("{name}-list"),
+            &s.home.exec(&fill(t, "list", &[])),
+            0,
+        );
+        (errors, list)
+    };
+    let latest = |list: &Value| list["data"]["targets"][0]["addons"][0]["latest"].clone();
+    let (linked, _) = reads("rollback");
+    let mut back = standard(true);
+    back.extend(
+        first(&linked, "core.lua:12")["after_change"]["commands"][0]["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .skip(1)
+            .map(|w| w.as_str().unwrap().to_owned()),
+    );
+    assert_eq!(back[standard(true).len()..][..3], ["skip", "Foo", "--back"]);
+    let preview = write_fixture(dir, "rollback-preview", &s.home.exec(&preview_of(back)), 0);
+    let applied = write_fixture(
+        dir,
+        "rollback-apply",
+        &s.home.exec(&apply_of(&planned(&preview))),
+        0,
+    );
+    assert_eq!(
+        applied["data"]["outcomes"][0]["status"], "committed",
+        "{applied}"
+    );
+    let (_, list) = reads("rollback-skipped");
+    assert_eq!(
+        (&latest(&list)["status"], &latest(&list)["release_id"]),
+        (&json!("skipped_release"), &json!("gh:o/foo@v2")),
+        "{list}"
+    );
+    let release = [
+        ("target", "retail"),
+        ("addon", "Foo"),
+        ("release_id", "gh:o/foo@v2"),
+    ];
+    let offer = write_fixture(
+        dir,
+        "rollback-unskip-preview",
+        &s.home
+            .exec(&preview_of(fill(t, "unskip_release", &release))),
+        0,
+    );
+    write_fixture(
+        dir,
+        "rollback-unskip-apply",
+        &s.home.exec(&apply_of(&planned(&offer))),
+        0,
+    );
+    let (_, list) = reads("rollback-offered");
+    assert_eq!(latest(&list)["status"], "update_available", "{list}");
 }
 
 /// An addon page's Versions (1n2p.24), from the real binary, for the bun cases and
