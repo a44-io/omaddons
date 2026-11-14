@@ -816,6 +816,30 @@ TestCase {
     shoot("updates-short")
   }
 
+  // After an undo (RG-36): the release it left, skipped, its row cursored with Offer again.
+  function test_updates_skipped() {
+    var scene = { "status": the("skip-undone-status"), "list": the("skip-undone-list"), "errors": the("errors"),
+      "backups": the("backups"), "history": the("skip-history") }
+    open(scene, "updates")
+    compare(frame.currentView.rows.map(function(r) { return r.kind }), ["skipped"])
+    frame.cursor = 0
+    frame.cursorActive = true
+    shoot("updates-skipped")
+  }
+
+  // Offer again's plan sheet (RG-36): the release offered again, named.
+  function test_confirm_offer_again() {
+    var scene = { "status": the("skip-undone-status"), "list": the("skip-undone-list"), "errors": the("errors"),
+      "backups": the("backups"), "history": the("skip-history") }
+    open(scene, "updates")
+    scene.unskip = the("skip-unskip-preview")
+    var offer = Model.rowAction(frame.currentView.rows[0], "skip")
+    compare(service.run(offer.template, offer.slots, offer.label), "")
+    settle(scene)
+    verify(service.confirm !== null, "Offer again's plan sheet")
+    shoot("confirm-offer-again")
+  }
+
   // The frame (design doc §2.1) at the minimum width: glyph tabs, the view named in the
   // content, one part of the meta line, no detail.
   function test_frame_at_400() {

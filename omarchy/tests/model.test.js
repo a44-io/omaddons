@@ -391,6 +391,8 @@ const BENIGN = {
   name: "My main",
   version: "v12.1.0-beta.2",
   channel: "beta",
+  release_id: "wowace:bug-grabber@v12.1.1",
+  revision: "1402",
 }
 
 // What a template needs beyond its slots to build: a planned template builds as its
@@ -413,7 +415,7 @@ function withInput(name, extra) {
 }
 
 // The templates whose real run is refused: they run as their preview, then apply.
-const PREVIEWED = ["adopt_target", "install", "install_version", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "sync_all", "sync_target", "undo_run", "undo_run_target", "update_addon", "update_all", "update_channel", "update_target"]
+const PREVIEWED = ["adopt_target", "install", "install_version", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "skip_release", "skip_release_rev", "sync_all", "sync_target", "undo_run", "undo_run_target", "unskip_release", "unskip_release_rev", "update_addon", "update_all", "update_channel", "update_target"]
 // The templates bound to their preview's token (G2): their real run needs it.
 const BOUND_PREVIEWS = ["doctor_fix", "doctor_fix_target"]
 
@@ -537,6 +539,16 @@ describe("buildArgv", () => {
           for (const value of HOSTILE) {
             const slots = Object.assign(benignSlots(name), { [slot]: value })
             expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_" + slot])
+          }
+          continue
+        }
+        // A release id and a revision have their own grammars (`<ref>@<tag>` and a u32's
+        // digits: Skip this release and Offer again, RG-36): every hostile value is refused.
+        if (slot === "release_id" || slot === "revision") {
+          for (const value of HOSTILE) {
+            const slots = Object.assign(benignSlots(name), { [slot]: value })
+            const reason = slot === "release_id" ? "bad_release" : "bad_revision"
+            expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, reason])
           }
           continue
         }
@@ -1653,7 +1665,7 @@ describe("the key map", () => {
     expect(titles("installed")).toEqual(["Addons", "Filter box", "Every view", "Anywhere", "Dialog"])
     expect(titles("card")).toEqual(["Problem card", "Anywhere", "Dialog"])
     const updates = M.helpSections("updates")[0]
-    expect(updates.rows.map((r) => r.hint)).toEqual(["Enter", "u", "p", "e", "/"])
+    expect(updates.rows.map((r) => r.hint)).toEqual(["Enter", "u", "p", "e", "S", "/"])
     expect(updates.rows[0]).toEqual({ hint: "Enter", label: "open the addon's page" })
     // Every row of those contexts, once.
     const listed = M.helpSections("installed").flatMap((s) => s.rows).length
@@ -2091,21 +2103,67 @@ describe("the Updates and Installed views", () => {
     addons.push(Object.assign({}, addons[0], { name: "Zed", latest: { version: "v9", status: "blocked" } }))
     addons.push(Object.assign({}, addons[0], { name: "Aaa", latest: { version: null, status: "failed" } }))
     addons.push(Object.assign({}, addons[0], { name: "Old", pinned: true, latest: { version: "v1", status: "pinned" } }))
+    addons.push(Object.assign({}, addons[0], { name: "Mid", pinned: false,
+      latest: { version: "v9", status: "skipped_release", release_id: "gh:o/mid@v9", revision: null } }))
     const running = JSON.parse(JSON.stringify(fixture("status-running")))
     const rows = M.updateRows(M.reduceList(env), "retail", M.reduceStatus(running, NOW).targets)
     expect(rows.map((r) => [r.name, r.kind, r.meta])).toEqual([
       ["Bar", "update", "Retail is running"], ["Foo", "update", "Retail is running"],
       ["Baz", "pinned", "pinned at " + rows[2].version + " · " + rows[2].latest + " available"],
+      ["Mid", "skipped", "Skipped v9 · " + rows[3].version + " stays until the next release"],
       ["Zed", "blocked", "v9 is out, but it doesn't load on Retail"],
       ["Aaa", "failed", "Couldn't check GitHub for a new release"]])
     expect(rows.every((r) => r.reload)).toBe(true)
     // A glyph and a band per kind; a failed check offers Check again, never Update.
     expect(rows.map((r) => [r.kind, r.band, r.glyph > 0])).toEqual([["update", "accent", true], ["update", "accent", true],
-      ["pinned", "", true], ["blocked", "", true], ["failed", "urgent", true]])
-    expect(rows[0].actions.map((a) => a.name)).toEqual(["update", "notes", "pin"])
-    expect(rows[4].actions.map((a) => a.name)).toEqual(["check"])
-    expect(rows[4].actions[0].tooltip).toBe("Check again (c)")
+      ["pinned", "", true], ["skipped", "", true], ["blocked", "", true], ["failed", "urgent", true]])
+    // An update row offers Skip this release; a skipped one Offer again, on the same key.
+    expect(rows[0].actions.map((a) => a.name)).toEqual(["update", "notes", "pin", "skip"])
+    expect(rows[0].actions[3].tooltip).toBe("Skip this release (S)")
+    // Offer again first: a narrow row shows only its first action.
+    expect(rows[3].actions.map((a) => [a.name, a.tooltip])).toEqual([["skip", "Offer again (S)"], ["notes", "Release notes (e)"],
+      ["pin", "Pin (p)"]])
+    expect(rows[5].actions.map((a) => a.name)).toEqual(["check"])
+    expect(rows[5].actions[0].tooltip).toBe("Check again (c)")
     expect([rows[0].fromVersion, rows[0].toVersion, rows[2].toVersion]).toEqual([rows[0].version, rows[0].latest, ""])
+  })
+
+  test("Skip this release and Offer again name the row's release exactly, or offer nothing", () => {
+    const row = (kind, releaseId, revision) => ({ "kind": kind, "target": "retail", "name": "BugGrabber", "latest": "v12.1.1",
+      "latestReleaseId": releaseId, "latestRevision": revision })
+    const id = "wowace:bug-grabber@v12.1.1"
+    const cases = [
+      ["an update without a revision", row("update", "gh:o/foo@v2", null), "skip_release",
+        { target: "retail", addon: "BugGrabber", release_id: "gh:o/foo@v2" }],
+      ["an update with one", row("update", id, 1402), "skip_release_rev",
+        { target: "retail", addon: "BugGrabber", release_id: id, revision: "1402" }],
+      ["a skipped release without a revision", row("skipped", "gh:o/foo@v2", null), "unskip_release",
+        { target: "retail", addon: "BugGrabber", release_id: "gh:o/foo@v2" }],
+      ["a skipped release with one", row("skipped", id, 1402), "unskip_release_rev",
+        { target: "retail", addon: "BugGrabber", release_id: id, revision: "1402" }],
+      ["no release id", row("update", null, null), null, null],
+      ["an id that is no release", row("update", "v2", null), null, null],
+      ["an id with a space", row("update", "gh:o/foo@v 2", null), null, null],
+      ["a revision that is no number", row("skipped", id, "1402"), null, null],
+      ["a revision past a u32", row("skipped", id, 4294967296), null, null],
+      ["a pinned row", row("pinned", id, 1402), null, null],
+    ]
+    for (const [name, r, template, slots] of cases) {
+      const action = M.rowAction(r, "skip")
+      expect([name, action ? action.template : null, action ? action.slots : null]).toEqual([name, template, slots])
+      if (!action) continue
+      // The action builds: every slot passes its grammar, and the release is one element.
+      const argv = M.buildArgv(action.template, action.slots, opts({ label: action.label, preview: true })).argv
+      expect([name, argv.filter((a) => a.startsWith("--release=") || a.startsWith("--revision="))]).toEqual([name,
+        ["--release=" + slots.release_id].concat(slots.revision ? ["--revision=" + slots.revision] : [])])
+    }
+    // A row that cannot be named exactly shows no Skip action at all.
+    const env = JSON.parse(JSON.stringify(fixture("list-markers")))
+    const waiting = env.data.targets[0].addons.find((a) => a.latest && a.latest.status === "update_available") // ubs:ignore — a release's update status, no secret
+    waiting.latest.release_id = "not a release"
+    const rows = M.updateRows(M.reduceList(env), "retail", [])
+    const shown = rows.find((r) => r.name === waiting.name)
+    expect([shown.kind, shown.actions.map((a) => a.name)]).toEqual(["update", ["update", "notes", "pin"]])
   })
 
   test("updates are ordered by kind, then by name; a filter keeps its matches", () => {
@@ -5255,9 +5313,10 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
     for (const slot of M.templateShape(name).slots) {
       // A hostile failure-mode id is refused (`bad_fm`, buildArgv's table above), and so
       // are a hostile run id (`bad_run`), setting value (`bad_setting`), version
-      // (`bad_version`) and channel (`bad_channel`); a hostile client folder too, unless it
-      // is absolute: those are parsed by clap.
-      if (["target", "fm", "run", "value", "version", "channel"].indexOf(slot) !== -1) continue
+      // (`bad_version`), channel (`bad_channel`), release id (`bad_release`) and revision
+      // (`bad_revision`); a hostile client folder too, unless it is absolute: those are
+      // parsed by clap.
+      if (["target", "fm", "run", "value", "version", "channel", "release_id", "revision"].indexOf(slot) !== -1) continue
       if (slot === "path") {
         for (const value of HOSTILE) record(name, Object.assign({}, base, { path: "/" + value }), extra)
         continue
@@ -6376,5 +6435,63 @@ describe("the Search view's catalog", () => {
     expect([shown.state, shown.refreshing, shown.notices, shown.sentence]).toEqual(["rows", false, [], ""])
     const none = M.viewState("search", { service, filter: "", query: "", rows: 0, nowMs: NOW })
     expect([none.state, none.sentence]).toEqual(["empty", "Type a name, or paste a link from GitHub, WoWInterface, Tukui or WowAce."])
+  })
+})
+
+// ---------------------------------------------------------------- skipped releases (RG-36)
+
+describe("skipped releases (RG-36)", () => {
+  test("after an undo, the release it left is a skipped row, never an update", () => {
+    const lists = M.reduceList(fixture("skip-undone-list"))
+    const foo = lists.targets[0].addons[0]
+    expect([foo.status, foo.skipped, foo.updateAvailable, foo.latest, foo.latestReleaseId, foo.latestRevision, foo.skippedReleases])
+      .toEqual(["skipped_release", true, false, "v2", "gh:o/foo@v2", null, [{ version: "v2", origin: "undo" }]])
+    const status = M.reduceStatus(fixture("skip-undone-status"), NOW)
+    expect([status.targets[0].updates.available, status.targets[0].updates.skipped]).toEqual([0, 1])
+    const rows = M.updateRows(lists, "retail", status.targets)
+    expect(rows.map((r) => [r.name, r.kind, r.meta])).toEqual([["Foo", "skipped", "Skipped v2 · v1 stays until the next release"]])
+    expect(M.rowAction(rows[0], "skip")).toEqual({ template: "unskip_release", label: "Offer Foo v2 again",
+      slots: { target: "retail", addon: "Foo", release_id: "gh:o/foo@v2" } })
+  })
+
+  test("offered again, it is an update row whose Skip names the same release", () => {
+    const status = M.reduceStatus(fixture("skip-offered-status"), NOW)
+    expect([status.targets[0].updates.available, status.targets[0].updates.skipped]).toEqual([1, 0])
+    const rows = M.updateRows(M.reduceList(fixture("skip-offered-list")), "retail", status.targets)
+    expect(rows.map((r) => [r.name, r.kind])).toEqual([["Foo", "update"]])
+    expect(M.rowAction(rows[0], "skip")).toEqual({ template: "skip_release", label: "Skip Foo v2",
+      slots: { target: "retail", addon: "Foo", release_id: "gh:o/foo@v2" } })
+    // Skipped by hand, the mark says so.
+    const skipped = M.reduceList(fixture("skip-skipped-list")).targets[0].addons[0]
+    expect([skipped.skipped, skipped.skippedReleases]).toEqual([true, [{ version: "v2", origin: "manual" }]])
+  })
+
+  test("a re-tag's row names its revision, and its Skip takes it", () => {
+    const rows = M.updateRows(M.reduceList(fixture("skip-rev-list")), "retail", [])
+    expect(rows.map((r) => [r.kind, r.latestReleaseId, r.latestRevision])).toEqual([["update", "wowace:bug-grabber@v12.1.1", 1402]])
+    const action = M.rowAction(rows[0], "skip")
+    expect([action.template, action.slots.release_id, action.slots.revision])
+      .toEqual(["skip_release_rev", "wowace:bug-grabber@v12.1.1", "1402"])
+    const decision = M.previewDecision({ mode: "confirm", path: "skip", context: CONTEXT, targets: [] }, fixture("skip-rev-skip-preview"))
+    expect([decision.kind, decision.sheet.items.map((i) => i.detail)]).toEqual(["dialog", ["v12.1.1 (skipped)"]])
+  })
+
+  test("the plan sheets say which release is skipped or offered again, and run its plan", () => {
+    const targets = M.reduceStatus(fixture("skip-undone-status"), NOW).targets
+    const sheetOf = (path, name) => {
+      const env = fixture(name)
+      const decision = M.previewDecision({ mode: "confirm", path: path, context: CONTEXT, targets: targets }, env)
+      // Always the sheet, never applied with no question; its Yes is the preview's plan.
+      expect([name, decision.kind, decision.plan.planId]).toEqual([name, "dialog", env.data.plan_id])
+      return decision.sheet
+    }
+    const skip = sheetOf("skip", "skip-skip-preview")
+    expect([skip.title, skip.items.map((i) => i.text), skip.confirmLabel])
+      .toEqual(["Skip this release of Foo on Retail?", ["Foo v2 (skipped)"], "Skip it"])
+    const offer = sheetOf("unskip", "skip-unskip-preview")
+    expect([offer.title, offer.items.map((i) => i.text), offer.confirmLabel])
+      .toEqual(["Offer Foo's skipped release again on Retail?", ["Foo v2 (offered again)"], "Offer again"])
+    // No sheet ever shows a command line.
+    for (const s of [skip, offer]) expect(M.dialogText(s)).not.toMatch(/omaddons |--/)
   })
 })

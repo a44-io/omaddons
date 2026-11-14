@@ -93,6 +93,12 @@ Item {
       if (row && row.kind !== "failed" && row.kind !== "done") run(Model.rowAction(row, "pin"))
       return true
     }
+    // `S`: Skip this release on an update row, Offer again on a skipped one (RG-36),
+    // each previewed in the plan sheet.
+    if (name === "skip") {
+      if (row && (row.kind === "update" || row.kind === "skipped")) run(Model.rowAction(row, "skip"))
+      return true
+    }
     if (name === "notes") {
       if (row && row.kind !== "failed" && row.kind !== "done") toggleNotes(row)
       return true

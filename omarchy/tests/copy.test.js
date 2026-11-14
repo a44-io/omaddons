@@ -27,7 +27,7 @@ const DYNAMIC_PREFIXES = [
   "settings.family.", "settings.github.state.", "settings.omaddons.", "settings.panel.",
   "share.group.", "share.item.failed.", "share.paste.", "share.paste.invalid.",
   "sheet.adopt.identified.", "sheet.adopt.why.",
-  "sheet.change.", "sheet.confirm.", "sheet.title.", "source.", "stale.changed.", "stale.repair.",
+  "sheet.change.", "sheet.confirm.", "sheet.item.", "sheet.title.", "source.", "stale.changed.", "stale.repair.",
   "state.action.", "state.failed.", "state.loading.", "state.notice.skipped.", "state.what.",
   "updates.kind."
 ]

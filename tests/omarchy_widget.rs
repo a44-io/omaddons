@@ -376,12 +376,37 @@ fn every_template_is_a_registry_command_with_safe_slots() {
             assert!(part.ends_with('}'), "{name}: malformed slot {part}");
             assert!(
                 [
-                    "target", "addon", "ref", "backup", "query", "fm", "path", "run", "value",
-                    "name", "version", "channel"
+                    "target",
+                    "addon",
+                    "ref",
+                    "backup",
+                    "query",
+                    "fm",
+                    "path",
+                    "run",
+                    "value",
+                    "name",
+                    "version",
+                    "channel",
+                    "release_id",
+                    "revision"
                 ]
                 .contains(&slot),
                 "{name}: unknown slot {part}"
             );
+            // A release (RG-36) is `skip --release=` or `unskip --release=` and its revision
+            // their `--revision=`: Skip this release and Offer again, nothing else's.
+            if slot == "release_id" || slot == "revision" {
+                let flag = if slot == "release_id" {
+                    "--release"
+                } else {
+                    "--revision"
+                };
+                assert!(
+                    *part == format!("{flag}={{{slot}}}") && (path == "skip" || path == "unskip"),
+                    "{name}: {{{slot}}} outside {flag} on skip or unskip ({part} on {path})"
+                );
+            }
             // A release's version (an addon page's Versions, 1n2p.24) is `install
             // --version=`, which pins it; nothing else's.
             if slot == "version" {
@@ -3448,6 +3473,198 @@ fn history_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     assert_eq!(committed, ["committed", "committed"], "{applied}");
 }
 
+/// RG-36: a release that was left, as the panel meets it (journey J6, the Updates view's
+/// Skip this release and Offer again). Foo v1 on retail with v2 out: the automatic
+/// update's preview applied, History and the update's undo (previewed, applied), the
+/// reads after it (v2 skipped: no update to take), Offer again (previewed, applied) and
+/// the reads after it (an update row again), then Skip this release from there; and a
+/// WowAce re-tag, whose row names its revision.
+#[cfg(test)]
+fn skip_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use support::{apply_of, planned, preview_of};
+
+    let log = tlog!();
+    log.step("Foo v1 on retail, v2 out; the automatic update takes it");
+    let mut home = Home::new(&["wow"]);
+    log.env(&home);
+    let (old, new) = (Rel::new("Foo", "v1"), Rel::new("Foo", "v2"));
+    home.installed_behind(
+        support::FOO,
+        ("v1", &old.assets()),
+        ("v2", &new.assets()),
+        &["retail"],
+    );
+    // The reads of one state: `status` (with its scan, so `--cached` would read the same),
+    // `list -v` and the background check. Returns the list.
+    let reads = |name: &str| -> Value {
+        write_fixture(
+            dir,
+            &format!("{name}-status"),
+            &home.exec(&fill(t, "status_full", &[])),
+            0,
+        );
+        write_fixture(
+            dir,
+            &format!("{name}-check"),
+            &home.exec(&fill(t, "check", &[])),
+            0,
+        );
+        write_fixture(
+            dir,
+            &format!("{name}-list"),
+            &home.exec(&fill(t, "list", &[])),
+            0,
+        )
+    };
+    let foo = |list: &Value| list["data"]["targets"][0]["addons"][0]["latest"].clone();
+    home.exec(&fill(t, "check", &[])).expect(0);
+    let update = home.exec(&preview_of(fill(t, "update_all", &[]))).expect(0);
+    home.exec(&apply_of(&planned(&update))).expect(0);
+    let list = reads("skip-updated");
+    log.assert_eq(
+        "v2 installed",
+        &foo(&list)["status"],
+        &serde_json::json!("current"),
+    );
+
+    log.step("History, and the update's undo");
+    let read = home.exec(&fill(t, "history", &[]));
+    let history = write_fixture(dir, "skip-history", &read, 0);
+    pin_history_times(dir, "skip-history", &read.stdout, HISTORY_NEWEST_AT);
+    let run = history["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "update")
+        .and_then(|e| e["run"].as_str())
+        .unwrap()
+        .to_owned();
+    let undo = write_fixture(
+        dir,
+        "skip-undo-preview",
+        &home.exec(&preview_of(fill(t, "undo_run", &[("run", &run)]))),
+        0,
+    );
+    let applied = write_fixture(
+        dir,
+        "skip-undo-apply",
+        &home.exec(&apply_of(&planned(&undo))),
+        0,
+    );
+    assert_eq!(
+        applied["data"]["outcomes"][0]["status"], "committed",
+        "{applied}"
+    );
+
+    log.step("after the undo: v2 is skipped, and no update is waiting");
+    let list = reads("skip-undone");
+    log.assert_eq(
+        "skipped",
+        &(&foo(&list)["status"], &foo(&list)["release_id"]),
+        &(
+            &serde_json::json!("skipped_release"),
+            &serde_json::json!("gh:o/foo@v2"),
+        ),
+    );
+    let status: Value =
+        serde_json::from_slice(&fs::read(dir.join("skip-undone-status.json")).unwrap()).unwrap();
+    let updates = &status["data"]["targets"][0]["updates"];
+    log.assert_eq(
+        "available, skipped",
+        &(&updates["available"], &updates["skipped"]),
+        &(&serde_json::json!(0), &serde_json::json!(1)),
+    );
+
+    let release = [
+        ("target", "retail"),
+        ("addon", "Foo"),
+        ("release_id", "gh:o/foo@v2"),
+    ];
+    log.step("Offer again: previewed, applied");
+    let offer = write_fixture(
+        dir,
+        "skip-unskip-preview",
+        &home.exec(&preview_of(fill(t, "unskip_release", &release))),
+        0,
+    );
+    write_fixture(
+        dir,
+        "skip-unskip-apply",
+        &home.exec(&apply_of(&planned(&offer))),
+        0,
+    );
+    let list = reads("skip-offered");
+    log.assert_eq(
+        "an update again",
+        &foo(&list)["status"],
+        &serde_json::json!("update_available"),
+    );
+
+    log.step("Skip this release: previewed, applied");
+    let skip = write_fixture(
+        dir,
+        "skip-skip-preview",
+        &home.exec(&preview_of(fill(t, "skip_release", &release))),
+        0,
+    );
+    write_fixture(
+        dir,
+        "skip-skip-apply",
+        &home.exec(&apply_of(&planned(&skip))),
+        0,
+    );
+    let list = write_fixture(
+        dir,
+        "skip-skipped-list",
+        &home.exec(&fill(t, "list", &[])),
+        0,
+    );
+    log.assert_eq(
+        "skipped by hand",
+        &list["data"]["targets"][0]["addons"][0]["skipped_releases"][0]["origin"],
+        &serde_json::json!("manual"),
+    );
+
+    log.step("a WowAce re-tag: its row names revision 1402");
+    let mut ace = Home::new(&["wow"]);
+    log.env(&ace);
+    common::wowace::serve_recorded(&ace);
+    common::wowace::tag_at(&ace.http, 1390);
+    ace.run(&["install", "wowace:bug-grabber", "-t", "retail"])
+        .expect(0);
+    let retag = ace.scenario("revision-1402");
+    common::wowace::serve_recorded(&ace);
+    common::wowace::tag_at(&retag, 1402);
+    common::binding::age_release_memo(&ace, jiff::SignedDuration::from_hours(24));
+    ace.exec(&fill(t, "check", &[])).expect(0);
+    let list = write_fixture(dir, "skip-rev-list", &ace.exec(&fill(t, "list", &[])), 0);
+    let addon = &list["data"]["targets"][0]["addons"][0];
+    log.assert_eq(
+        "the re-tag's release and revision",
+        &(&addon["latest"]["release_id"], &addon["latest"]["revision"]),
+        &(
+            &serde_json::json!("wowace:bug-grabber@v12.1.1"),
+            &serde_json::json!(1402),
+        ),
+    );
+    let name = addon["name"].as_str().unwrap().to_owned();
+    write_fixture(
+        dir,
+        "skip-rev-skip-preview",
+        &ace.exec(&preview_of(fill(
+            t,
+            "skip_release_rev",
+            &[
+                ("target", "retail"),
+                ("addon", &name),
+                ("release_id", "wowace:bug-grabber@v12.1.1"),
+                ("revision", "1402"),
+            ],
+        ))),
+        0,
+    );
+}
+
 /// Where the `history` fixture's newest change sits: midday UTC, far from any midnight
 /// its tests' clock (half an hour later, in UTC) could cross.
 #[cfg(test)]
@@ -3981,6 +4198,7 @@ fn write_widget_fixtures() {
     settings_fixtures(&dir, &t);
     versions_fixtures(&dir, &t);
     share_fixtures(&dir, &t);
+    skip_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

@@ -8,7 +8,7 @@ import "../../Model.js" as Model
 import "../../Build.js" as Build
 import "Fixtures.js" as Fixtures
 
-// Five player journeys through the rebuilt widget end to end (1n2p.41, design doc §1.1),
+// Six player journeys through the rebuilt widget end to end (1n2p.41, design doc §1.1),
 // on the real Service and frame over envelopes the binary wrote (pipeline step 1), by
 // keys and by mouse, at 540 and at 400 px wide, and by keys again with the text zoomed.
 // Each step asserts what the player sees, in the copy table's words, and what the
@@ -22,6 +22,9 @@ import "Fixtures.js" as Fixtures
 //   J4 undo yesterday: History, the change's page, its undo previewed and applied.
 //   J5 the first run: the welcome card, a client added by its folder, its addons taken
 //      over, BugGrabber offered.
+//   J6 an undone update stays away (RG-36): with automatic updates on, the update undone
+//      from History; the next background check starts nothing; Updates shows the release
+//      skipped, and Offer again makes it an update row.
 //
 // By mouse (omad-y4f8, after the mouse pass .15), every step clicks the item where it
 // shows (a tab, a row, its button, a page's button, a card's, the chooser's line, the
@@ -84,7 +87,7 @@ TestCase {
   function test_every_journey_at_400_with_the_text_zoomed() {
     var journeys = [function() { journeyBeforeRaid(400, false) }, function() { journeyAfterSession(400, false) },
       function() { journeyFindAndInstall(400, false) }, function() { journeyUndoYesterday(400, false) },
-      function() { journeyFirstRun(400, false) }]
+      function() { journeyFirstRun(400, false) }, function() { journeyUndoneUpdateStaysAway(400, false) }]
     for (var i = 0; i < journeys.length; i++) {
       cleanup()
       zoom = 1.5
@@ -485,6 +488,89 @@ TestCase {
   function test_j4_undo_yesterday_by_keys_400() { journeyUndoYesterday(400, false) }
   function test_j4_undo_yesterday_by_mouse_540() { journeyUndoYesterday(540, true) }
   function test_j4_undo_yesterday_by_mouse_400() { journeyUndoYesterday(400, true) }
+
+  // ---- J6 an undone update stays away (RG-36)
+
+  function journeyUndoneUpdateStaysAway(width, mouse) {
+    // Automatic updates are on, and the automatic update took Foo v2.
+    var updated = quiet("skip-updated-status")
+    updated.list = the("skip-updated-list")
+    updated.history = the("skip-history")
+    begin(width, updated)
+    service.applySettings({ "autoUpdate": "On" })
+    // History: the change, its page, and its undo, previewed in the plan sheet.
+    if (mouse) click(child("tab_history"))
+    else keyClick("7")
+    settle(updated)
+    var history = frame.currentView
+    var at = -1
+    for (var i = 0; i < history.rows.length; i++) if (history.rows[i].undo) { at = i; break }
+    verify(at >= 0, "the update can be undone")
+    if (mouse) click(rowTarget(at))
+    else {
+      frame.cursor = at
+      frame.cursorActive = true
+      keyClick(Qt.Key_Return)
+    }
+    if (mouse) click(child("pageUndo_0", frame.current))
+    else keySequence("Ctrl+Z")
+    answerChange("undo", "skip-undo-preview")
+    noCommandLine(sheet().title)
+    confirmSheet(mouse)
+    answerChange("apply", "skip-undo-apply")
+    resultLine()
+    var undone = quiet("skip-undone-status")
+    undone.list = the("skip-undone-list")
+    undone.history = the("skip-history")
+    settle(undone)
+    // The next background check: no update is waiting, so the automatic update starts
+    // nothing (gap 2 fixed on the widget's own path).
+    var updatesBefore = ran("update").length
+    service.request({ "resource": "check", "template": "check", "lane": "network", "priority": "background",
+      "label": "Automatic update check" })
+    answerChange("outdated", "skip-undone-check")
+    settle(undone)
+    compare(ran("update").length, updatesBefore, "no automatic update: " + launchLog())
+    compare([service.autoUpdateStage, service.confirm], ["", null])
+    // The Updates view: Foo's v2, skipped, with Offer again.
+    if (mouse) click(child("tab_updates"))
+    else keyClick("1")
+    settle(undone)
+    var updates = frame.currentView
+    compare(updates.rows.map(function(r) { return [r.name, r.kind] }), [["Foo", "skipped"]])
+    compare(updates.rows[0].meta, Model.copy("updates.meta.skipped", { "latest": "v2", "version": "v1" }))
+    noCommandLine(updates.rows[0].meta)
+    // Offer again: previewed, confirmed in the plan sheet, applied.
+    var appliedBefore = ran("apply").length
+    if (mouse) {
+      var target = rowTarget(0)
+      pointAt(target)
+      click(child("action_skip", target))
+    } else {
+      frame.cursor = 0
+      frame.cursorActive = true
+      keyClick("S")
+    }
+    var preview = answerChange("unskip", "skip-unskip-preview")
+    verify(preview.command.indexOf("--dry-run") !== -1, "a preview first")
+    compare(words(preview.command).slice(0, 2), ["unskip", "--release=gh:o/foo@v2"])
+    var s = sheet()
+    compare(s.title, Model.copy("sheet.title.unskip.one", { "addon": "Foo", "client": Model.sheetClient(service.targets, "retail", "") }))
+    compare(ran("apply").length, appliedBefore, "nothing runs before Yes")
+    confirmSheet(mouse)
+    answerChange("apply", "skip-unskip-apply")
+    resultLine()
+    var offered = quiet("skip-offered-status")
+    offered.list = the("skip-offered-list")
+    settle(offered)
+    // An update row again, with its Update.
+    compare(frame.currentView.rows.map(function(r) { return [r.name, r.kind] }), [["Foo", "update"]])
+  }
+
+  function test_j6_an_undone_update_stays_away_by_keys_540() { journeyUndoneUpdateStaysAway(540, false) }
+  function test_j6_an_undone_update_stays_away_by_keys_400() { journeyUndoneUpdateStaysAway(400, false) }
+  function test_j6_an_undone_update_stays_away_by_mouse_540() { journeyUndoneUpdateStaysAway(540, true) }
+  function test_j6_an_undone_update_stays_away_by_mouse_400() { journeyUndoneUpdateStaysAway(400, true) }
 
   // ---- J5 the first run
 

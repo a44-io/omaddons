@@ -374,7 +374,10 @@ var WIDGET_PASTE_DEADLINE_MS = 3000
 // addon set (1n2p.37): `export_*` read the set to copy (export without `--write` writes
 // nothing, so they are reads), and `sync_*` preview a pasted list, which they take on
 // standard input (`stdin: "list"`, checked by pastedList) and only as that preview: Yes
-// applies its plan, which holds the text.
+// applies its plan, which holds the text. RG-36 adds `skip_release` and `unskip_release`
+// (the Updates view's Skip this release and Offer again), each with a `_rev` form for a
+// release whose source numbers revisions: confirmed previews that name the row's release
+// by its id (`{release_id}`) and revision (`{revision}`), never a version label.
 var COMMANDS = {
   "status":         { "argv": ["status", "--cached", "-v"],                         "mutates": false, "lane": "local" },
   "status_full":    { "argv": ["status", "-v"],                                     "mutates": false, "lane": "local" },
@@ -391,6 +394,10 @@ var COMMANDS = {
   "remove":         { "argv": ["remove", "-t", "{target}", "--", "{addon}"],        "mutates": true, "preview": "confirm" },
   "pin":            { "argv": ["pin", "-t", "{target}", "--", "{addon}"],           "mutates": true },
   "unpin":          { "argv": ["unpin", "-t", "{target}", "--", "{addon}"],         "mutates": true },
+  "skip_release":   { "argv": ["skip", "--release={release_id}", "-t", "{target}", "--", "{addon}"], "mutates": true, "preview": "confirm" },
+  "skip_release_rev": { "argv": ["skip", "--release={release_id}", "--revision={revision}", "-t", "{target}", "--", "{addon}"], "mutates": true, "preview": "confirm" },
+  "unskip_release": { "argv": ["unskip", "--release={release_id}", "-t", "{target}", "--", "{addon}"], "mutates": true, "preview": "confirm" },
+  "unskip_release_rev": { "argv": ["unskip", "--release={release_id}", "--revision={revision}", "-t", "{target}", "--", "{addon}"], "mutates": true, "preview": "confirm" },
   "install":        { "argv": ["install", "-t", "{target}", "--", "{ref}"],         "mutates": true, "preview": "match" },
   "install_version": { "argv": ["install", "-t", "{target}", "--version={version}", "--", "{ref}"], "mutates": true, "preview": "confirm" },
   "update_channel": { "argv": ["update", "-t", "{target}", "--channel={channel}", "--", "{addon}"], "mutates": true, "preview": "confirm" },
@@ -514,7 +521,16 @@ var IRREVERSIBLE_FLAGS = ["--purge"]
 // What a row that shows an irreversible command says about it.
 var IRREVERSIBLE_NOTE = "It deletes omaddons' backups and undo snapshots for good, so it runs only from a terminal, after its preview."
 var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true, "run": true, "value": true,
-  "name": true, "version": true, "channel": true }
+  "name": true, "version": true, "channel": true, "release_id": true, "revision": true }
+// A release as `list` names it (`latest.release_id`, RG-36): `<ref>@<tag>`, the ref one
+// of omaddons' source prefixes, one line with no space, at most 512 characters. Skip this
+// release and Offer again pass it whole (`--release=`), never a bare version label, which
+// would widen "this release" to every release that reads the same. One that is not this
+// shape is shown, never offered.
+var RELEASE_ID_PATTERN = /^[a-z]+:[^\s@\u0000-\u001f\u007f][^\s\u0000-\u001f\u007f]*@[^\s@\u0000-\u001f\u007f]+$/
+var RELEASE_ID_MAX_CHARS = 512
+// A release's source revision (`latest.revision`, a WowAce re-tag's): a u32's digits.
+var REVISION_PATTERN = /^(0|[1-9][0-9]{0,9})$/
 // A release's version as a source lists it (an addon page's Versions, 1n2p.24), for
 // `install --version=`: a tag or a revision, one word that starts with a letter or digit,
 // at most 128 characters. A listed version that is not one is shown, never offered.
@@ -687,6 +703,12 @@ function checkSlot(name, slot, value, template, part) {
   }
   if (slot === "channel" && CHANNELS.indexOf(value) === -1) {
     throw refuse("bad_channel", name + ": " + JSON.stringify(value) + " is no channel")
+  }
+  if (slot === "release_id" && (!RELEASE_ID_PATTERN.test(value) || value.length > RELEASE_ID_MAX_CHARS)) {
+    throw refuse("bad_release", name + ": " + JSON.stringify(value) + " is no release id the panel can pass")
+  }
+  if (slot === "revision" && (!REVISION_PATTERN.test(value) || Number(value) > 4294967295)) {
+    throw refuse("bad_revision", name + ": " + JSON.stringify(value) + " is no revision")
   }
   if (slot === "query" && template.mutates) throw refuse("query_in_mutation", name)
 }
@@ -1595,6 +1617,8 @@ function targetOf(target) {
     "updates": updates ? {
       "available": num(updates.available), "pinned": num(updates.pinned), "blocked": num(updates.blocked),
       "failed": num(updates.failed), "unchecked": num(updates.unchecked),
+      // Addons whose newest release is skipped (RG-31): never counted as available.
+      "skipped": num(updates.skipped),
       "checkedAt": strOrNull(updates.checked_at), "stale": updates.stale === true
     } : null,
     "issues": issues,
@@ -2399,9 +2423,17 @@ function reduceList(env) {
             "pinned": a.pinned === true,
             "state": str(a.state),
             "latest": strOrNull(latest.version),
-            // current, update_available, pinned, ahead, blocked, failed, unchecked, static.
+            // current, update_available, pinned, skipped_release, ahead, blocked, failed,
+            // unchecked, static.
             "status": str(latest.status),
             "updateAvailable": latest.status === "update_available",
+            // Its newest release is skipped on this client (RG-31): a mark holds it.
+            "skipped": latest.status === "skipped_release",
+            // The skip marks the record keeps (`-v`), as `{version, origin}`.
+            "skippedReleases": Array.isArray(a.skipped_releases) ? a.skipped_releases.map(function(m) {
+              var mark = m && typeof m === "object" ? m : {}
+              return { "version": str(mark.version), "origin": str(mark.origin) }
+            }) : [],
             "drift": str(drift.state),
             // How many of its files changed on disk (`-v`'s drift).
             "driftFiles": num(drift.files),
@@ -2419,6 +2451,9 @@ function reduceList(env) {
             "channel": str(a.channel),
             "latestSource": strOrNull(latest.source),
             "latestReleaseId": strOrNull(latest.release_id),
+            // Its source revision, where the source numbers them (a WowAce re-tag): with
+            // the id, what Skip this release and Offer again name exactly (RG-36).
+            "latestRevision": typeof latest.revision === "number" ? latest.revision : null,
             "latestAsset": strOrNull(latest.asset),
             // When that release was published, when its source says (1n2p.21).
             "publishedAt": strOrNull(latest.published_at)
@@ -3753,6 +3788,7 @@ var KEYMAP = [
   { "keys": ["u"], "context": "updates", "action": "update", "label": "update this addon", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["p"], "context": "updates", "action": "pin", "label": "pin or unpin it", "hint": "p", "nothing": "Nothing to pin here" },
   { "keys": ["e"], "context": "updates", "action": "notes", "label": "show or hide the release notes since its version", "hint": "e", "nothing": "No release notes here" },
+  { "keys": ["S"], "context": "updates", "action": "skip", "label": "skip the release waiting, or offer a skipped one again", "hint": "S", "nothing": "Nothing to skip here" },
   { "keys": ["/"], "context": "updates", "action": "filter", "label": "filter the updates by name, source or state", "hint": "/", "nothing": "Nothing to filter here" },
   { "keys": ["Enter", "Space"], "context": "installed", "action": "enter", "label": "open the addon's page", "hint": "Enter" },
   { "keys": ["u"], "context": "installed", "action": "update", "label": "update this addon", "hint": "u", "nothing": "Nothing to update here" },
@@ -4227,7 +4263,7 @@ function sourceKind(ref) {
 
 // The kind of Updates row each `list -v` status gives (updateRows); other statuses give
 // none.
-var UPDATE_KINDS = { "update_available": "update", "pinned": "pinned", "blocked": "blocked", "failed": "failed" }
+var UPDATE_KINDS = { "update_available": "update", "pinned": "pinned", "skipped_release": "skipped", "blocked": "blocked", "failed": "failed" }
 
 // ------------------------------------------------------------------ colours (§5.1)
 
@@ -4343,9 +4379,23 @@ function releaseAge(iso, nowMs) {
 // The glyph, band and order of each kind of Updates row (design doc §5.3, §5.4): an
 // update (arrow up), one a change just updated (a check, in the update's place), a
 // pinned addon (pin), a blocked release (cancel), a failed check (sync alert).
-var UPDATE_GLYPHS = { "update": 0xF0CE1, "done": 0xF012C, "pinned": 0xF0403, "blocked": 0xF073A, "failed": 0xF04E7 }
-var UPDATE_BANDS = { "update": "accent", "done": "accent", "pinned": "", "blocked": "", "failed": "urgent" }
-var UPDATE_RANK = { "update": 0, "done": 0, "pinned": 1, "blocked": 2, "failed": 3 }
+var UPDATE_GLYPHS = { "update": 0xF0CE1, "done": 0xF012C, "pinned": 0xF0403, "skipped": 0xF04AD, "blocked": 0xF073A, "failed": 0xF04E7 }
+var UPDATE_BANDS = { "update": "accent", "done": "accent", "pinned": "", "skipped": "", "blocked": "", "failed": "urgent" }
+var UPDATE_RANK = { "update": 0, "done": 0, "pinned": 1, "skipped": 2, "blocked": 3, "failed": 4 }
+
+// The release a row names for Skip this release or Offer again (RG-36): its `latest`
+// id, and its revision when the source numbers them, as `--release=` and `--revision=`
+// take them; null when either is not one safe argument, and the row then offers neither
+// (design 7.7: never a bare version label).
+function rowRelease(row) {
+  var id = str(row && row.latestReleaseId)
+  if (!RELEASE_ID_PATTERN.test(id) || id.length > RELEASE_ID_MAX_CHARS) return null
+  var revision = row.latestRevision
+  if (revision === null || revision === undefined) return { "release_id": id }
+  var text = typeof revision === "number" && isFinite(revision) ? String(revision) : ""
+  if (!REVISION_PATTERN.test(text) || Number(text) > 4294967295) return null
+  return { "release_id": id, "revision": text }
+}
 
 // One Updates row (1n2p.21, design doc §5.3): an AddonRow's fields, and what the plan
 // runner compares (shownOf's).
@@ -4360,6 +4410,8 @@ function updateRow(t, a, kind, status, client, nowMs, doneWord) {
     meta.push(str(doneWord))
   } else if (kind === "pinned") {
     meta.push(copy("updates.meta.pinned", { "version": a.version || "?", "latest": a.latest || "" }))
+  } else if (kind === "skipped") {
+    meta.push(copy("updates.meta.skipped", { "version": a.version || "?", "latest": a.latest || "" }))
   } else if (kind === "blocked") {
     meta.push(copy("updates.meta.blocked", { "latest": a.latest || "", "client": client }))
   } else {
@@ -4376,10 +4428,17 @@ function updateRow(t, a, kind, status, client, nowMs, doneWord) {
   if (kind !== "failed" && kind !== "done") {
     actions.push(act("pin", a.pinned ? 0xF0404 : 0xF0403, a.pinned ? "installed.action.unpin" : "installed.action.pin"))
   }
+  // Skip this release on an update; Offer again on a skipped one (RG-36): one key, the
+  // row's own release, and nothing when that release cannot be named exactly. Offer again
+  // is a skipped row's main action, first, as Update is an update row's: a narrow row
+  // shows only its first.
+  if (kind === "update" && rowRelease(a)) actions.push(act("skip", 0xF04AD, "updates.action.skip"))
+  if (kind === "skipped" && rowRelease(a)) actions.unshift(act("skip", 0xF054C, "updates.action.offer"))
   return {
     "key": t.id + "/" + a.name, "target": t.id, "client": client, "name": a.name, "ref": a.ref, "version": a.version, "latest": a.latest,
     "kind": kind, "pinned": a.pinned, "reload": running, "group": "", "groupCount": "", "groupTarget": "", "groupUpdates": 0,
     "targetKey": t.key, "channel": a.channel, "latestSource": a.latestSource, "latestReleaseId": a.latestReleaseId,
+    "latestRevision": a.latestRevision === undefined ? null : a.latestRevision,
     "latestAsset": a.latestAsset, "sourceWord": SOURCE_WORDS[a.source] || copy("installed.source.unknown"),
     "fromVersion": kind === "done" ? "" : (a.version || "?"),
     "toVersion": kind === "update" ? str(a.latest) : (kind === "done" ? str(a.version) : ""),
@@ -4980,6 +5039,18 @@ function rowAction(row, which) {
   if (which === "pin") return row.pinned ? { "template": "unpin", "slots": slots, "label": "Unpin " + row.name }
     : { "template": "pin", "slots": slots, "label": "Pin " + row.name }
   if (which === "update") return { "template": "update_addon", "slots": slots, "label": "Update " + row.name, "shown": [shownOf(row)] }
+  // Skip this release on an update row, Offer again on a skipped one (RG-36): the row's
+  // own release by its id, and its revision where it has one; nothing otherwise.
+  if (which === "skip" && (row.kind === "update" || row.kind === "skipped")) {
+    var release = rowRelease(row)
+    if (!release) return null
+    var verb = row.kind === "update" ? "skip_release" : "unskip_release"
+    for (var slot in release) slots[slot] = release[slot]
+    var id = row.kind === "update" ? "updates.reason.skip" : "updates.reason.offer"
+    var label = copy(id, { "addon": row.name, "version": str(row.latest) })
+    return { "template": release.revision ? verb + "_rev" : verb, "slots": slots,
+      "label": label.length <= LABEL_MAX_CHARS ? label : copy(id, { "addon": row.name, "version": "" }).replace(/ +/g, " ").trim() }
+  }
   if (which === "reinstall") return { "template": "reinstall", "slots": slots, "label": "Reinstall " + row.name }
   if (which === "remove") return { "template": "remove", "slots": slots, "label": "Remove " + row.name }
   return null
@@ -6928,6 +6999,16 @@ var COPY = {
   "sheet.title.unpin.clients": "Unpin {n} addons on {m} clients?",
   "sheet.confirm.unpin.one": "Unpin {addon}",
   "sheet.confirm.unpin.many": "Unpin {n}",
+  "sheet.title.skip.one": "Skip this release of {addon} on {client}?",
+  "sheet.title.skip.client": "Skip {n} releases on {client}?",
+  "sheet.title.skip.clients": "Skip {n} releases on {m} clients?",
+  "sheet.confirm.skip.one": "Skip it",
+  "sheet.confirm.skip.many": "Skip {n}",
+  "sheet.title.unskip.one": "Offer {addon}'s skipped release again on {client}?",
+  "sheet.title.unskip.client": "Offer {n} skipped releases again on {client}?",
+  "sheet.title.unskip.clients": "Offer {n} skipped releases again on {m} clients?",
+  "sheet.confirm.unskip.one": "Offer again",
+  "sheet.confirm.unskip.many": "Offer {n} again",
   "sheet.title.change.one": "Change {addon} on {client}?",
   "sheet.title.change.client": "Make {n} changes on {client}?",
   "sheet.title.change.clients": "Make {n} changes on {m} clients?",
@@ -6937,6 +7018,8 @@ var COPY = {
   "sheet.item.install": "{version} (new)",
   "sheet.item.remove": { "one": "{version} (1 folder)", "other": "{version} ({n} folders)" },
   "sheet.item.edit": "changes its {fields}",
+  "sheet.item.skip": "{versions} (skipped)",
+  "sheet.item.unskip": "{versions} (offered again)",
 
   "sheet.title.undo": "Undo the {change} on {clients} from {date}?",
   "sheet.title.undo.nowhere": "Undo the {change} from {date}?",
@@ -7914,6 +7997,12 @@ var COPY = {
   "updates.kind.pinned": "pinned",
   "updates.kind.blocked": "blocked",
   "updates.kind.failed": "check failed",
+  "updates.kind.skipped": "skipped",
+  "updates.meta.skipped": "Skipped {latest} · {version} stays until the next release",
+  "updates.action.skip": "Skip this release",
+  "updates.action.offer": "Offer again",
+  "updates.reason.skip": "Skip {addon} {version}",
+  "updates.reason.offer": "Offer {addon} {version} again",
   "updates.meta.running": "{client} is running",
   "updates.meta.pinned": "pinned at {version} · {latest} available",
   "updates.meta.blocked": "{latest} is out, but it doesn't load on {client}",
@@ -8077,6 +8166,28 @@ function selectionItem(item, targets, folders) {
   }
   return sheetItem({ "op": op, "addon": it.addon, "client": sheetClient(targets, str(it.target_id), str(it.target_key)),
     "clientKey": str(it.target_key) || str(it.target_id), "from": from, "to": to, "name": it.addon, "detail": detail })
+}
+
+// A skip's or an unskip's sheet item (RG-36): the versions of the marks its client's
+// `skips_marked` (skip) or `skips_cleared` (unskip) note for the addon, "v2 (skipped)";
+// the item as it was when the run notes none.
+function skipItem(item, data, kind) {
+  var key = kind === "skip" ? "skips_marked" : "skips_cleared"
+  var targets = data && Array.isArray(data.targets) ? data.targets : []
+  var versions = []
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i] && typeof targets[i] === "object" ? targets[i] : {}
+    var target = t.target && typeof t.target === "object" ? t.target : {}
+    if (str(target.key) !== item.clientKey && str(target.id) !== item.clientKey) continue
+    var notes = Array.isArray(t[key]) ? t[key] : []
+    for (var j = 0; j < notes.length; j++) {
+      var note = notes[j] && typeof notes[j] === "object" ? notes[j] : {}
+      if (asciiLower(str(note.addon)) === asciiLower(item.addon) && str(note.version)) versions.push(str(note.version))
+    }
+  }
+  if (versions.length === 0) return item
+  return sheetItem({ "op": item.op, "addon": item.addon, "client": item.client, "clientKey": item.clientKey, "from": item.from,
+    "to": item.to, "name": item.name, "detail": copy("sheet.item." + kind, { "versions": joinNames(versions) }) })
 }
 
 // The distinct clients a sheet's items name, in order.
@@ -8300,8 +8411,12 @@ function selectionSheet(path, env, approval, targets) {
   var requested = requestedItems(approval)
   var items = requested.map(function(it) { return selectionItem(it, targets, folders) })
   var reinstall = approval.reasons.indexOf("reinstall") !== -1
-  var kinds = { "update": "update", "install": "install", "remove": "remove", "adopt": "adopt", "pin": "pin", "unpin": "unpin" }
+  var kinds = { "update": "update", "install": "install", "remove": "remove", "adopt": "adopt", "pin": "pin", "unpin": "unpin",
+    "skip": "skip", "unskip": "unskip" }
   var kind = reinstall ? "reinstall" : (kinds.hasOwnProperty(path) ? kinds[path] : "change")
+  // A skip or an unskip moves marks, never the installed release (RG-36): each item names
+  // the release it marks or offers again, from the run's own notes.
+  if (kind === "skip" || kind === "unskip") items = items.map(function(item) { return skipItem(item, data, kind) })
   var effects = reasonEffects(approval, items, targets, data)
   // A take-over (1n2p.32): the player's main worry first. Nothing moves; each addon says
   // how sure omaddons is of it, and the folders it leaves say why (omad-kbtn).
