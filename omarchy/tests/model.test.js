@@ -201,9 +201,12 @@ describe("settings", () => {
   // 1n2p.36: an automatic update starts only when a background check asked for one, with
   // the setting On, nothing underway, no game running and updates to install. A game
   // running or a busy panel keeps the request; a setting Off or nothing to do spends it.
+  // RG-63: it starts on what `update --auto` is expected to take (`ready`, status's
+  // auto_ready); with nothing ready but something waiting to settle (`waiting`, the sum
+  // of too_new) the request is kept, so it starts once one has; with neither, spent.
   test("an automatic update starts only when asked, on, idle, with no game running", () => {
     const ready = { pending: true, settings: { autoUpdate: "On" }, held: false, stage: "", canAct: true, playing: false,
-      interrupted: false, busy: false, updates: 2 }
+      interrupted: false, busy: false, ready: 2, waiting: 0 }
     const answer = (run, drop, why) => ({ run: run, drop: drop, why: why })
     table([
       ["ready", {}, answer(true, true, "")],
@@ -217,9 +220,16 @@ describe("settings", () => {
       ["running unknown counts as running", { playing: undefined }, answer(false, false, "running")],
       ["a change cut off", { interrupted: true }, answer(false, false, "interrupted")],
       ["a change underway or a sheet open", { busy: true }, answer(false, false, "busy")],
-      ["nothing to update", { updates: 0 }, answer(false, true, "no_updates")],
+      ["nothing to update", { ready: 0 }, answer(false, true, "no_updates")],
+      ["ready, and more waiting", { ready: 1, waiting: 1 }, answer(true, true, "")],
+      ["nothing ready, one waiting: kept", { ready: 0, waiting: 1 }, answer(false, false, "waiting")],
+      ["a busy panel is said before a wait", { ready: 0, waiting: 1, busy: true }, answer(false, false, "busy")],
+      ["the setting Off spends it, waiting or not", { ready: 0, waiting: 1, settings: {} }, answer(false, true, "setting_off")],
     ], (change) => M.autoUpdateDue(Object.assign({}, ready, change)))
     expect(M.autoUpdateDue(null)).toEqual(answer(false, false, "not_asked"))
+    // The clients' too_new, summed: what `waiting` is.
+    expect(M.updatesWaiting([{ updates: { tooNew: 1 } }, { updates: null }, { updates: { tooNew: 2 } }])).toBe(3)
+    expect(M.updatesWaiting(null)).toBe(0)
   })
 
   // 1n2p.31: omaddons' own settings, from `config` as the binary prints it; a step is one
@@ -228,7 +238,7 @@ describe("settings", () => {
     const config = M.reduceConfig(fixture("config"))
     const rows = M.omaddonsSettingRows(config)
     expect(rows.map((r) => [r.key, r.text])).toEqual([["default_channel", "Stable"], ["running_policy", "Safe ones"],
-      ["auto_backup", "Daily, free copies only"], ["check_interval_hours", "6 h"]])
+      ["auto_backup", "Daily, free copies only"], ["check_interval_hours", "6 h"], ["update_min_age_hours", "6 h"]])
     expect(rows.every((r) => r.label !== "" && r.about !== "" && !r.label.startsWith("settings."))).toBe(true)
     // Enter on, h back, l on; wrapping only on Enter.
     const backups = rows[2]
@@ -255,7 +265,17 @@ describe("settings", () => {
       ["Panel", 9, ""], ["omaddons", 0, "Reading omaddons' settings…"], ["Clients", 2, ""]])
     expect(M.settingsSections({ settings: {}, config: null, configFailed: "x" })[1].note).toBe("Couldn't read omaddons' settings.")
     // config.toml's own line closes the sheet once `config` said where it is.
-    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+    // RG-63: the automatic update's wait, Off and 1 to 48 hours; a step sets it through
+    // its own `config set update_min_age_hours -- <n>`.
+    const wait = rows[4]
+    expect([wait.label, M.configText("update_min_age_hours", 0), M.configText("update_min_age_hours", 12)])
+      .toEqual(["Automatic updates wait", "Off", "12 h"])
+    const step = M.configRequest(wait, 1, true)
+    expect(step).toEqual({ template: "config_min_age", slots: { value: "12" }, label: "Automatic updates wait: 12 h" })
+    const argv = M.buildArgv(step.template, step.slots, opts({ label: step.label })).argv
+    expect(argv.slice(argv.indexOf("config"))).toEqual(["config", "set", "update_min_age_hours", "--", "12"])
+    expect(M.configRequest(Object.assign({}, wait, { value: 48 }), 1, true).slots.value).toBe("0")
     expect([M.reduceConfig(fixture("config-set-refused")), fixture("config-set").data.changed]).toEqual([null, true])
     // The result line, in the sheet's words.
     expect(M.resultLine(fixture("config-set"), CONTEXT, [])).toBe("Automatic backups: Daily, full copies where needed")
@@ -415,7 +435,7 @@ function withInput(name, extra) {
 }
 
 // The templates whose real run is refused: they run as their preview, then apply.
-const PREVIEWED = ["adopt_target", "install", "install_version", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "skip_release", "skip_release_rev", "sync_all", "sync_target", "undo_run", "undo_run_target", "unskip_release", "unskip_release_rev", "update_addon", "update_all", "update_channel", "update_target"]
+const PREVIEWED = ["adopt_target", "install", "install_version", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "skip_release", "skip_release_rev", "sync_all", "sync_target", "undo_run", "undo_run_target", "unskip_release", "unskip_release_rev", "update_addon", "update_all", "update_all_auto", "update_channel", "update_target"]
 // The templates bound to their preview's token (G2): their real run needs it.
 const BOUND_PREVIEWS = ["doctor_fix", "doctor_fix_target"]
 
@@ -4494,7 +4514,46 @@ describe("plans from the binary", () => {
     const env = envOf(preview)
     return M.autoUpdatePreviewAct("ok", env, decide({ mode: "match", shown: shown, again: again === true }, env))
   }
-  const everyRow = (list) => M.updateRequest("", M.updateRows(M.reduceList(fixture(list)), "", []), []).shown
+  // As Service.autoUpdatePreview asks it (RG-63): `update --auto`, expecting the rows that
+  // have settled.
+  const everyRow = (list) => M.updateRequest("", M.updateRows(M.reduceList(fixture(list)), "", []), [], true).shown
+
+  // RG-63: what waits, from the binary's own answers: Foo's v2 first seen just now, Bar's
+  // and LittleWigs' settled, LittleWigs' newly needing BigWigs, which the planner then
+  // first sees.
+  test("an automatic update expects what has settled, and leaves a plan that holds more", () => {
+    const status = M.reduceStatus(fixture("auto-status"))
+    expect([status.targets[0].updates.tooNew, status.summary.updates.available, status.summary.updates.autoReady,
+      M.updatesWaiting(status.targets)]).toEqual([1, 3, 2, 1])
+    const lists = M.reduceList(fixture("auto-list"))
+    const waits = Object.fromEntries(lists.targets[0].addons.map((a) => [a.name, a.autoEligibleAt]))
+    expect([typeof waits.Foo, waits.Bar, waits.LittleWigs]).toEqual(["string", null, null])
+    // The Updates rows: Foo says when an automatic update takes it; Update takes it now.
+    const rows = M.updateRows(lists, "", status.targets, { nowMs: Date.now() })
+    const foo = rows.find((r) => r.name === "Foo")
+    expect(foo.kind).toBe("update")
+    expect(foo.meta).toContain("Automatic update after " + M.autoAfterText(waits.Foo, Date.now()))
+    expect(rows.find((r) => r.name === "Bar").meta).not.toContain("Automatic")
+    // What the automatic preview expects: the settled rows, never Foo; `U` expects all.
+    expect(everyRow("auto-list").map((r) => r.addon).sort()).toEqual(["Bar", "LittleWigs"])
+    expect(M.updateRequest("", M.updateRows(lists, "", []), []).shown.map((r) => r.addon).sort())
+      .toEqual(["Bar", "Foo", "LittleWigs"])
+    expect(M.updateRequest("", [], [], true).template).toBe("update_all_auto")
+    expect(M.updateRequest("retail", [], [], true).template).toBe("update_target")
+    // The dry run held LittleWigs for BigWigs: not what was expected, left for the
+    // player; had it expected Bar alone, the plan runs; one that takes nothing ends.
+    const settled = everyRow("auto-list")
+    table([
+      ["LittleWigs held as well", [settled, "auto-preview"], "leave"],
+      ["exactly Bar", [settled.filter((r) => r.addon === "Bar"), "auto-preview"], "run"],
+      ["nothing taken", [settled, "auto-preview-nothing"], "none"],
+    ], ([shown, preview]) => autoAct(shown, preview))
+    // When it takes a release that waits: the time within a day, else with the day.
+    const now = Date.parse("2026-11-14T18:52:00Z")
+    expect(M.autoAfterText("2026-11-15T00:52:00Z", now)).toBe(M.clockText("2026-11-15T00:52:00Z"))
+    expect(M.autoAfterText("2026-11-16T08:00:00Z", now)).toMatch(/^[A-Z][a-z]+ \d\d:\d\d$/)
+    expect(M.autoAfterText(null, now)).toBe("")
+  })
 
   test("an automatic update applies only a routine plan that is exactly the rows", () => {
     const rows = everyRow("plan-list-after")

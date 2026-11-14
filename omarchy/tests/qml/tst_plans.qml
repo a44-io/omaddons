@@ -16,6 +16,9 @@ TestCase {
   name: "Plans"
 
   property var service: null
+  // RG-63: `status`'s automatic-update counts for updatesStatus, as `{ready, waiting}`
+  // (summary.updates.auto_ready and retail's updates.too_new); null keeps the fixture's.
+  property var autoCounts: null
 
   Component {
     id: serviceComponent
@@ -41,6 +44,7 @@ TestCase {
   function cleanup() {
     if (service) service.destroy()
     service = null
+    autoCounts = null
     ProcessRegistry.reset()
     wait(0)
   }
@@ -392,6 +396,12 @@ TestCase {
     var env = JSON.parse(Fixtures.text("status-updates"))
     for (var i = 0; i < env.data.targets.length; i++) env.data.targets[i].running = running === true && env.data.targets[i].id === "retail"
     env.data.summary.running = running === true ? ["retail"] : []
+    if (autoCounts) {
+      env.data.summary.updates.auto_ready = autoCounts.ready
+      for (var j = 0; j < env.data.targets.length; j++) {
+        env.data.targets[j].updates.too_new = env.data.targets[j].id === "retail" ? autoCounts.waiting : 0
+      }
+    }
     return JSON.stringify(env)
   }
 
@@ -442,10 +452,11 @@ TestCase {
     service.applySettings({ "autoUpdate": "On" })
     Quickshell.resetDetachedCommands()
     backgroundCheck(false, "plan-list-after")
-    // `U`'s preview, as the background's: every client's rows, a match.
+    // `update --auto`'s preview (RG-63), as the background's: every client's settled
+    // rows, a match.
     var preview = lastRun("update")
     verify(preview !== null && preview.command.indexOf("--dry-run") !== -1, "the update is previewed first: " + launchLog())
-    compare(words(preview.command), ["update"])
+    compare(words(preview.command), ["update", "--auto"])
     answer(preview, "plan-update-all")
     compare(service.confirm, null, "no sheet: exactly the rows, routine")
     var apply = lastRun("apply")
@@ -459,6 +470,51 @@ TestCase {
       "--exec", "omarchy-shell " + Build.PLUGIN_ID + " show history"])
     compare([service.autoUpdateStage, service.autoUpdatePending, service.confirm], ["", false, null])
     compare(runs("apply").length, 1, "applied once")
+  }
+
+  // RG-63: nothing ready but a release waiting to settle: nothing starts, and the request
+  // is kept; a later status that says one is ready, with no background check between,
+  // starts `--dry-run update --auto`.
+  function test_an_automatic_update_waits_for_a_release_to_settle() {
+    service.applySettings({ "autoUpdate": "On" })
+    autoCounts = { "ready": 0, "waiting": 1 }
+    backgroundCheck(false, "plan-list-after")
+    compare([runs("list").length, runs("update").length, service.autoUpdatePending], [0, 0, true], launchLog())
+    autoCounts = { "ready": 1, "waiting": 0 }
+    service.refresh()
+    answerReads(false, "plan-list-after")
+    var preview = lastRun("update")
+    verify(preview !== null && preview.process.running, "previewed once one is ready: " + launchLog())
+    var dry = preview.command.indexOf("--dry-run")
+    verify(dry !== -1 && dry < preview.command.indexOf("update"), JSON.stringify(preview.command))
+    compare(words(preview.command), ["update", "--auto"])
+    compare(service.autoUpdatePending, false, "spent as it starts")
+  }
+
+  // RG-63: nothing ready and nothing waiting: the request is dropped, as before.
+  function test_an_automatic_update_with_nothing_to_take_is_dropped() {
+    service.applySettings({ "autoUpdate": "On" })
+    autoCounts = { "ready": 0, "waiting": 0 }
+    backgroundCheck(false, "plan-list-after")
+    compare([runs("list").length, runs("update").length, service.autoUpdatePending], [0, 0, false], launchLog())
+  }
+
+  // RG-63: `status` expected one ready, and the dry run took nothing after all (a new
+  // dependency too new): the request ends quietly, nothing is applied, and no other dry
+  // run starts before the next background check.
+  function test_an_automatic_update_whose_plan_takes_nothing_ends_quietly() {
+    service.applySettings({ "autoUpdate": "On" })
+    Quickshell.resetDetachedCommands()
+    backgroundCheck(false, "plan-list-after")
+    var preview = lastRun("update")
+    verify(preview !== null, launchLog())
+    answer(preview, "auto-preview-nothing")
+    compare([service.confirm, runs("apply").length, service.autoUpdateStage, service.autoUpdatePending], [null, 0, "", false])
+    var previews = runs("update").length
+    service.refresh()
+    answerReads(false, "plan-list-after")
+    compare(runs("update").length, previews, "no second dry run: " + launchLog())
+    compare(toasts().length, 0)
   }
 
   // Off by default: a background check changes nothing.

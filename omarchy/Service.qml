@@ -1637,7 +1637,10 @@ Item {
     var due = Model.autoUpdateDue({ "pending": autoUpdatePending, "settings": root.settings, "held": autoUpdateHeld,
       "stage": autoUpdateStage, "canAct": canAct, "playing": Model.playing(targets), "interrupted": !!interrupted,
       "busy": mutationLane.busy || queues.mutation.length > 0 || confirm !== null,
-      "updates": summary && summary.updates ? summary.updates.available : 0 })
+      // RG-63: what `update --auto` is expected to take now, and what waits to settle,
+      // which keeps the request for a later status.
+      "ready": summary && summary.updates ? summary.updates.autoReady : 0,
+      "waiting": Model.updatesWaiting(targets) })
     if (due.drop) autoUpdatePending = false
     if (!due.run) return
     autoUpdateStage = "list"
@@ -1645,15 +1648,17 @@ Item {
     request({ "resource": "list", "template": "list", "label": "Installed", "priority": "background" })
   }
 
-  // The list answered: `U`'s preview over every client, as a `match` of its update rows.
-  // A game started or a sheet opened meanwhile puts it back for a later status.
+  // The list answered: `update --auto`'s preview over every client (RG-63), as a `match`
+  // of the update rows that have settled; a plan that takes nothing ends quietly, and the
+  // next background check asks again. A game started or a sheet opened meanwhile puts it
+  // back for a later status.
   function autoUpdatePreview() {
     if (!canAct || Model.playing(targets) || !!interrupted || confirm !== null) {
       autoUpdateStage = ""
       autoUpdatePending = true
       return
     }
-    var wanted = Model.updateRequest("", Model.updateRows(lists, "", targets), targets)
+    var wanted = Model.updateRequest("", Model.updateRows(lists, "", targets), targets, true)
     autoUpdateStage = "preview"
     previewOf({ "template": wanted.template, "slots": wanted.slots, "label": Model.copy("auto_update.label"),
       "priority": "background", "mode": "match", "shown": wanted.shown, "auto": true }, "", false)

@@ -1097,7 +1097,7 @@ describe("the mechanisms behind the scans", () => {
     const needing = Object.keys(M.COMMANDS).filter((name) => needsPreview(name) && bound.indexOf(name) === -1)
     expect(needing.sort()).toEqual(["adopt_target", "install", "install_version", "prune_backup", "reinstall", "remove", "restore",
       "restore_addon", "skip_release", "skip_release_rev", "sync_all", "sync_target", "undo_run", "undo_run_target", "unskip_release",
-      "unskip_release_rev", "update_addon", "update_all", "update_channel", "update_target"])
+      "unskip_release_rev", "update_addon", "update_all", "update_all_auto", "update_channel", "update_target"])
     // A repair's Yes is its own argv bound to its preview's token (G2): never without it.
     expect(bound.sort()).toEqual(["doctor_fix", "doctor_fix_target"])
     for (const name of bound) {

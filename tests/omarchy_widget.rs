@@ -939,6 +939,10 @@ fn the_output_cap_bounds_every_template() {
             Some(ROW + ANSWER)
         } else if name == "history" {
             Some(limit_of(template) * (ROW + ADDONS * history_slope) + ANSWER)
+        } else if name == "update_all_auto" {
+            // The automatic update (RG-63): `update_all`'s items, a release that waits
+            // being a skipped item in its place, on every client.
+            Some(CLIENTS * (base + ADDONS * slope))
         } else if name == "undo_run" {
             // A run's undo puts back what it changed, a transaction per client: at worst
             // what an update of every addon on every client lists.
@@ -1508,6 +1512,19 @@ mod support {
         argv
     }
 
+    /// Every release `home`'s memo has seen, first seen a day earlier (`fetched_at`
+    /// kept): a check just fetched them, and these scenes' updates have stood the
+    /// automatic update's wait (RG-63), as a background check's usually have.
+    pub fn settled(home: &Home) {
+        let (mut memo, _) = omaddons::state::memo::load(&paths(&home.env));
+        for entry in memo.entries.values_mut() {
+            for seen in &mut entry.seen_releases {
+                seen.first_seen_at -= jiff::SignedDuration::from_hours(24);
+            }
+        }
+        home.seed_memo(&memo);
+    }
+
     /// Writes a run's envelope to `<dir>/<name>.json` and its stderr (NDJSON) to
     /// `<name>.stderr.ndjson`, after checking the exit code and the envelope.
     pub fn write_fixture(dir: &Path, name: &str, run: &Run, code: i32) -> Value {
@@ -1780,6 +1797,7 @@ fn plans_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         );
     }
     log.run(&home, &fill(t, "check", &[])).ok();
+    support::settled(&home);
     let list = plan_fixture(&log, &home, dir, "plan-list", &fill(t, "list", &[]), 0);
     let latest = &list_row(&list, "retail", "Foo")["latest"];
     assert_eq!(
@@ -3672,6 +3690,135 @@ fn skip_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
 #[cfg(test)]
 const HISTORY_NEWEST_AT: &str = "2026-10-15T12:00:00Z";
 
+/// RG-63's automatic update (design 7.7): Foo, Bar and LittleWigs at v1 on retail, each
+/// v2 out, LittleWigs' newly needing BigWigs (in the catalog, never installed). Every v2
+/// first seen by one check: `update --auto`'s preview takes nothing
+/// (`auto-preview-nothing`). Then Bar's and LittleWigs' v2 have stood the wait and Foo's
+/// has not: the reads (`auto-status`, `auto-list`) and the preview (`auto-preview`: Bar
+/// updated, Foo `too_new`, LittleWigs `dependency_held`, BigWigs being first seen as the
+/// planner fetches it) and its apply (`auto-apply`).
+#[cfg(test)]
+fn auto_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use common::epoch::Epoch;
+    use support::{apply_of, planned, preview_of};
+
+    let log = tlog!();
+    log.step("Foo, Bar and LittleWigs v1 on retail; each v2 out");
+    let home = Home::new(&["wow"]);
+    log.env(&home);
+    let catalog = home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&catalog).unwrap();
+    fs::write(
+        catalog.join("50-auto.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"BigWigs\"\nref = \"gh:o/bigwigs\"\nfolders = [\"BigWigs\"]\n",
+    )
+    .unwrap();
+    let base = |name: &str| format!("https://github.com/o/{}", name.to_lowercase());
+    gh_release(
+        &home.http,
+        &base("BigWigs"),
+        "v1",
+        &Rel::new("BigWigs", "v1").assets(),
+    );
+    for name in ["Foo", "Bar", "LittleWigs"] {
+        gh_release(
+            &home.http,
+            &base(name),
+            "v1",
+            &Rel::new(name, "v1").assets(),
+        );
+        let r = format!("gh:o/{}", name.to_lowercase());
+        log.run(&home, &["install", r.as_str(), "-t", "retail", "--json"])
+            .ok();
+    }
+    for name in ["Foo", "Bar", "LittleWigs"] {
+        let v2 = if name == "LittleWigs" {
+            Rel::with_line(name, "v2", "## Dependencies: BigWigs")
+        } else {
+            Rel::new(name, "v2")
+        };
+        gh_release(&home.http, &base(name), "v2", &v2.assets());
+    }
+    log.run(&home, &["outdated", "--refresh", "--json"]).ok();
+
+    log.step("every v2 first seen just now: the automatic preview takes nothing");
+    let nothing = write_fixture(
+        dir,
+        "auto-preview-nothing",
+        &home.exec(&preview_of(fill(t, "update_all_auto", &[]))),
+        0,
+    );
+    log.assert_eq(
+        "no plan, nothing selected",
+        &(
+            &nothing["data"]["plan_id"],
+            &nothing["data"]["approval"]["selection"],
+        ),
+        &(&Value::Null, &serde_json::json!([])),
+    );
+
+    log.step("Bar's and LittleWigs' v2 settled, Foo's not");
+    let epoch = Epoch::ago(jiff::SignedDuration::from_hours(30));
+    for r in ["gh:o/bar", "gh:o/littlewigs"] {
+        epoch.seen(&home, r, "v2", jiff::SignedDuration::ZERO);
+    }
+    let status = write_fixture(
+        dir,
+        "auto-status",
+        &home.exec(&fill(t, "status_full", &[])),
+        0,
+    );
+    log.assert_eq(
+        "available, too_new, auto_ready",
+        &(
+            &status["data"]["targets"][0]["updates"]["available"],
+            &status["data"]["targets"][0]["updates"]["too_new"],
+            &status["data"]["summary"]["updates"]["auto_ready"],
+        ),
+        &(
+            &serde_json::json!(3),
+            &serde_json::json!(1),
+            &serde_json::json!(2),
+        ),
+    );
+    write_fixture(dir, "auto-list", &home.exec(&fill(t, "list", &[])), 0);
+    let preview = write_fixture(
+        dir,
+        "auto-preview",
+        &home.exec(&preview_of(fill(t, "update_all_auto", &[]))),
+        0,
+    );
+    let reasons: Vec<(String, String)> = preview["data"]["targets"][0]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["name"].as_str().unwrap_or("").to_owned(),
+                i["skip_reason"]
+                    .as_str()
+                    .unwrap_or(i["status"].as_str().unwrap())
+                    .to_owned(),
+            )
+        })
+        .collect();
+    log.assert_eq(
+        "Bar taken, Foo too new, LittleWigs held for BigWigs",
+        &reasons,
+        &vec![
+            ("Bar".to_owned(), "updated".to_owned()),
+            ("Foo".to_owned(), "too_new".to_owned()),
+            ("LittleWigs".to_owned(), "dependency_held".to_owned()),
+        ],
+    );
+    write_fixture(
+        dir,
+        "auto-apply",
+        &home.exec(&apply_of(&planned(&preview))),
+        0,
+    );
+}
+
 /// Rewrites the fixture `<dir>/<name>.json` from `stdout`, a `history` envelope, with
 /// every line's `at` moved by one shift that puts the newest at `newest`. The engine
 /// stamps history lines with the wall clock, which `OMADDONS_NOW` does not freeze
@@ -4275,6 +4422,7 @@ fn write_widget_fixtures() {
     )
     .unwrap();
     write_fixture(&dir, "check", &home.exec(&fill(&t, "check", &[])), 0);
+    support::settled(&home);
     // An addon page's Install it of a name no source is known for (omad-z5il): `install`
     // reads it as it reads any name, finds none, sends no request, and its fix searches.
     let unknown = write_fixture(
@@ -4392,6 +4540,7 @@ fn write_widget_fixtures() {
         );
     }
     home.exec(&fill(&t, "check", &[])).expect(0);
+    support::settled(&home);
     home.exec(&fill(&t, "pin", &[("target", "retail"), ("addon", "Baz")]))
         .expect(0);
     let toc = home.addons("_retail_").join("Foo/Foo.toc");
@@ -4444,6 +4593,7 @@ fn write_widget_fixtures() {
     versions_fixtures(&dir, &t);
     share_fixtures(&dir, &t);
     skip_fixtures(&dir, &t);
+    auto_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

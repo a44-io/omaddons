@@ -1421,6 +1421,25 @@ TestCase {
     compare(service.config.settings.default_channel.value, "stable", "the last settings read stay")
   }
 
+  // RG-63: the automatic update's wait in the settings sheet: read with the others, shown
+  // as Off or hours, and set through its own `config set update_min_age_hours -- <n>`.
+  function test_the_automatic_update_s_wait_is_read_and_set_through_its_template() {
+    ready(0)
+    service.readConfig()
+    answer(lastRun("config"), envelope("config", { "path": "/c/config.toml", "exists": true, "settings": [
+      { "name": "update_min_age_hours", "value": 6, "source": "default" }] }))
+    var rows = Model.omaddonsSettingRows(service.config)
+    var wait = rows.filter(function(r) { return r.key === "update_min_age_hours" })[0]
+    compare([wait.label, wait.text, wait.template], ["Automatic updates wait", "6 h", "config_min_age"])
+    var step = Model.configRequest(wait, 1, true)
+    compare(service.run(step.template, step.slots, step.label), "")
+    var set = lastRun("config")
+    compare(words(set.command), ["config", "set", "update_min_age_hours", "--", "12"])
+    answer(set, envelope("config set", { "name": "update_min_age_hours", "value": 12, "previous": 6, "changed": true, "dry_run": false }))
+    verify(service.lastResult.ok)
+    compare(Model.configText("update_min_age_hours", 0), "Off")
+  }
+
   function test_the_backups_are_read_with_their_view_and_their_detail_is_view_bound() {
     ready(0)
     service.readView("backups")

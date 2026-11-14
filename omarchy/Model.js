@@ -155,7 +155,10 @@ var OMADDONS_SETTINGS = [
   { "key": "default_channel", "template": "config_channel", "values": ["stable", "beta", "alpha"] },
   { "key": "running_policy", "template": "config_running", "values": ["safe", "refuse", "allow"] },
   { "key": "auto_backup", "template": "config_backups", "values": ["daily", "daily-copy", "off"] },
-  { "key": "check_interval_hours", "template": "config_interval", "values": [1, 2, 3, 4, 6, 8, 12, 24, 48] }
+  { "key": "check_interval_hours", "template": "config_interval", "values": [1, 2, 3, 4, 6, 8, 12, 24, 48] },
+  // How long an automatic update waits after omaddons first saw a release (RG-63,
+  // design 7.7): 0 is no wait at all.
+  { "key": "update_min_age_hours", "template": "config_min_age", "values": [0, 1, 3, 6, 12, 24, 48] }
 ]
 
 // `config --json`: each setting's value and whether it is the default.
@@ -173,6 +176,9 @@ function reduceConfig(env) {
 // An omaddons setting's value in words ("Stable", "Safe ones", "6 h").
 function configText(key, value) {
   if (key === "check_interval_hours") return copy("settings.value.hours", { "n": value })
+  if (key === "update_min_age_hours") {
+    return num(value) === 0 ? copy("settings.value.off") : copy("settings.value.hours", { "n": value })
+  }
   var id = "settings.omaddons." + key + "." + str(value)
   return COPY.hasOwnProperty(id) ? copy(id) : str(value)
 }
@@ -388,6 +394,7 @@ var COMMANDS = {
   "search":         { "argv": ["search", "--limit", "20", "-t", "{target}", "--", "{query}"], "mutates": false, "lane": "network" },
   "check":          { "argv": ["outdated"],                                         "mutates": false, "lane": "network" },
   "update_all":     { "argv": ["update"],                                           "mutates": true, "preview": "match" },
+  "update_all_auto": { "argv": ["update", "--auto"],                                "mutates": true, "preview": "match" },
   "update_target":  { "argv": ["update", "-t", "{target}"],                         "mutates": true, "preview": "match" },
   "update_addon":   { "argv": ["update", "-t", "{target}", "--", "{addon}"],        "mutates": true, "preview": "match" },
   "reinstall":      { "argv": ["install", "-t", "{target}", "--reinstall", "--", "{addon}"], "mutates": true, "preview": "confirm" },
@@ -428,6 +435,7 @@ var COMMANDS = {
   "config_running":    { "argv": ["config", "set", "running_policy", "--", "{value}"], "mutates": true },
   "config_backups":    { "argv": ["config", "set", "auto_backup", "--", "{value}"], "mutates": true },
   "config_interval":   { "argv": ["config", "set", "check_interval_hours", "--", "{value}"], "mutates": true },
+  "config_min_age":    { "argv": ["config", "set", "update_min_age_hours", "--", "{value}"], "mutates": true },
   "config_client_name": { "argv": ["config", "set", "targets.{target}.name", "--", "{name}"], "mutates": true },
   "config_client_family": { "argv": ["config", "set", "targets.{target}.family", "--", "{value}"], "mutates": true },
   "targets_default":   { "argv": ["targets", "default", "--", "{target}"],         "mutates": true },
@@ -1568,7 +1576,10 @@ function summaryOf(summary) {
     "state": str(summary.state),
     "targets": num(summary.targets),
     "running": stringList(summary.running),
-    "updates": { "available": num(updates.available), "targets": stringList(updates.targets) },
+    "updates": { "available": num(updates.available), "targets": stringList(updates.targets),
+      // How many of them `update --auto` is expected to take now (RG-63): what the
+      // automatic update starts on. A binary that does not report it waits for nothing.
+      "autoReady": typeof updates.auto_ready === "number" ? num(updates.auto_ready) : num(updates.available) },
     "issues": counts,
     "issuesTotal": counts.p0 + counts.p1 + counts.p2 + counts.p3,
     "issuesUrgent": counts.p0 + counts.p1,
@@ -1619,6 +1630,9 @@ function targetOf(target) {
       "failed": num(updates.failed), "unchecked": num(updates.unchecked),
       // Addons whose newest release is skipped (RG-31): never counted as available.
       "skipped": num(updates.skipped),
+      // Of `available`, those an automatic update waits on (RG-63): first seen less than
+      // `update_min_age_hours` ago.
+      "tooNew": num(updates.too_new),
       "checkedAt": strOrNull(updates.checked_at), "stale": updates.stale === true
     } : null,
     "issues": issues,
@@ -2041,9 +2055,11 @@ function selfUpdate(input) {
 // answering this widget (`canAct`), no client running (`playing`: unknown counts as
 // running), no change cut off (`interrupted`: the widget never finishes one by
 // itself), nothing else underway (`busy`: a change running or queued, a plan sheet
-// open), and updates to install (`updates`, status's count). `drop` says the request is
-// spent: it runs, the setting is off, or there is nothing to update. A running game or
-// a busy panel keeps it for a later status, so it runs once the game stops.
+// open), and updates `update --auto` is expected to take (`ready`, status's
+// `auto_ready`, RG-63). `drop` says the request is spent: it runs, the setting is off,
+// or there is nothing to update. A running game or a busy panel keeps it for a later
+// status, so it runs once the game stops; so do updates that wait to settle (`waiting`,
+// the clients' `too_new`), so it runs once one has, not at the next background check.
 function autoUpdateDue(input) {
   var i = input && typeof input === "object" ? input : {}
   var answer = function(why, drop) { return { "run": why === "", "drop": drop === true, "why": why } }
@@ -2055,8 +2071,17 @@ function autoUpdateDue(input) {
   if (i.playing !== false) return answer("running")
   if (i.interrupted === true) return answer("interrupted")
   if (i.busy === true) return answer("busy")
-  if (num(i.updates) <= 0) return answer("no_updates", true)
+  if (num(i.ready) <= 0 && num(i.waiting) > 0) return answer("waiting")
+  if (num(i.ready) <= 0) return answer("no_updates", true)
   return answer("", true)
+}
+
+// How many updates wait to settle on `targets` (`status`'s clients, targetOf's): the sum
+// of their `too_new` (RG-63).
+function updatesWaiting(targets) {
+  return (Array.isArray(targets) ? targets : []).reduce(function(sum, t) {
+    return sum + (t && t.updates ? num(t.updates.tooNew) : 0)
+  }, 0)
 }
 
 // What an automatic update does with its preview (1n2p.36), from the preview's lane
@@ -2458,7 +2483,11 @@ function reduceList(env) {
             "latestRevision": typeof latest.revision === "number" ? latest.revision : null,
             "latestAsset": strOrNull(latest.asset),
             // When that release was published, when its source says (1n2p.21).
-            "publishedAt": strOrNull(latest.published_at)
+            "publishedAt": strOrNull(latest.published_at),
+            // When this machine first saw it, and when an automatic update would take it
+            // (null: now, or no update) (RG-63): the Updates row's note.
+            "firstSeenAt": strOrNull(latest.first_seen_at),
+            "autoEligibleAt": strOrNull(latest.auto_eligible_at)
           }
         })
       }
@@ -2764,7 +2793,7 @@ var PROGRESS_PHASES = ["fetch", "download", "verify", "stage", "commit", "copy"]
 
 // What a change does, by its template (a change without a plan to name it).
 var TEMPLATE_OPS = {
-  "update_all": "update", "update_target": "update", "update_addon": "update", "install": "install",
+  "update_all": "update", "update_all_auto": "update", "update_target": "update", "update_addon": "update", "install": "install",
   "reinstall": "reinstall", "remove": "remove", "pin": "pin", "unpin": "unpin", "dismiss_errors": "dismiss",
   "backup_target": "backup", "backup_all": "backup", "restore": "restore", "restore_addon": "restore",
   "prune_backup": "prune", "doctor_fix": "repair", "doctor_fix_target": "repair"
@@ -4311,11 +4340,16 @@ function openTarget(targets, filter, rowTarget) {
 // Updates view's `rows` (updateRows'), `shown` is what the view showed of them, the
 // update rows in the filter, which the plan runner compares with the plan. The label
 // names the client by its player name (`targets`, `status`'s; its id without them).
-function updateRequest(filter, rows, targets) {
+function updateRequest(filter, rows, targets, auto) {
+  // The automatic update (RG-63): every client's, as `update --auto`, which takes only
+  // what has settled; what it is expected to take leaves out each row that waits.
+  var unattended = auto === true && !filter
   var request = filter ? { "template": "update_target", "slots": { "target": filter }, "label": "Update " + sheetClient(targets, filter, "") }
-    : { "template": "update_all", "slots": {}, "label": "Update all" }
+    : { "template": unattended ? "update_all_auto" : "update_all", "slots": {}, "label": "Update all" }
   if (Array.isArray(rows)) {
-    request.shown = rows.filter(function(r) { return !!r && r.kind === "update" && (!filter || r.target === filter) }).map(shownOf)
+    request.shown = rows.filter(function(r) {
+      return !!r && r.kind === "update" && (!filter || r.target === filter) && !(unattended && r.autoEligibleAt)
+    }).map(shownOf)
   }
   return request
 }
@@ -4489,6 +4523,15 @@ function rowRelease(row) {
   return { "release_id": id, "revision": text }
 }
 
+// When an automatic update takes a release that waits (RG-63), as its row says it:
+// "00:52" within a day, else "Mon 00:52"; "" when it does not wait.
+function autoAfterText(iso, nowMs) {
+  var at = instantMs(str(iso))
+  if (isNaN(at)) return ""
+  if (typeof nowMs !== "number" || at - nowMs < 86400000) return clockText(iso)
+  return copy("time.weekday", { "day": wordAt("time.weekdays.short", new Date(at).getDay()), "time": clockText(iso) })
+}
+
 // One Updates row (1n2p.21, design doc §5.3): an AddonRow's fields, and what the plan
 // runner compares (shownOf's).
 function updateRow(t, a, kind, status, client, nowMs, doneWord) {
@@ -4497,6 +4540,9 @@ function updateRow(t, a, kind, status, client, nowMs, doneWord) {
   if (kind === "update") {
     var age = releaseAge(a.publishedAt, nowMs)
     if (age) meta.push(age)
+    // Design 7.7: "Automatic update after 00:52". Update takes it at once.
+    var after = autoAfterText(a.autoEligibleAt, nowMs)
+    if (after) meta.push(copy("updates.meta.auto_after", { "time": after }))
     if (running) meta.push(copy("updates.meta.running", { "client": client }))
   } else if (kind === "done") {
     meta.push(str(doneWord))
@@ -4531,6 +4577,9 @@ function updateRow(t, a, kind, status, client, nowMs, doneWord) {
     "kind": kind, "pinned": a.pinned, "reload": running, "group": "", "groupCount": "", "groupTarget": "", "groupUpdates": 0,
     "targetKey": t.key, "channel": a.channel, "latestSource": a.latestSource, "latestReleaseId": a.latestReleaseId,
     "latestRevision": a.latestRevision === undefined ? null : a.latestRevision,
+    // When an automatic update would take this update (null: now): such a row is not
+    // in what the automatic update's preview expects (updateRequest's `auto`).
+    "autoEligibleAt": kind === "update" ? strOrNull(a.autoEligibleAt) : null,
     "latestAsset": a.latestAsset, "sourceWord": SOURCE_WORDS[a.source] || copy("installed.source.unknown"),
     "fromVersion": kind === "done" ? "" : (a.version || "?"),
     "toVersion": kind === "update" ? str(a.latest) : (kind === "done" ? str(a.version) : ""),
@@ -7380,6 +7429,8 @@ var COPY = {
   "settings.omaddons.auto_backup.off": "Off",
   "settings.omaddons.check_interval_hours": "Check for updates every",
   "settings.omaddons.check_interval_hours.about": "After this long a client's update check is due again; the panel checks then when its own check is on.",
+  "settings.omaddons.update_min_age_hours": "Automatic updates wait",
+  "settings.omaddons.update_min_age_hours.about": "How long a new release must have been known here before an automatic update takes it, so a broken one has time to be pulled. Update takes it at once.",
 
   // The restore chooser (1n2p.29, design doc §2.4).
   "restore.title.owner": "Restore {owner} settings on {client}",
@@ -8206,6 +8257,7 @@ var COPY = {
   "updates.meta.pinned": "pinned at {version} · {latest} available",
   "updates.meta.blocked": "{latest} is out, but it doesn't load on {client}",
   "updates.meta.failed": "Couldn't check {source} for a new release",
+  "updates.meta.auto_after": "Automatic update after {time}",
   "updates.action.update": "Update",
   "updates.action.notes": "Release notes",
   "updates.action.check": "Check again",
@@ -9533,6 +9585,9 @@ if (typeof module !== "undefined") {
     incompatibleOf: incompatibleOf,
     selfUpdate: selfUpdate,
     autoUpdateDue: autoUpdateDue,
+    updatesWaiting: updatesWaiting,
+    autoAfterText: autoAfterText,
+    clockText: clockText,
     autoUpdatePreviewAct: autoUpdatePreviewAct,
     autoUpdateApplyAct: autoUpdateApplyAct,
     autoUpdateFacts: autoUpdateFacts,
