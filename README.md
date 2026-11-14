@@ -3715,7 +3715,7 @@ A checkpoint test that cannot run (a variable unset, its client running or not i
 
 ### Work tracking
 
-Work is tracked with beads (`br`), and agents follow `AGENTS.md`. `br ready` shows unblocked work, and `br show <id>` shows one bead.
+Work is tracked with beads (`br`): `br ready` shows unblocked work, and `br show <id>` shows one bead.
 
 ---
 
