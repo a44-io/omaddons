@@ -227,6 +227,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
                 asset: None,
                 revision: None,
                 any_flavor: AnyFlavorIntent::Keep,
+                rollback: None,
             }),
         };
         match change {

@@ -1728,6 +1728,7 @@ mod engine_api {
             asset: None,
             revision: None,
             any_flavor: omaddons::engine::plan::AnyFlavorIntent::Keep,
+            rollback: None,
         }
     }
 

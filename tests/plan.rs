@@ -246,6 +246,7 @@ mod support {
             asset: None,
             revision: None,
             any_flavor: omaddons::engine::plan::AnyFlavorIntent::Keep,
+            rollback: None,
         }
     }
 

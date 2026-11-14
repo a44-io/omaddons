@@ -165,6 +165,7 @@ mod support {
                             asset: None,
                             revision: None,
                             any_flavor: omaddons::engine::plan::AnyFlavorIntent::Keep,
+                            rollback: None,
                         }],
                         default_kind: TxKind::Install,
                         dependency_locks: std::collections::BTreeMap::new(),

@@ -131,6 +131,7 @@ fn install(r: &str) -> RequestedChange {
         asset: None,
         revision: None,
         any_flavor: AnyFlavorIntent::Keep,
+        rollback: None,
     }
 }
 

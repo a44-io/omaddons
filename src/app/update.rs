@@ -313,6 +313,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                 asset: None,
                 revision: None,
                 any_flavor: AnyFlavorIntent::Keep,
+                rollback: None,
             })
         } else if let Some(error) = unanswered.get(&(a.r#ref.clone(), a.channel)) {
             pushed.push((target_ref, failed(s, ItemError::from(error))));

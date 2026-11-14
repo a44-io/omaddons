@@ -580,6 +580,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             } else {
                 AnyFlavorIntent::Keep
             },
+            rollback: None,
         }
     };
     let parsed: Vec<&ParsedRef> = items

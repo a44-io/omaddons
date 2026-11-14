@@ -288,6 +288,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             revision: None,
             // A per-client decision: never copied.
             any_flavor: AnyFlavorIntent::Keep,
+            rollback: None,
         });
         copied.push(a);
         requested.push(ItemRequest {

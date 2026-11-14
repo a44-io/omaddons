@@ -139,6 +139,10 @@ pub enum RequestedChange {
         revision: Option<u32>,
         /// `--any-flavor` / `--no-any-flavor`, or a desired-state entry's `any_flavor`.
         any_flavor: AnyFlavorIntent,
+        /// `skip --back`: this install goes back from the installed release, which it
+        /// marks skipped (design 7.5.4). `None` for every other install. Boxed: the
+        /// expected release would make every other change as large.
+        rollback: Option<Box<RollbackOf>>,
     },
     Remove {
         addon: String,
@@ -231,6 +235,93 @@ pub struct InstallIntent {
     pub any_flavor: AnyFlavorIntent,
     /// Set on the second pass of a GitHub look-back. A look-back never looks back again.
     pub looked_back: Option<LookedBack>,
+    /// A rollback's duties (`RequestedChange::Install.rollback`), checked again under
+    /// the lock against the record as it is then.
+    pub rollback: Option<RollbackOf>,
+}
+
+/// What makes an install a rollback (design 7.5.4, decision RG-D25): it goes back from
+/// the installed release and marks that release skipped (`origin: rollback`), in the
+/// same commit. Both duties hold at planning and again under the commit lock, against
+/// the record as it is then, so a command copied from an old `errors` run can neither
+/// roll back a release it was never about nor mark one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackOf {
+    /// The release the addon must be at (the suspect transaction's `to`): a record that
+    /// is not [`InstalledRelease::same_artifact`] as it, or no record, refuses with
+    /// `plan_stale` and nothing is written. `None` for the label form (`--to V` on an
+    /// addon whose installed release has no key), which only marks.
+    pub expect: Option<InstalledRelease>,
+    /// The release id of the release going back to, for its archive in the blob cache:
+    /// an offline rollback needs no release memo fact to name it.
+    pub restore_release_id: Option<String>,
+}
+
+/// The `plan_stale` of a rollback whose addon is not at the release it goes back from:
+/// moved on (`existing`), or gone. Not retryable: the same command refuses again.
+fn rollback_moved(
+    addon: &str,
+    existing: Option<&AddonRecord>,
+    expect: &InstalledRelease,
+    target: &str,
+) -> Error {
+    let message = match existing {
+        Some(e) => format!(
+            "{} is at {}, not at {}, the release this rollback goes back from",
+            e.name, e.version, expect.version
+        ),
+        None => format!(
+            "{addon} is not installed on {target}; this rollback went back from {}",
+            expect.version
+        ),
+    };
+    Error::plan_stale(
+        crate::error::PlanStaleSource::Moved,
+        &[crate::error::StalePart::Targets],
+        message,
+        Suggestion::command(["omaddons", "list", "-t", target]),
+    )
+}
+
+/// Refuses a rollback whose addon is not at the release it goes back from (see
+/// [`RollbackOf::expect`]): at planning, and under the lock against the record then.
+fn rollback_holds(
+    intent: &InstallIntent,
+    addon: &str,
+    existing: Option<&AddonRecord>,
+    target: &str,
+) -> Result<()> {
+    let Some(expect) = intent.rollback.as_ref().and_then(|r| r.expect.as_ref()) else {
+        return Ok(());
+    };
+    match existing {
+        Some(e) if InstalledRelease::of(e).same_artifact(expect) => Ok(()),
+        _ => Err(rollback_moved(addon, existing, expect, target)),
+    }
+}
+
+/// The mark a rollback leaves on the release it goes back from (`origin: rollback`),
+/// added to `record` (the record the install leaves) through the one way marks are
+/// added, so a full list fails the change before it commits. Nothing for another
+/// install, or one with no installed release to leave.
+fn mark_rollback(
+    intent: &InstallIntent,
+    existing: Option<&AddonRecord>,
+    record: &mut AddonRecord,
+    target: &str,
+) -> Result<()> {
+    let (Some(_), Some(left)) = (&intent.rollback, existing) else {
+        return Ok(());
+    };
+    let mark = SkippedRelease::pending(
+        ReleaseKey::of_record(left),
+        left.version.clone(),
+        crate::model::SkipOrigin::Rollback,
+    );
+    record
+        .add_skip(mark)
+        .map(|_| ())
+        .map_err(|full| super::edit::skips_full(&full, target))
 }
 
 /// The second pass of a GitHub look-back: the newest release's tag, which had no build
@@ -265,6 +356,7 @@ impl InstallIntent {
             asset: None,
             any_flavor: AnyFlavorIntent::Keep,
             looked_back: None,
+            rollback: None,
         }
     }
 
@@ -1641,19 +1733,25 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                 .map(Box::new);
             }
         }
-        // A locked install whose archive the cache holds, and whose release a fact names
-        // by that archive's hash, needs no source either.
+        // A locked install whose archive the cache holds, and whose release the request
+        // names (a rollback) or a fact names by that archive's hash, needs no source
+        // either: a rollback's offline way back survives a wiped release memo.
         for w in &mut wants {
             if let Want::Install {
                 wanted,
                 file: None,
+                intent,
                 local: local @ None,
                 cached: Some(sha),
                 revision,
                 ..
             } = w
                 && let Some(version) = &wanted.version
-                && let Some(release_id) = ctx.cache.facts().release_of(sha)
+                && let Some(release_id) = intent
+                    .rollback
+                    .as_ref()
+                    .and_then(|r| r.restore_release_id.as_deref())
+                    .or_else(|| ctx.cache.facts().release_of(sha))
             {
                 *local = local_blob_candidate(
                     ctx.blobs,
@@ -3278,6 +3376,9 @@ pub fn rejudge(
                 )));
             };
             let existing = record.addons.values().find(|a| a.r#ref == template.r#ref);
+            // Against the record as it is now: a rollback whose addon moved on, or went,
+            // since planning is refused whatever else holds.
+            rollback_holds(intent, &work.addon, existing, &target.id)?;
             if let Some(existing) = existing {
                 if intent.pinned_noop(existing) {
                     return Ok(Planned::pinned(existing, &target.id));
@@ -3402,6 +3503,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
             asset,
             revision,
             any_flavor,
+            rollback,
         } => {
             // A reinstall without a version asks for the recorded release exactly; the
             // intent keeps no version, so the pin stays as recorded.
@@ -3423,6 +3525,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                 intent: Box::new(InstallIntent {
                     asset: asset.clone(),
                     any_flavor: *any_flavor,
+                    rollback: rollback.as_deref().cloned(),
                     ..InstallIntent::requested(
                         *channel,
                         *channel_explicit,
@@ -4155,6 +4258,9 @@ impl TargetPlanner<'_> {
             .addons
             .values()
             .find(|a| a.r#ref == wanted.r#ref);
+        // A rollback goes back only from the release it was made for.
+        let addon = name.map_or_else(|| wanted.r#ref.to_string(), str::to_owned);
+        rollback_holds(intent, &addon, existing, &self.target.id)?;
         // Before any candidate is looked at: these never move an installed release.
         match existing {
             Some(existing) => {
@@ -4854,7 +4960,8 @@ impl TargetPlanner<'_> {
         };
         // Against whatever `existing` holds now: the snapshot at plan time, the current
         // record under the lock. Folded edits apply after the carry-over.
-        let carried = carry_over(existing, intent, &template);
+        let mut carried = carry_over(existing, intent, &template);
+        mark_rollback(intent, existing, &mut carried, &self.target.id)?;
         let name = carried.name.clone();
         let Some(mut template) = apply_edits(Some(carried), edits, &name, &self.target.id)? else {
             return Err(Error::internal(format!(

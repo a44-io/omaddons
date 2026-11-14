@@ -848,6 +848,9 @@ pub enum PlanStaleSource {
     Replan,
     /// `apply <plan_id>`: the stored plan can never apply; the fix is its dry-run argv.
     Apply,
+    /// The installed release a change was made for is no longer installed (a rollback
+    /// whose addon moved on): the same command refuses again, so it is not retryable.
+    Moved,
 }
 
 /// How a usage fix relates to the command the user typed (M4-D12). Not on the wire:

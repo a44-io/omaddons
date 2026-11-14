@@ -227,6 +227,7 @@ pub fn diff<'s, 'r>(
                     asset: None,
                     revision,
                     any_flavor,
+                    rollback: None,
                 })
             };
             // The version an install takes: pinned ones always, every one when locked.

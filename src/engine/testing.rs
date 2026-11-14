@@ -273,6 +273,7 @@ pub fn install_change(
         asset: None,
         revision: None,
         any_flavor: super::plan::AnyFlavorIntent::Keep,
+        rollback: None,
     }
 }
 
