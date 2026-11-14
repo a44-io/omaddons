@@ -449,6 +449,8 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             no_deps: args.no_deps,
             // The run the token describes: a dry run's, or a bound run's to compare.
             witness: precondition::witnessing(ctx),
+            // RG-52d passes `Unattended` for `update --auto`.
+            policy: crate::engine::plan::UpdatePolicy::Attended,
         };
         let binding = PlanBinding::of_run(ctx, "update", extras.clone());
         match engine.run_bound(

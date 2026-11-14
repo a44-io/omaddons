@@ -594,6 +594,7 @@ impl TxScene {
             run: crate::model::RunId::new(),
             no_deps: false,
             witness: None,
+            policy: super::plan::UpdatePolicy::Attended,
         }
     }
 

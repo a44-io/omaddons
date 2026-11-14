@@ -1215,6 +1215,7 @@ mod runs {
                     run,
                     no_deps: false,
                     witness: None,
+                    policy: omaddons::engine::plan::UpdatePolicy::Attended,
                 };
                 let http = replay(&self.home.env, &self.home.http);
                 let sources = SourceRegistry::builtin(&SourceConfigView::all_enabled());

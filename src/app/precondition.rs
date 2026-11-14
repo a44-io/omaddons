@@ -1509,6 +1509,7 @@ mod tests {
             notes: Vec::new(),
             default_kind: TxKind::Install,
             dependencies: BTreeMap::new(),
+            held: Vec::new(),
         }
     }
 

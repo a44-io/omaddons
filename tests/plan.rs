@@ -153,6 +153,7 @@ mod support {
                 kind: None,
                 no_deps: false,
                 witness: None,
+                policy: omaddons::engine::plan::UpdatePolicy::Attended,
             };
             plan(&req, &ctx).unwrap()
         }

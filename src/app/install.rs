@@ -676,6 +676,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         no_deps: args.no_deps,
         // The run the token describes: a dry run's, or a bound run's to compare.
         witness: precondition::witnessing(ctx),
+        policy: crate::engine::plan::UpdatePolicy::Attended,
     };
     let extras = PlanExtras::default();
     let binding = PlanBinding::of_run(ctx, "install", extras.clone());
@@ -1036,6 +1037,7 @@ fn choose_target<'w>(
         // The requested refs alone choose the target.
         no_deps: true,
         witness: None,
+        policy: crate::engine::plan::UpdatePolicy::Attended,
     };
     // The same cache as the real run: each ref is fetched once across both.
     let probed = engine.run(&probe, Some(cache))?;

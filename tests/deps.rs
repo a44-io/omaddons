@@ -1769,6 +1769,7 @@ mod engine_api {
             run: RunId::new(),
             no_deps: false,
             witness: None,
+            policy: omaddons::engine::plan::UpdatePolicy::Attended,
         };
         let http = replay(&home.env, &home.http);
         let sources = SourceRegistry::builtin(&SourceConfigView::all_enabled());

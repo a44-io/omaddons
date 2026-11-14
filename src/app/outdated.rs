@@ -1003,6 +1003,7 @@ fn verify(
         // Verifying the updates themselves: their dependencies download at update time.
         no_deps: true,
         witness: None,
+        policy: crate::engine::plan::UpdatePolicy::Attended,
     };
     let mut verified = Verified::default();
     if req.targets.is_empty() {

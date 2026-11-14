@@ -53,6 +53,11 @@ pub struct PlanOpts {
     pub registry: SourceRegistry,
     pub scope: WitnessScope,
     pub limits: ArchiveLimits,
+    /// `Attended` by default; `Unattended` plans as `update --auto` will (RG-52c).
+    pub policy: omaddons::engine::plan::UpdatePolicy,
+    /// The home's catalog (built-in entries and `catalog.d`), as a command loads it,
+    /// so dependencies resolve; an empty one by default.
+    pub with_catalog: bool,
 }
 
 impl Default for PlanOpts {
@@ -63,6 +68,8 @@ impl Default for PlanOpts {
             registry: SourceRegistry::builtin(&SourceConfigView::all_enabled()),
             scope: WitnessScope::default(),
             limits: ArchiveLimits::default(),
+            policy: omaddons::engine::plan::UpdatePolicy::Attended,
+            with_catalog: false,
         }
     }
 }
@@ -206,7 +213,11 @@ impl PlanningHome {
             "install",
             Actor::Agent,
         );
-        let catalog = Catalog::default();
+        let catalog = if opts.with_catalog {
+            Catalog::load(&self.paths).0
+        } else {
+            Catalog::default()
+        };
         let downloads = DownloadMemo::default();
         let planned = {
             let ctx = PlanCtx {
@@ -240,6 +251,7 @@ impl PlanningHome {
                 kind: None,
                 no_deps: false,
                 witness: Some(opts.scope.clone()),
+                policy: opts.policy,
             };
             plan(&req, &ctx).unwrap()
         };

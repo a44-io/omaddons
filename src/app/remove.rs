@@ -282,6 +282,7 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         run: RunId::new(),
         no_deps: false,
         witness: None,
+        policy: crate::engine::plan::UpdatePolicy::Attended,
     };
     // A remove fetches nothing. `--if-match` binds the real run to its preview's plan; a
     // dry run given a token previews afresh and returns the current one (M3-D46, kept).

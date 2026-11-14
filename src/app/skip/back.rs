@@ -539,6 +539,7 @@ pub(super) fn run(ctx: &Context, args: &SkipArgs) -> Result<SkipOutcome> {
         run,
         no_deps: false,
         witness: precondition::witnessing(ctx),
+        policy: crate::engine::plan::UpdatePolicy::Attended,
     };
     let extras = PlanExtras::default();
     let binding = PlanBinding::of_run(ctx, command, extras.clone());

@@ -30,6 +30,8 @@ pub use undo::{
     SvCounts, SvPolicy, UndoFacts, UndoOutcome, UndoRequest, UndoSelector, WtfUndo, undo,
 };
 #[cfg(test)]
+mod auto_policy_tests;
+#[cfg(test)]
 mod rollback_tests;
 #[cfg(test)]
 pub(crate) mod testing;

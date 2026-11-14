@@ -366,6 +366,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             run,
             no_deps: args.no_deps,
             witness,
+            policy: crate::engine::plan::UpdatePolicy::Attended,
         };
         let binding = PlanBinding::of_run(ctx, "copy", extras.clone());
         match engine.run_bound(

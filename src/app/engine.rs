@@ -448,6 +448,7 @@ mod tests {
                 run: RunId::new(),
                 no_deps: false,
                 witness: None,
+                policy: crate::engine::plan::UpdatePolicy::Attended,
             };
             let got: Vec<&str> = read_around(&req).iter().map(|t| t.id.as_str()).collect();
             assert_eq!(got, want, "{case}");

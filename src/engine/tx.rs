@@ -134,6 +134,9 @@ pub struct TxRequest {
     /// Collect an approval witness per target while planning: a dry run that returns a
     /// token, or a run bound to one. `None` collects none.
     pub witness: Option<WitnessScope>,
+    /// `Unattended` for `update --auto` alone: the planner holds each release it settles
+    /// that has not stood long enough; every other command is `Attended`.
+    pub policy: super::plan::UpdatePolicy,
 }
 
 /// One target and its changes; unregistered targets are registered at commit.
@@ -416,6 +419,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         kind: req.kind,
         no_deps: req.no_deps,
         witness: req.witness.clone(),
+        policy: req.policy,
     };
     let no_catalog = Catalog::default();
     let transient;

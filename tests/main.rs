@@ -169,5 +169,6 @@ mod toc_matrix;
 mod undo_history;
 mod uninstalled_client;
 mod update;
+mod update_auto_planner;
 mod witness;
 mod wowi_index;

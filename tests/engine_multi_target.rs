@@ -179,6 +179,7 @@ mod support {
                 run,
                 no_deps: false,
                 witness: None,
+                policy: omaddons::engine::plan::UpdatePolicy::Attended,
             }
         }
 

@@ -89,6 +89,24 @@ pub struct PlanRequest {
     /// Collect an approval witness per target while planning (`Plan.witnesses`), with
     /// what it covers beyond the plan; `None` collects none.
     pub witness: Option<WitnessScope>,
+    /// Whom the plan answers to: a person (every command but `update --auto`), or nobody,
+    /// for whom every release the planner settles must have stood for a while.
+    pub policy: UpdatePolicy,
+}
+
+/// Whom a plan answers to (design 7.6). `Attended`: a person, who installs what was
+/// asked. `Unattended`: nobody watches (`update --auto`), so every release the planner
+/// finally settles for a request that names no version (the first choice, a look-back's,
+/// a new dependency's) must have stood `min_age` since this machine first saw it, as of
+/// `now`; one that has not is held ([`Held`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UpdatePolicy {
+    #[default]
+    Attended,
+    Unattended {
+        min_age: std::time::Duration,
+        now: Timestamp,
+    },
 }
 
 /// The changes for one target.
@@ -798,6 +816,7 @@ impl Plan {
                     notes: Vec::new(),
                     default_kind: TxKind::Install,
                     dependencies: BTreeMap::new(),
+                    held: Vec::new(),
                 }
             })
             .collect();
@@ -853,6 +872,38 @@ pub struct TargetPlan {
     /// What each requester's dependencies came to, by requester name.
     #[serde(skip)]
     pub dependencies: BTreeMap<String, DepReport>,
+    /// What the unattended policy left out of this run (design 7.6), for the command
+    /// to report; empty under `Attended`.
+    #[serde(skip)]
+    pub held: Vec<Held>,
+}
+
+/// One addon the unattended policy left where it is for this run (design 7.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    pub addon: String,
+    pub r#ref: Ref,
+    /// The release the planner settled for it, which it did not take.
+    pub release_id: String,
+    pub version: String,
+    pub revision: Option<u32>,
+    pub reason: HeldReason,
+    /// When it may be taken: its own release's (`too_new`) or the held dependency's
+    /// (`dependency_held`); `None` when the whole client's update is held for this run.
+    pub eligible_at: Option<Timestamp>,
+}
+
+/// Why an addon was held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeldReason {
+    /// Its release has not stood `min_age` since this machine first saw it.
+    TooNew,
+    /// It requires, directly or through other new dependencies, the release of
+    /// `dependency`, which is held.
+    DependencyHeld { dependency: String },
+    /// A second plan without the held addons still settled a held release, so the
+    /// client's whole update waits for this run.
+    ClientHeld,
 }
 
 /// What one addon's required dependencies came to on a target.
@@ -1560,6 +1611,7 @@ impl AddonWork {
 }
 
 /// A change after its ref is known, before fetching.
+#[derive(Clone)]
 enum Want {
     Install {
         /// The installed addon's name, for an update.
@@ -1819,11 +1871,17 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         })
         .count() as u64;
 
-    let mut targets = Vec::with_capacity(prepared.len());
-    let mut failures = Vec::new();
-    let mut facts = Vec::new();
-    let mut witnesses = Vec::new();
-    for (tr, record, index, wants) in prepared {
+    // One client's plan from its wants: its target plan, its failures, its witness and
+    // what downloading taught. Called once per client, and once more under the
+    // unattended policy when it held a release (design 7.6, [`replan_held`]).
+    let plan_client = |tr: &TargetRequest,
+                       record: TargetRecord,
+                       index: Option<FilesIndex>,
+                       wants: Vec<Want>|
+     -> ClientPlan {
+        let mut failures = Vec::new();
+        let mut facts = Vec::new();
+        let mut witnesses = Vec::new();
         let target = &tr.target;
         let mut tp = TargetPlan {
             target: target.id.clone(),
@@ -1841,6 +1899,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             notes: Vec::new(),
             default_kind: tr.default_kind,
             dependencies: BTreeMap::new(),
+            held: Vec::new(),
         };
         let live = match live_inventory(ctx, target, &record) {
             Ok(live) => live,
@@ -1866,8 +1925,12 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                 if req.witness.is_some() {
                     witnesses.push(bare_witness(target));
                 }
-                targets.push(tp);
-                continue;
+                return ClientPlan {
+                    tp,
+                    failures,
+                    witnesses,
+                    facts,
+                };
             }
         };
         let planner = TargetPlanner {
@@ -1882,6 +1945,8 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             candidate_items,
             view: RefCell::new(WorkingView::default()),
             notes: RefCell::new(Vec::new()),
+            held: RefCell::new(Vec::new()),
+            held_for: RefCell::new(Vec::new()),
         };
         // First pass, in argument order: inspect every install; a second request for a
         // ref collapses into the first (the command reports it as a duplicate).
@@ -2054,6 +2119,13 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         tp.creates_addons_dir =
             live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
         tp.notes.extend(planner.notes.take());
+        let planned: Vec<&AddonRecord> = tp.work.iter().filter_map(AddonWork::record).collect();
+        tp.held = spread_holds(
+            planner.held.take(),
+            &planner.held_for.take(),
+            &tp.dependencies,
+            &planned,
+        );
         if let Some(scope) = &req.witness {
             let wctx = WitnessCtx {
                 paths: ctx.paths,
@@ -2070,8 +2142,34 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                 }
             }
         }
-        targets.push(tp);
         for fact in planner.facts.into_inner() {
+            merge_fact(&mut facts, fact);
+        }
+        ClientPlan {
+            tp,
+            failures,
+            witnesses,
+            facts,
+        }
+    };
+
+    let mut targets = Vec::with_capacity(prepared.len());
+    let mut failures = Vec::new();
+    let mut facts = Vec::new();
+    let mut witnesses = Vec::new();
+    for (tr, record, index, wants) in prepared {
+        let first = plan_client(tr, record.clone(), index.clone(), wants.clone());
+        let client = if first.tp.held.is_empty() {
+            first
+        } else {
+            replan_held(first, wants, |wants| {
+                plan_client(tr, record.clone(), index.clone(), wants)
+            })
+        };
+        targets.push(client.tp);
+        failures.extend(client.failures);
+        witnesses.extend(client.witnesses);
+        for fact in client.facts {
             merge_fact(&mut facts, fact);
         }
     }
@@ -2090,6 +2188,144 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         facts,
         witnesses,
     })
+}
+
+/// One client's part of a plan: what `plan`'s `plan_client` returns.
+struct ClientPlan {
+    tp: TargetPlan,
+    failures: Vec<PlanFailure>,
+    witnesses: Vec<ApprovalWitness>,
+    facts: Vec<CandidateFact>,
+}
+
+/// The unattended policy's one re-plan of a client whose plan `first` held a release
+/// (design 7.6): every held addon (its holds already spread, [`spread_holds`]) is left
+/// out of `wants`, and the client is planned once more without them. When that plan
+/// still settles a held release, the client's whole update waits for this run: it is
+/// planned with no change at all, and each addon the second plan would have changed is
+/// held too (`client_held`). Never a second re-plan; what every plan downloaded is kept.
+fn replan_held(
+    first: ClientPlan,
+    wants: Vec<Want>,
+    plan_client: impl Fn(Vec<Want>) -> ClientPlan,
+) -> ClientPlan {
+    let mut held = first.tp.held;
+    let kept: Vec<Want> = wants.into_iter().filter(|w| !held_want(w, &held)).collect();
+    let mut second = plan_client(kept);
+    let mut facts = first.facts;
+    facts.append(&mut second.facts);
+    if second.tp.held.is_empty() {
+        second.tp.held = held;
+        second.facts = facts;
+        return second;
+    }
+    let mut whole = plan_client(Vec::new());
+    for h in std::mem::take(&mut second.tp.held) {
+        if !held
+            .iter()
+            .any(|kept| kept.addon.eq_ignore_ascii_case(&h.addon))
+        {
+            held.push(h);
+        }
+    }
+    for record in second.tp.work.iter().filter_map(AddonWork::record) {
+        if !held
+            .iter()
+            .any(|h| h.addon.eq_ignore_ascii_case(&record.name))
+        {
+            held.push(Held {
+                addon: record.name.clone(),
+                r#ref: record.r#ref.clone(),
+                release_id: record.release_id.clone().unwrap_or_default(),
+                version: record.version.clone(),
+                revision: record.revision,
+                reason: HeldReason::ClientHeld,
+                eligible_at: None,
+            });
+        }
+    }
+    whole.tp.held = held;
+    facts.append(&mut whole.facts);
+    whole.facts = facts;
+    whole
+}
+
+/// Whether `want` installs an addon `held` names, by name or by ref.
+fn held_want(want: &Want, held: &[Held]) -> bool {
+    let Want::Install { name, wanted, .. } = want else {
+        return false;
+    };
+    held.iter().any(|h| {
+        h.r#ref == wanted.r#ref
+            || name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(&h.addon))
+    })
+}
+
+/// A client plan's holds with what they spread to (design 7.6): each requester of a
+/// held dependency (`held_for`, (requester, dependency)) is held, and so is every addon
+/// whose new release installs one held addon with it (`dependencies`, by requester), so
+/// a chain of new dependencies holds back to its first requester. Each spread hold is
+/// `dependency_held`, eligible when the release that started it is, and names that
+/// release's addon; its own release comes from the records the plan would write
+/// (`records`). A requester the plan does not change is not held: it waits on nothing.
+fn spread_holds(
+    mut held: Vec<Held>,
+    held_for: &[(String, String)],
+    dependencies: &BTreeMap<String, DepReport>,
+    records: &[&AddonRecord],
+) -> Vec<Held> {
+    let hold = |held: &mut Vec<Held>, requester: &str, cause: &Held| {
+        if held.iter().any(|h| h.addon.eq_ignore_ascii_case(requester)) {
+            return false;
+        }
+        let Some(record) = records
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(requester))
+        else {
+            return false;
+        };
+        let dependency = match &cause.reason {
+            HeldReason::DependencyHeld { dependency } => dependency.clone(),
+            HeldReason::TooNew | HeldReason::ClientHeld => cause.addon.clone(),
+        };
+        held.push(Held {
+            addon: record.name.clone(),
+            r#ref: record.r#ref.clone(),
+            release_id: record.release_id.clone().unwrap_or_default(),
+            version: record.version.clone(),
+            revision: record.revision,
+            reason: HeldReason::DependencyHeld { dependency },
+            eligible_at: cause.eligible_at,
+        });
+        true
+    };
+    for (requester, dependency) in held_for {
+        let cause = held
+            .iter()
+            .find(|h| h.addon.eq_ignore_ascii_case(dependency))
+            .cloned();
+        if let Some(cause) = cause {
+            hold(&mut held, requester, &cause);
+        }
+    }
+    loop {
+        let mut grew = false;
+        for (requester, report) in dependencies {
+            let cause = report.installs.iter().find_map(|(_, installed)| {
+                held.iter()
+                    .find(|h| h.addon.eq_ignore_ascii_case(installed))
+                    .cloned()
+            });
+            if let Some(cause) = cause {
+                grew |= hold(&mut held, requester, &cause);
+            }
+        }
+        if !grew {
+            return held;
+        }
+    }
 }
 
 /// A target's bare witness (its marker and judge), else one without a marker when even
@@ -2713,8 +2949,22 @@ impl TargetPlanner<'_> {
             cached: None,
             lock: None,
         };
+        let held_before = self.held.borrow().len();
         let build = match self.prepare_install(dep.name.as_deref(), wanted, source, &intent) {
             Ok(Prepared::Build(build)) => build,
+            // Held by the unattended policy: every addon that requires it waits too
+            // (design 7.6). The client is then planned again without them, so this
+            // plan's report of the dependency is never shown.
+            Ok(Prepared::Done(_)) if self.held.borrow().len() > held_before => {
+                let held = self.held.borrow().last().map(|h| h.addon.clone());
+                if let Some(held) = held {
+                    let mut held_for = self.held_for.borrow_mut();
+                    for requester in dep.all_requesters() {
+                        held_for.push((requester, held.clone()));
+                    }
+                }
+                return Ok(Err(UnresolvedReason::NotShipped));
+            }
             // Installed and kept as it is, yet the folder is not there.
             Ok(Prepared::Done(_)) => return Ok(Err(UnresolvedReason::NotShipped)),
             // An entry not declaring this client was a guess its TOCs settled.
@@ -3225,6 +3475,7 @@ pub fn check_release(
         kind: None,
         no_deps: true,
         witness: None,
+        policy: UpdatePolicy::Attended,
     };
     let record = TargetRecord::empty(TargetKey::from_ulid(ulid::Ulid::nil()));
     let live = Inventory {
@@ -3246,6 +3497,8 @@ pub fn check_release(
         candidate_items: 1,
         view: RefCell::new(WorkingView::default()),
         notes: RefCell::new(Vec::new()),
+        held: RefCell::new(Vec::new()),
+        held_for: RefCell::new(Vec::new()),
     };
     let selection = select(set, target, wanted.channel, wanted.version.as_deref());
     let result = match selection.empty_reason {
@@ -3358,6 +3611,8 @@ pub fn rejudge(
         candidate_items: 0,
         view: RefCell::new(view.clone()),
         notes: RefCell::new(Vec::new()),
+        held: RefCell::new(Vec::new()),
+        held_for: RefCell::new(Vec::new()),
     };
     let folders = match &work.mode {
         WorkMode::Folders(folders) => folders,
@@ -3814,6 +4069,18 @@ impl Planned {
         }
     }
 
+    /// An addon the unattended policy left where it is for this run (design 7.6): the
+    /// command reports `held` itself.
+    fn held(held: &Held, target: &str) -> Self {
+        Self::Unchanged {
+            warnings: Vec::new(),
+            notes: vec![format!(
+                "{target}: {} unchanged: {} has not stood the wait for an automatic update",
+                held.addon, held.version
+            )],
+        }
+    }
+
     /// The installed `existing` left where it is because the release a request without a
     /// version finally chose (`release_id` at `revision`, labelled `version`) is skipped.
     fn skipped_release(
@@ -4041,6 +4308,11 @@ struct TargetPlanner<'a> {
     view: RefCell<WorkingView>,
     /// `-v` notes from downloading (a header hash that could not be checked).
     notes: RefCell<Vec<String>>,
+    /// What the unattended policy held so far on this target ([`TargetPlan::held`]).
+    held: RefCell<Vec<Held>>,
+    /// (requester, held dependency): each addon whose new release requires a dependency
+    /// the policy held, for [`spread_holds`].
+    held_for: RefCell<Vec<(String, String)>>,
 }
 
 /// What ownership and the running policy allow.
@@ -4246,6 +4518,9 @@ impl TargetPlanner<'_> {
         intent: &InstallIntent,
     ) -> Result<Prepared> {
         one_addons_dir(&ClientPaths::new(&self.target.client_dir))?;
+        // An archive the user named, or a recorded one from the blob cache, is no release
+        // the planner chose: the unattended gate never asks about it.
+        let chosen = source.file.is_none() && source.local.is_none();
         let CandidateSource {
             file,
             local,
@@ -4597,6 +4872,22 @@ impl TargetPlanner<'_> {
                 winner.candidate.revision,
                 &self.target.id,
             )));
+        }
+        // An unattended run takes no release that has not stood its wait since this
+        // machine first saw it, whichever the planner finally chose: the first choice, a
+        // look-back's, a new dependency's (design 7.6). Checked after the download, so
+        // bytes replaced under the tag count as new.
+        if chosen
+            && let Some(held) = self.too_new(
+                wanted,
+                &winner.candidate,
+                intent,
+                existing.map_or(winner.name.as_str(), |e| e.name.as_str()),
+            )
+        {
+            let planned = Planned::held(&held, &self.target.id);
+            self.held.borrow_mut().push(held);
+            return Ok(Prepared::Done(planned));
         }
         let mut winner = winner;
         if let Some(looked) = &intent.looked_back {
@@ -5897,6 +6188,82 @@ impl TargetPlanner<'_> {
             Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset"),
         )
         .details(json!({ "ref": wanted.r#ref.to_string(), "reason": "not_cached" }))
+    }
+
+    /// Under `Unattended`, the hold of `candidate` (addon `addon`), the release settled for
+    /// a request that names no version, when it has not stood the wait since this
+    /// machine first saw it ([`crate::resolve::updates::auto_gate`]). `None` under
+    /// `Attended`, and for a named version, a reinstall, or a local or URL install, which
+    /// choose no release.
+    fn too_new(
+        &self,
+        wanted: &Wanted,
+        candidate: &crate::model::Candidate,
+        intent: &InstallIntent,
+        addon: &str,
+    ) -> Option<Held> {
+        let UpdatePolicy::Unattended { min_age, now } = self.req.policy else {
+            return None;
+        };
+        if intent.version.is_some() || intent.reinstall || is_local(&wanted.r#ref) {
+            return None;
+        }
+        let first_seen = self.first_seen(wanted, candidate, intent);
+        match crate::resolve::updates::auto_gate(now, min_age, first_seen) {
+            crate::resolve::updates::AutoGate::Take => None,
+            crate::resolve::updates::AutoGate::TooNew { eligible_at } => Some(Held {
+                addon: addon.to_owned(),
+                r#ref: wanted.r#ref.clone(),
+                release_id: candidate.release_id.clone(),
+                version: candidate.version.clone(),
+                revision: candidate.revision,
+                reason: HeldReason::TooNew,
+                eligible_at: Some(eligible_at),
+            }),
+        }
+    }
+
+    /// When this machine first saw `candidate`'s release (design 7.6.1): its memo
+    /// entry's sighting; for a release a look-back found, when that look-back was made.
+    /// `None`, which the gate takes as first seen now, when nothing remembers it, or when
+    /// this run downloaded its archive with bytes other than those the memo knew for it
+    /// (content replaced under its tag, RG-50).
+    fn first_seen(
+        &self,
+        wanted: &Wanted,
+        candidate: &crate::model::Candidate,
+        intent: &InstallIntent,
+    ) -> Option<Timestamp> {
+        let replaced = self.facts.borrow().iter().any(|fact| {
+            fact.release_id == candidate.release_id
+                && fact.asset == candidate.asset.filename
+                && self
+                    .ctx
+                    .cache
+                    .facts()
+                    .hash(&fact.release_id, &fact.asset)
+                    .is_some_and(|(known, _)| known != fact.sha256)
+        });
+        if replaced {
+            return None;
+        }
+        let key = ReleaseKey::of_candidate(candidate)?;
+        self.ctx
+            .cache
+            .entry(&wanted.r#ref, wanted.channel)
+            .and_then(|entry| crate::state::memo::first_seen(&entry, &key))
+            .or_else(|| {
+                let looked = intent.looked_back.as_ref()?;
+                self.ctx
+                    .cache
+                    .remembered_look_back(
+                        &wanted.r#ref,
+                        wanted.channel,
+                        self.target.family,
+                        &looked.newest,
+                    )
+                    .map(|(_, at)| at)
+            })
     }
 
     /// A GitHub look-back for this client, from `newest` (a tag), on any channel: the
@@ -7881,6 +8248,7 @@ mod tests {
             kind: None,
             no_deps: false,
             witness: None,
+            policy: UpdatePolicy::Attended,
         };
         let plan = plan(&req, &ctx).unwrap();
         f(&req, &ctx, &plan)
@@ -8217,5 +8585,230 @@ mod tests {
         );
         let wire = serde_json::to_value(&releases[0]).unwrap();
         assert!(wire.get("asset").is_none(), "{wire}");
+    }
+
+    // ---- The unattended policy's holds (RG-52c)
+
+    fn held(addon: &str, reason: HeldReason) -> Held {
+        let lower = addon.to_ascii_lowercase();
+        Held {
+            addon: addon.into(),
+            r#ref: format!("gh:o/{lower}").parse().unwrap(),
+            release_id: format!("gh:o/{lower}@2"),
+            version: "2".into(),
+            revision: None,
+            reason,
+            eligible_at: Some("2026-11-14T18:00:00Z".parse().unwrap()),
+        }
+    }
+
+    /// A table over small dependency graphs: who a held release holds back.
+    #[test]
+    fn a_hold_spreads_to_every_requester_of_the_held_release_and_no_further() {
+        let records: Vec<AddonRecord> = ["Foo", "Bar", "Lib1", "Baz"]
+            .iter()
+            .map(|n| requiring(n, AddonReason::Explicit, &[]))
+            .collect();
+        let planned: Vec<&AddonRecord> = records.iter().collect();
+        let installs = |deps: &[&str]| DepReport {
+            installs: deps
+                .iter()
+                .map(|d| (FolderName::new(d).unwrap(), (*d).to_owned()))
+                .collect(),
+            ..DepReport::default()
+        };
+        let by = |pairs: &[(&str, &[&str])]| -> BTreeMap<String, DepReport> {
+            pairs
+                .iter()
+                .map(|(requester, deps)| ((*requester).to_owned(), installs(deps)))
+                .collect()
+        };
+        let pairs = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+                .collect()
+        };
+        let on = |dependency: &str| HeldReason::DependencyHeld {
+            dependency: dependency.into(),
+        };
+        // (case, held, (requester, held dependency), installed with each requester, holds)
+        type Case<'a> = (
+            &'a str,
+            &'a str,
+            Vec<(String, String)>,
+            BTreeMap<String, DepReport>,
+            Vec<(&'a str, HeldReason)>,
+        );
+        let cases: Vec<Case<'_>> = vec![
+            (
+                "a held update alone",
+                "Foo",
+                pairs(&[]),
+                by(&[("Bar", &["Other"])]),
+                vec![("Foo", HeldReason::TooNew)],
+            ),
+            (
+                "a held new dependency holds its requester; an unrelated update goes",
+                "Lib",
+                pairs(&[("Foo", "Lib")]),
+                by(&[("Baz", &["Other"])]),
+                vec![("Lib", HeldReason::TooNew), ("Foo", on("Lib"))],
+            ),
+            (
+                "a shared dependency holds both its requesters",
+                "Lib",
+                pairs(&[("Foo", "Lib"), ("Bar", "Lib")]),
+                by(&[]),
+                vec![
+                    ("Lib", HeldReason::TooNew),
+                    ("Foo", on("Lib")),
+                    ("Bar", on("Lib")),
+                ],
+            ),
+            (
+                "a chain of two new dependencies holds back to its first requester",
+                "Lib2",
+                pairs(&[("Lib1", "Lib2")]),
+                by(&[("Foo", &["Lib1"])]),
+                vec![
+                    ("Lib2", HeldReason::TooNew),
+                    ("Lib1", on("Lib2")),
+                    ("Foo", on("Lib2")),
+                ],
+            ),
+            (
+                "a requester the plan does not change waits on nothing",
+                "Lib",
+                pairs(&[("Zed", "Lib")]),
+                by(&[]),
+                vec![("Lib", HeldReason::TooNew)],
+            ),
+        ];
+        for (case, root, held_for, dependencies, want) in cases {
+            let got = spread_holds(
+                vec![held(root, HeldReason::TooNew)],
+                &held_for,
+                &dependencies,
+                &planned,
+            );
+            let got: Vec<(&str, HeldReason)> = got
+                .iter()
+                .map(|h| (h.addon.as_str(), h.reason.clone()))
+                .collect();
+            assert_eq!(got, want, "{case}");
+        }
+        // A spread hold waits as long as the release that started it.
+        let spread = spread_holds(
+            vec![held("Lib", HeldReason::TooNew)],
+            &pairs(&[("Foo", "Lib")]),
+            &by(&[]),
+            &planned,
+        );
+        assert_eq!(spread[1].eligible_at, spread[0].eligible_at);
+        assert_eq!(spread[1].release_id, records[0].release_id.clone().unwrap());
+    }
+
+    fn client_plan(held: Vec<Held>) -> ClientPlan {
+        ClientPlan {
+            tp: TargetPlan {
+                target: "retail".into(),
+                key: None,
+                kind: None,
+                changes: Vec::new(),
+                ops: Vec::new(),
+                releases: Vec::new(),
+                reload_required: ReloadRequired::None,
+                warnings: Vec::new(),
+                creates_addons_dir: false,
+                generation: 0,
+                work: Vec::new(),
+                unchanged_warnings: Vec::new(),
+                notes: Vec::new(),
+                default_kind: TxKind::Update,
+                dependencies: BTreeMap::new(),
+                held,
+            },
+            failures: Vec::new(),
+            witnesses: Vec::new(),
+            facts: Vec::new(),
+        }
+    }
+
+    fn update_of(addon: &str) -> Want {
+        Want::Install {
+            name: Some(addon.into()),
+            wanted: Wanted::stable(
+                format!("gh:o/{}", addon.to_ascii_lowercase())
+                    .parse()
+                    .unwrap(),
+            ),
+            file: None,
+            intent: Box::new(InstallIntent::requested(
+                Channel::Stable,
+                false,
+                None,
+                PinIntent::Keep,
+                AddonReason::Explicit,
+                false,
+            )),
+            local: None,
+            cached: None,
+            revision: None,
+        }
+    }
+
+    fn wanted_names(wants: &[Want]) -> Vec<String> {
+        wants
+            .iter()
+            .filter_map(|w| match w {
+                Want::Install { name, .. } => name.clone(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The client is planned again once, without what was held; when that plan holds
+    /// again, the client's whole update waits (an empty plan), and nothing re-plans a
+    /// third time.
+    #[test]
+    fn a_held_release_replans_the_client_once_and_a_second_hold_holds_it_all() {
+        let wants = vec![update_of("Foo"), update_of("Bar")];
+        let calls: RefCell<Vec<Vec<String>>> = RefCell::new(Vec::new());
+        let settled = replan_held(
+            client_plan(vec![held("Foo", HeldReason::TooNew)]),
+            wants.clone(),
+            |wants| {
+                calls.borrow_mut().push(wanted_names(&wants));
+                client_plan(Vec::new())
+            },
+        );
+        assert_eq!(
+            calls.take(),
+            [vec!["Bar".to_owned()]],
+            "one re-plan, without Foo"
+        );
+        assert_eq!(settled.tp.held, [held("Foo", HeldReason::TooNew)]);
+
+        let settled = replan_held(
+            client_plan(vec![held("Foo", HeldReason::TooNew)]),
+            wants,
+            |wants| {
+                let first = calls.borrow().is_empty();
+                calls.borrow_mut().push(wanted_names(&wants));
+                client_plan(if first {
+                    vec![held("Bar", HeldReason::TooNew)]
+                } else {
+                    Vec::new()
+                })
+            },
+        );
+        assert_eq!(
+            calls.take(),
+            [vec!["Bar".to_owned()], Vec::new()],
+            "the re-plan, then the client planned with no change at all"
+        );
+        let held: Vec<&str> = settled.tp.held.iter().map(|h| h.addon.as_str()).collect();
+        assert_eq!(held, ["Foo", "Bar"]);
     }
 }

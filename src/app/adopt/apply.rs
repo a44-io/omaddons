@@ -858,6 +858,7 @@ pub(super) fn commit(
             run,
             no_deps: true,
             witness: precondition::witnessing(ctx),
+            policy: crate::engine::plan::UpdatePolicy::Attended,
         };
         let extras = PlanExtras::default();
         let binding = PlanBinding::of_run(ctx, "adopt", extras.clone());
