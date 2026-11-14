@@ -159,6 +159,7 @@ fn overridden(info: &LimitInfo, effective: &EffectiveLimits) -> LimitValue {
     let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
     match info.config_key {
         Some("default_check_interval") => LimitValue::Millis(ms(effective.default_check_interval)),
+        Some("default_update_min_age") => LimitValue::Millis(ms(effective.update_min_age)),
         Some("archive_max_entries") => LimitValue::Count(effective.archive_max_entries),
         Some("archive_max_uncompressed") => LimitValue::Bytes(effective.archive_max_uncompressed),
         Some("archive_max_ratio") => LimitValue::Ratio(effective.archive_max_ratio),

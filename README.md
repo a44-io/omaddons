@@ -2443,7 +2443,7 @@ It reads the binary, `config.toml`, and whether a credential is present (never i
 - `schemas_uri` (`omaddons robot-docs schema`) and `robot_docs_uri` (`omaddons robot-docs guide`);
 - `config_error`: `null`, or why `config.toml` could not be used, `{path, line, column, message}`.
 
-Each value `config.toml` can change carries `source`: `config` when the file sets a key that applies to it, else `builtin` (`check_interval_hours = 0` stays `builtin`, and CurseForge and Wago stay `enabled: false` whatever the file says). A pointer (`schemas_uri`, `robot_docs_uri`, `data_schema`) is a command to run, `null` in a build without it.
+Each value `config.toml` can change carries `source`: `config` when the file sets a key that applies to it, else `builtin` (`check_interval_hours = 0` stays `builtin`, while `update_min_age_hours = 0` is `config`: it turns the wait off; and CurseForge and Wago stay `enabled: false` whatever the file says). A pointer (`schemas_uri`, `robot_docs_uri`, `data_schema`) is a command to run, `null` in a build without it.
 
 A `config.toml` that does not parse, holds a value out of range or cannot be read does not fail the command: it exits 0 with the built-in values and `config_error` (`path` `null` with `HOME` unset or relative). Unknown keys warn `config_unknown_key`, as on every command.
 
@@ -3076,6 +3076,9 @@ auto_backup = "daily"        # "off", "daily" (copy-on-write only) or "daily-cop
 # How old an update check may be before status calls it stale (updates.stale):
 # 1–48 hours; 0 keeps the default of 6.
 check_interval_hours = 6
+# How long an automatic update waits after this machine first saw a release:
+# 0–48 hours; 0 turns the wait off.
+update_min_age_hours = 6
 
 [limits]                     # sizes are integers or "KiB" / "MiB" / "GiB" strings
 archive_max_entries = 20000
@@ -3108,6 +3111,7 @@ label = "my 3.3.5a server"
 | `git_hosts` | `[]` | Hosts allowed for `git:` refs through the git binary. Never an HTTP host from [Network and privacy](#network-and-privacy) (always allowed, CurseForge or Wago, in any case): `config set` refuses one, and a `config.toml` that lists one fails to load, naming it |
 | `auto_backup` | `daily` | Automatic `WTF/` checkpoints (see [Automatic backups](#automatic-backups)): `daily` only by cloning (btrfs, xfs), so they cost no space at first; `daily-copy` also byte-copies, within `limits.backup_copy_max_mb`; `off` makes none |
 | `check_interval_hours` | `6` | `status` reports `updates.stale` when the oldest check is older than this (1–48; 0 keeps the default) |
+| `update_min_age_hours` | `6` | Hours an automatic update waits after this machine first saw a release before it takes it, so a broken release has time to be pulled (0–48; 0 turns the wait off, unlike `check_interval_hours`). `capabilities` lists it as `DEFAULT_UPDATE_MIN_AGE` |
 | `limits.archive_max_entries` | `20000` | Entries per archive |
 | `limits.archive_max_uncompressed` | `1GiB` | Expanded size per archive |
 | `limits.archive_max_ratio` | `200` | Compression ratio, checked past 32 MiB |

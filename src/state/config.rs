@@ -47,6 +47,9 @@ pub struct Config {
     /// Hours before `status` calls an update check stale (`updates.stale`), 0–48; 0
     /// keeps the default.
     pub check_interval_hours: Option<u32>,
+    /// Hours an automatic update waits after this machine first saw a release, 0–48; 0
+    /// turns the wait off (unlike `check_interval_hours`, where it keeps the default).
+    pub update_min_age_hours: Option<u32>,
     /// Extra https git hosts allowed for `git:` refs.
     pub git_hosts: Vec<String>,
     pub limits: LimitsConfig,
@@ -299,6 +302,11 @@ pub const KEYS: &[KeySpec] = &[
         "Hours before status calls an update check stale",
     ),
     spec(
+        "update_min_age_hours",
+        KeyKind::Hours,
+        "Hours an automatic update waits after a release first appears; 0 turns the wait off",
+    ),
+    spec(
         "git_hosts",
         KeyKind::HostList,
         "Extra https git hosts for git: refs",
@@ -410,6 +418,7 @@ const RULES_FIELDS: &[&str] = &[
 /// publishes as the limit's `config_key`: the one `omaddons config set` takes.
 pub const LIMIT_CONFIG_KEYS: &[(&str, &[&str])] = &[
     ("DEFAULT_CHECK_INTERVAL", &["check_interval_hours"]),
+    ("DEFAULT_UPDATE_MIN_AGE", &["update_min_age_hours"]),
     ("ARCHIVE_MAX_ENTRIES", &["limits.archive_max_entries"]),
     (
         "ARCHIVE_MAX_UNCOMPRESSED",
@@ -430,11 +439,13 @@ pub const LIMIT_CONFIG_KEYS: &[(&str, &[&str])] = &[
 
 impl Config {
     /// Whether `config.toml` sets `key`, one of [`LIMIT_CONFIG_KEYS`]'s keys
-    /// (`check_interval_hours` counts only above 0, which keeps the default).
+    /// (`check_interval_hours` counts only above 0, which keeps the default;
+    /// `update_min_age_hours` counts at 0 too, which turns the wait off).
     pub fn sets_limit_key(&self, key: &str) -> bool {
         let l = &self.limits;
         match key {
             "check_interval_hours" => self.check_interval_hours.is_some_and(|h| h > 0),
+            "update_min_age_hours" => self.update_min_age_hours.is_some(),
             "limits.archive_max_entries" => l.archive_max_entries.is_some(),
             "limits.archive_max_uncompressed" => l.archive_max_uncompressed.is_some(),
             "limits.archive_max_ratio" => l.archive_max_ratio.is_some(),
@@ -603,15 +614,13 @@ impl Config {
         let raw: toml::Table = toml::from_str(text).map_err(|e| corrupt(path, text, &e))?;
         let warnings = unknown_keys(&raw, path);
         let config: Self = toml::from_str(text).map_err(|e| corrupt(path, text, &e))?;
-        if let Some(hours) = config.check_interval_hours
-            && hours > 48
-        {
-            return Err(invalid(
-                path,
-                text,
-                "check_interval_hours",
-                "must be from 0 to 48",
-            ));
+        for (key, hours) in [
+            ("check_interval_hours", config.check_interval_hours),
+            ("update_min_age_hours", config.update_min_age_hours),
+        ] {
+            if hours.is_some_and(|hours| hours > 48) {
+                return Err(invalid(path, text, key, "must be from 0 to 48"));
+            }
         }
         for (key, mb) in [
             (
@@ -751,7 +760,24 @@ impl Config {
                 toml::Value::String(format!("{hours}h")),
             )?;
         }
+        if let Some(hours) = self.update_min_age_hours {
+            apply(
+                "update_min_age_hours",
+                "default_update_min_age",
+                toml::Value::String(format!("{hours}h")),
+            )?;
+        }
         Ok(limits)
+    }
+
+    /// How long an automatic update waits after this machine first saw a release:
+    /// `update_min_age_hours`, where 0 is no wait at all, else
+    /// [`crate::limits::DEFAULT_UPDATE_MIN_AGE`].
+    pub fn update_min_age(&self) -> std::time::Duration {
+        self.update_min_age_hours
+            .map_or(crate::limits::DEFAULT_UPDATE_MIN_AGE, |hours| {
+                std::time::Duration::from_secs(u64::from(hours) * 3600)
+            })
     }
 
     /// `table` with `[rules]` and `[client_rules.*]` applied.
@@ -2261,6 +2287,53 @@ max = 11_599
         }
     }
 
+    /// RG-51: `update_min_age_hours` takes 0 to 48 and fails past them as
+    /// `check_interval_hours` does; 0 is no wait at all, unset the six-hour default.
+    #[test]
+    fn update_min_age_hours_takes_0_to_48_and_0_turns_the_wait_off() {
+        let path = Path::new("/c/omaddons/config.toml");
+        for value in ["0", "6", "48"] {
+            let text = set_value("", path, "update_min_age_hours", value).unwrap();
+            let (config, _) = Config::parse(&text, path).unwrap();
+            assert_eq!(config.update_min_age_hours, Some(value.parse().unwrap()));
+        }
+        for value in ["49", "-1", "x"] {
+            let ours = set_value("", path, "update_min_age_hours", value).unwrap_err();
+            let theirs = set_value("", path, "check_interval_hours", value).unwrap_err();
+            assert_eq!(
+                (ours.code, ours.message.replace("update_min_age_hours", "K")),
+                (
+                    theirs.code,
+                    theirs.message.replace("check_interval_hours", "K")
+                ),
+                "{value}"
+            );
+        }
+        let err = parse("\nupdate_min_age_hours = 49\n").unwrap_err();
+        assert_eq!(
+            (err.code, err.details["line"].as_u64()),
+            (ErrorCode::StateCorrupt, Some(2))
+        );
+        let hours = |text: &str| parse(text).unwrap().0.update_min_age();
+        assert_eq!(hours(""), std::time::Duration::from_secs(6 * 3600));
+        assert_eq!(
+            hours("update_min_age_hours = 0\n"),
+            std::time::Duration::ZERO
+        );
+        assert_eq!(
+            hours("update_min_age_hours = 48\n"),
+            std::time::Duration::from_secs(48 * 3600)
+        );
+        // The effective limit agrees, and a 0 is a setting, not the default.
+        let (config, _) = parse("update_min_age_hours = 0\n").unwrap();
+        assert!(config.sets_limit_key("update_min_age_hours"));
+        assert_eq!(
+            config.effective_limits().unwrap().update_min_age,
+            std::time::Duration::ZERO
+        );
+        assert!(!parse("").unwrap().0.sets_limit_key("update_min_age_hours"));
+    }
+
     #[test]
     fn secrets_never_show() {
         let (secret, _) = resolve_credential(&CredentialRef::Command {
@@ -2514,7 +2587,10 @@ max = 11_599
         let expected: Vec<&str> = KEYS
             .iter()
             .map(|spec| spec.key)
-            .filter(|key| key.starts_with("limits.") || *key == "check_interval_hours")
+            .filter(|key| {
+                key.starts_with("limits.")
+                    || ["check_interval_hours", "update_min_age_hours"].contains(key)
+            })
             .collect();
         assert_eq!(keys, expected, "every limit key once, in KEYS order");
         let config = Config::default();

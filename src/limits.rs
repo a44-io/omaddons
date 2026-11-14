@@ -323,6 +323,10 @@ pub const SUSPECT_ALGORITHM: u32 = 1;
 /// is loaded, and judged again where they still can be. Raised only when the older
 /// rules were unsound; otherwise old verdicts stay, with their own algorithm number.
 pub const SUSPECT_ALGORITHM_TRUSTED_MIN: u32 = 1;
+/// How long an automatic update waits after this machine first saw a release before it
+/// takes it, so that a broken release has time to be pulled or replaced (design 7.6).
+/// `update_min_age_hours` sets it from 0 to 48 hours, where 0 turns the wait off (config).
+pub const DEFAULT_UPDATE_MIN_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 /// Bytes read of an installed widget's `manifest.json` or `Build.js` (a few kilobytes
 /// when omaddons wrote them); a larger file is not one it wrote.
 pub const WIDGET_READBACK_MAX_BYTES: u64 = 64 * 1024;
@@ -385,9 +389,9 @@ pub struct LimitInfo {
     pub value: LimitValue,
     pub unit: LimitUnit,
     /// For "(config)" constants, the override key `EffectiveLimits::apply` takes, which
-    /// is also the `[limits]` key of `config.toml` except for `tx_retention` and
-    /// `default_check_interval` (their notes give the `config.toml` keys); `None` for
-    /// every other.
+    /// is also the `[limits]` key of `config.toml` except for `tx_retention`,
+    /// `default_check_interval` and `default_update_min_age` (their notes give the
+    /// `config.toml` keys); `None` for every other.
     pub config_key: Option<&'static str>,
     pub notes: &'static str,
 }
@@ -1193,6 +1197,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "Verdicts of an older algorithm are discarded at load",
     ),
     limit(
+        "DEFAULT_UPDATE_MIN_AGE",
+        LimitValue::Millis(ms(DEFAULT_UPDATE_MIN_AGE)),
+        LimitUnit::Ms,
+        Some("default_update_min_age"),
+        "An automatic update waits this long after a release first appears; config.toml's update_min_age_hours (0 to 48, 0 turns it off)",
+    ),
+    limit(
         "WIDGET_READBACK_MAX_BYTES",
         LimitValue::Bytes(WIDGET_READBACK_MAX_BYTES),
         LimitUnit::Bytes,
@@ -1292,6 +1303,8 @@ pub const REGISTRY: &[LimitInfo] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct EffectiveLimits {
     pub default_check_interval: Duration,
+    /// Zero turns the wait off.
+    pub update_min_age: Duration,
     pub archive_max_entries: u64,
     pub archive_max_uncompressed: u64,
     pub archive_max_ratio: u64,
@@ -1310,6 +1323,7 @@ impl Default for EffectiveLimits {
     fn default() -> Self {
         Self {
             default_check_interval: DEFAULT_CHECK_INTERVAL,
+            update_min_age: DEFAULT_UPDATE_MIN_AGE,
             archive_max_entries: ARCHIVE_MAX_ENTRIES,
             archive_max_uncompressed: ARCHIVE_MAX_UNCOMPRESSED,
             archive_max_ratio: ARCHIVE_MAX_RATIO,
@@ -1349,6 +1363,7 @@ impl EffectiveLimits {
             "default_check_interval" => {
                 self.default_check_interval = positive_duration(key, value)?;
             }
+            "default_update_min_age" => self.update_min_age = duration(key, value)?,
             "archive_max_entries" => self.archive_max_entries = positive_integer(key, value)?,
             "archive_max_uncompressed" => {
                 self.archive_max_uncompressed = positive_integer(key, value)?;
@@ -1414,6 +1429,15 @@ fn non_negative_integer(key: &str, value: &toml::Value) -> Result<u64, LimitOver
 }
 
 fn positive_duration(key: &str, value: &toml::Value) -> Result<Duration, LimitOverrideError> {
+    Some(duration(key, value)?)
+        .filter(|d| !d.is_zero())
+        .ok_or_else(|| LimitOverrideError::NotPositive {
+            key: key.to_owned(),
+        })
+}
+
+/// A duration string such as `"6h"`; zero is one, and a negative one is not.
+fn duration(key: &str, value: &toml::Value) -> Result<Duration, LimitOverrideError> {
     let wrong_type = || LimitOverrideError::WrongType {
         key: key.to_owned(),
         expected: "a duration string such as \"6h\"",
@@ -1423,12 +1447,9 @@ fn positive_duration(key: &str, value: &toml::Value) -> Result<Duration, LimitOv
         .ok_or_else(wrong_type)?
         .parse()
         .map_err(|_| wrong_type())?;
-    Duration::try_from(parsed)
-        .ok()
-        .filter(|d| !d.is_zero())
-        .ok_or_else(|| LimitOverrideError::NotPositive {
-            key: key.to_owned(),
-        })
+    Duration::try_from(parsed).map_err(|_| LimitOverrideError::NotPositive {
+        key: key.to_owned(),
+    })
 }
 
 fn retention(
@@ -1587,6 +1608,7 @@ mod tests {
         "SUSPECT_FRESH_MAX_AGE",
         "SUSPECT_ALGORITHM",
         "SUSPECT_ALGORITHM_TRUSTED_MIN",
+        "DEFAULT_UPDATE_MIN_AGE",
         "WIDGET_READBACK_MAX_BYTES",
         "OMARCHY_COMMAND_TIMEOUT",
         "OMARCHY_SHELL_JSON_MAX_BYTES",
@@ -1604,6 +1626,7 @@ mod tests {
 
     const CONFIG_NAMES: &[&str] = &[
         "DEFAULT_CHECK_INTERVAL",
+        "DEFAULT_UPDATE_MIN_AGE",
         "ARCHIVE_MAX_ENTRIES",
         "ARCHIVE_MAX_UNCOMPRESSED",
         "ARCHIVE_MAX_RATIO",

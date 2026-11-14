@@ -1176,6 +1176,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Verdicts of an older algorithm are discarded at load"
     },
     {
+      "name": "DEFAULT_UPDATE_MIN_AGE",
+      "value": {
+        "millis": 21600000
+      },
+      "unit": "ms",
+      "config_key": "default_update_min_age",
+      "notes": "An automatic update waits this long after a release first appears; config.toml's update_min_age_hours (0 to 48, 0 turns it off)"
+    },
+    {
       "name": "WIDGET_READBACK_MAX_BYTES",
       "value": {
         "bytes": 65536

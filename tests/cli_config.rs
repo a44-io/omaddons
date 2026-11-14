@@ -80,6 +80,36 @@ fn a_missing_file_is_all_defaults() {
     );
 }
 
+/// RG-51: `update_min_age_hours` is listed with its default, 6, and its source; set to 0,
+/// which turns the wait off, it is the file's 0, never the default.
+#[test]
+fn update_min_age_hours_is_listed_with_its_default_and_its_source() {
+    let env = TestEnv::new();
+    let (_, listed) = run(&env, &["config"]);
+    assert_eq!(
+        setting(&listed, "update_min_age_hours"),
+        &json!({"name": "update_min_age_hours", "value": 6, "source": "default"})
+    );
+    let (code, envelope) = run(&env, &["config", "set", "update_min_age_hours", "0"]);
+    assert_eq!(code, 0, "{envelope}");
+    let (_, listed) = run(&env, &["config"]);
+    assert_eq!(
+        setting(&listed, "update_min_age_hours"),
+        &json!({"name": "update_min_age_hours", "value": 0, "source": "file"})
+    );
+    let (_, got) = run(&env, &["config", "get", "update_min_age_hours"]);
+    assert_eq!(
+        (&got["data"]["value"], &got["data"]["default"]),
+        (&json!(0), &json!(6)),
+        "{got}"
+    );
+    let (code, _) = run(&env, &["config", "set", "update_min_age_hours", "49"]);
+    assert_eq!(
+        code, 2,
+        "out of range is a usage error, as for check_interval_hours"
+    );
+}
+
 #[test]
 fn set_changes_only_its_value() {
     let env = TestEnv::new();

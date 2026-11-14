@@ -118,6 +118,7 @@ config sources.*.enabled bool
 config targets.*.family family
 config targets.*.label text
 config targets.*.name text
+config update_min_age_hours hours
 desired . object
 desired family object?
 desired family.cata object

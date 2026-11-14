@@ -120,6 +120,7 @@
     "config targets.*.family": {"config_type":"family","kind":"config_key"},
     "config targets.*.label": {"config_type":"text","kind":"config_key"},
     "config targets.*.name": {"config_type":"text","kind":"config_key"},
+    "config update_min_age_hours": {"config_type":"hours","kind":"config_key"},
     "desired .": {"kind":"desired_position","types":["object"]},
     "desired family": {"kind":"desired_position","nullable":true,"required":false,"types":["object"]},
     "desired family.cata": {"kind":"desired_position","nullable":false,"required":false,"types":["object"]},

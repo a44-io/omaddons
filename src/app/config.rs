@@ -150,6 +150,7 @@ fn default_value(key: &str) -> serde_json::Value {
         "running_policy" => serde_json::json!("safe"),
         "auto_backup" => serde_json::json!(crate::state::config::AutoBackup::default()),
         "check_interval_hours" => serde_json::json!(DEFAULT_CHECK_INTERVAL.as_secs() / 3600),
+        "update_min_age_hours" => serde_json::json!(limits.update_min_age.as_secs() / 3600),
         "limits.archive_max_entries" => serde_json::json!(limits.archive_max_entries),
         "limits.archive_max_uncompressed" => serde_json::json!(limits.archive_max_uncompressed),
         "limits.archive_max_ratio" => serde_json::json!(limits.archive_max_ratio),
