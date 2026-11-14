@@ -2799,6 +2799,79 @@ describe("the Issues and Search views", () => {
   })
 })
 
+// RG-60: when an error began and the change before it, read from envelopes the real
+// binary wrote (`error_link_fixtures`): every new output is a field or a COPY id.
+describe("the error page's reads", () => {
+  const errorAt = (env, file) => {
+    for (const t of M.reduceErrors(env).targets) {
+      for (const a of t.addons) {
+        for (const e of a.errors) if ((e.location || "").includes(file)) return { addon: a, error: e }
+      }
+    }
+    throw new Error("no error at " + file)
+  }
+
+  test("a current link: its change, word, tag and the ways back the binary gave", () => {
+    const { addon, error } = errorAt(fixture("errors-link"), "core.lua:12")
+    const link = error.afterChange
+    expect([link.kind, link.relation, link.confidence, link.current, link.stateWords])
+      .toEqual(["update", "own", "high", true, null])
+    expect([link.confidenceWords, link.tag]).toEqual(["errors.confidence.high", "errors.tag.update"])
+    expect(link.changed).toEqual([{ addon: "Foo", change: "updated", fromVersion: "v1", toVersion: "v2", stillInstalled: true }])
+    expect([link.cleanSessions, link.sameSession, link.unknowns]).toEqual([0, false, []])
+    expect(link.commands.map((c) => c.action)).toEqual(["rollback"])
+    const run = link.commands[0].run
+    expect([run.runnable, run.destructive, run.argv.slice(1, 4)]).toEqual([true, true, ["skip", "Foo", "--back"]])
+    expect([error.firstSeen.basis, error.firstSeen.words]).toEqual(["observed", "errors.first_seen.observed"])
+    expect(error.judgment).toEqual({ state: "complete", gap: null })
+    expect([addon.afterChange.confidence, addon.afterChange.tag]).toEqual(["high", "errors.tag.update"])
+  })
+
+  test("a baseline, a related and an unknown error each name their sentence", () => {
+    const baseline = errorAt(fixture("errors-link"), "boss.lua:3").error
+    expect([baseline.firstSeen.basis, baseline.firstSeen.reason, baseline.firstSeen.words, baseline.afterChange])
+      .toEqual(["baseline", "first_read", "errors.first_seen.reason.first_read", null])
+    const related = errorAt(fixture("errors-related"), "core.lua:14").error
+    expect([related.firstSeen.basis, related.firstSeen.words, related.afterChange])
+      .toEqual(["related", "errors.first_seen.related", null])
+    expect(related.firstSeen.relatedFingerprint).toBe(errorAt(fixture("errors-related"), "core.lua:12").error.fingerprint)
+    const unknown = errorAt(fixture("errors-unknown"), "core.lua:12").error
+    expect([unknown.firstSeen.basis, unknown.firstSeen.words])
+      .toEqual(["unknown", "errors.first_seen.reason.absence_unproven"])
+  })
+
+  test("a link with unknowns names each, and a weaker word", () => {
+    const link = errorAt(fixture("errors-link-unknowns"), "core.lua:12").error.afterChange
+    expect([link.confidence, link.unknowns, link.unknownWords])
+      .toEqual(["medium", ["running"], ["errors.unknown.running"]])
+    expect(link.confidenceWords).toBe("errors.confidence.medium")
+  })
+
+  test("status carries the top addon's link brief, and every id has words", () => {
+    const status = M.reduceStatus(fixture("status-errors-link"))
+    const top = status.targets[0].errors.top[0]
+    expect([top.addon, top.afterChange.confidence, top.afterChange.tag]).toEqual(["Foo", "high", "errors.tag.update"])
+    const ids = []
+    for (const name of ["errors-link", "errors-related", "errors-unknown", "errors-link-unknowns"]) {
+      for (const a of M.reduceErrors(fixture(name)).targets[0].addons) {
+        if (a.afterChange) ids.push(a.afterChange.tag, a.afterChange.confidenceWords)
+        for (const e of a.errors) {
+          if (e.firstSeen && e.firstSeen.words) ids.push(e.firstSeen.words)
+          if (e.afterChange) ids.push(e.afterChange.tag, e.afterChange.confidenceWords, ...e.afterChange.unknownWords)
+        }
+      }
+    }
+    for (const id of ids.filter(Boolean)) expect(typeof M.COPY[id] === "string" ? id : "missing " + id).toBe(id)
+    for (const state of ["expired", "database_replaced"]) expect(typeof M.COPY["errors.link." + state]).toBe("string")
+    for (const c of ["high", "medium", "low"]) expect(typeof M.COPY["errors.confidence." + c]).toBe("string")
+  })
+
+  test("an error no change was judged for has no link", () => {
+    const { error } = errorAt(fixture("errors"), "core.lua:12")
+    expect(error.afterChange).toBe(null)
+  })
+})
+
 describe("the Backups view and the restore chooser", () => {
   const LISTED = () => M.reduceBackups(fixture("backups"))
   const DETAIL = () => M.reduceBackups(fixture("backups-detail"))

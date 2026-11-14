@@ -3831,6 +3831,150 @@ fn errors_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     assert_eq!(due["data"]["summary"]["check_due"], true, "{due}");
 }
 
+/// The error page's envelopes (RG-60), from changes made here and now (no frozen clock:
+/// the judge reads real times). Foo installed three weeks ago with an error already in
+/// its file (a `baseline`), updated, then a new error in its first session (a `current`
+/// `high` link carrying its rollback) and, a session later, the same message at another
+/// line (`related`); `status` with the top addon's link brief; a file holding an entry
+/// that does not decode (`unknown`); and an update while whether the game ran could not
+/// be told (a link with `unknowns`).
+#[cfg(test)]
+fn error_link_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use common::buggrabber::{BugDb, BugEntry, TimeKind, Writer, stack_era_c, write_files};
+    use common::engine::{Scene, folder};
+    use serde_json::json;
+    let save = |s: &Scene, db: &BugDb| {
+        write_files(&s.home.client("_retail_").join("WTF"), &[db.file()]);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    };
+    // A unix second after every change so far, 50 ms in (file times trail the clock).
+    let later = || {
+        let next = jiff::Timestamp::now().as_second() + 1;
+        let settled =
+            jiff::Timestamp::from_second(next).unwrap() + jiff::SignedDuration::from_millis(50);
+        while jiff::Timestamp::now() < settled {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        next
+    };
+    let nil = |file: &str, line: u32, session: u32, when: i64| {
+        let message = format!(
+            "{} attempt to index a nil value",
+            stack_era_c("Foo", file, line)
+        );
+        BugEntry::new(&message, session, (TimeKind::Unix, when))
+    };
+    // Foo installed, its history moved three weeks back: past the judge's window.
+    let installed = || {
+        let s = Scene::new();
+        s.release("foo", "v1", &[folder("Foo", &[])]);
+        s.ok(&["install", "gh:o/foo", "-t", "retail"]);
+        let path = s.home.state().join("history.jsonl");
+        let mut aged = String::new();
+        for line in fs::read_to_string(&path).unwrap().lines() {
+            let mut entry: Value = serde_json::from_str(line).unwrap();
+            let at: jiff::Timestamp = entry["at"].as_str().unwrap().parse().unwrap();
+            entry["at"] = json!((at - jiff::SignedDuration::from_hours(21 * 24)).to_string());
+            aged.push_str(&serde_json::to_string(&entry).unwrap());
+            aged.push('\n');
+        }
+        fs::write(&path, aged).unwrap();
+        s
+    };
+    let errors = |s: &Scene| s.home.exec(&fill(t, "errors", &[]));
+    let first = |v: &Value, file: &str| -> Value {
+        v["data"]["targets"][0]["addons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|a| a["errors"].as_array().unwrap().clone())
+            .find(|e| e["location"].as_str().is_some_and(|l| l.contains(file)))
+            .unwrap()
+    };
+
+    let s = installed();
+    let old = nil("boss.lua", 3, 5, later());
+    save(&s, &BugDb::new(Writer::Modern, 5).entry(old.clone()));
+    errors(&s).expect(0);
+    s.release("foo", "v2", &[folder("Foo", &[])]);
+    s.ok(&["update", "-t", "retail", "--refresh"]);
+    let regression = nil("core.lua", 12, 6, later()).counter(7);
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6)
+            .entry(old.clone())
+            .entry(regression.clone()),
+    );
+    let link = write_fixture(dir, "errors-link", &errors(&s), 0);
+    let linked = first(&link, "core.lua:12");
+    assert_eq!(
+        (
+            &linked["after_change"]["confidence"],
+            &linked["after_change"]["commands"][0]["action"]
+        ),
+        (&json!("high"), &json!("rollback")),
+        "{linked}"
+    );
+    assert_eq!(
+        first(&link, "boss.lua:3")["first_seen"]["basis"],
+        "baseline"
+    );
+    let status = write_fixture(
+        dir,
+        "status-errors-link",
+        &s.home.exec(&fill(t, "status", &[])),
+        0,
+    );
+    assert!(
+        status["data"]["targets"][0]["errors"]["top_addons"][0]["after_change"].is_object(),
+        "{status}"
+    );
+    let related = nil("core.lua", 14, 7, later());
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 7)
+            .entry(old)
+            .entry(regression)
+            .entry(related),
+    );
+    let related = write_fixture(dir, "errors-related", &errors(&s), 0);
+    assert_eq!(
+        first(&related, "core.lua:14")["first_seen"]["basis"],
+        "related"
+    );
+
+    // Read whole once first: on a file's first read, what a degraded read meets is a
+    // baseline, not unknown.
+    let s = installed();
+    save(&s, &BugDb::new(Writer::Modern, 5));
+    errors(&s).expect(0);
+    let mut unread = BugDb::new(Writer::Modern, 6).entry(nil("core.lua", 12, 6, later()));
+    unread.tail.push(common::lua::Value::str("not an entry"));
+    save(&s, &unread);
+    let unknown = write_fixture(dir, "errors-unknown", &errors(&s), 0);
+    assert_eq!(
+        first(&unknown, "core.lua:12")["first_seen"]["basis"],
+        "unknown"
+    );
+
+    let mut s = installed();
+    save(&s, &BugDb::new(Writer::Modern, 5));
+    errors(&s).expect(0);
+    s.home.running_unknown();
+    s.release("foo", "v2", &[folder("Foo", &[])]);
+    s.ok(&["update", "-t", "retail", "--refresh"]);
+    s.home.nothing_running();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 7).entry(nil("core.lua", 12, 7, later())),
+    );
+    let unknowns = write_fixture(dir, "errors-link-unknowns", &errors(&s), 0);
+    assert_eq!(
+        first(&unknowns, "core.lua:12")["after_change"]["evidence"]["unknowns"],
+        json!(["running"])
+    );
+}
+
 /// An addon page's Versions (1n2p.24), from the real binary, for the bun cases and
 /// `tst_versions.qml`: Foo publishes v1, v2 (its latest) and the beta v3, and v2 is
 /// installed on retail. Its releases as the page lists them; the switch to the beta
@@ -4188,6 +4332,7 @@ fn write_widget_fixtures() {
     write_fixture(&dir, "changelog", &home.exec(&changelog), 0);
 
     errors_fixtures(&dir, &t);
+    error_link_fixtures(&dir, &t);
     backups_fixtures(&dir, &t);
     history_fixtures(&dir, &t);
     plans_fixtures(&dir, &t);

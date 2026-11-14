@@ -1628,7 +1628,9 @@ function targetOf(target) {
       "state": str(errors.state), "coverage": str(errors.coverage), "new": num(errors["new"]),
       "total": num(errors.total), "addons": num(errors.addons),
       "top": Array.isArray(errors.top_addons) ? errors.top_addons.map(function(t) {
-        return { "addon": str(t.addon), "folder": str(t.folder), "new": num(t["new"]), "count": num(t.count) }
+        return { "addon": str(t.addon), "folder": str(t.folder), "new": num(t["new"]), "count": num(t.count),
+          // Its strongest current link, validated by status before it shows (RG-17).
+          "afterChange": linkBriefOf(t.after_change) }
       }) : [],
       "lastSessionAt": strOrNull(errors.last_session_at)
     } : null,
@@ -2508,6 +2510,89 @@ function targetCommand(env, action, id) {
   return null
 }
 
+// What `errors` knows of when an error began (`first_seen`, RG-60): its basis, why, its
+// times, and `words`, the COPY id of its sentence: the reason's own when it gives one,
+// else the basis's. A missing field reads as null: older envelopes lack it.
+function firstSeenOf(f) {
+  if (!f || typeof f !== "object") return null
+  var basis = str(f.basis)
+  var reason = strOrNull(f.reason)
+  return {
+    "basis": basis,
+    "reason": reason,
+    "at": strOrNull(f.at),
+    "observedAt": strOrNull(f.observed_at),
+    "onsetAfterAt": strOrNull(f.onset_after_at),
+    "onsetByAt": strOrNull(f.onset_by_at),
+    "relatedFingerprint": strOrNull(f.related_fingerprint),
+    "words": !basis ? null : reason ? "errors.first_seen.reason." + reason : "errors.first_seen." + basis
+  }
+}
+
+// The tag a link puts on an addon's row: "after update" for an update, "after a change"
+// for any other kind (design 7.7).
+function changeTag(kind) {
+  return "errors.tag." + (kind === "update" ? "update" : "change")
+}
+
+// An addon's strongest current link (`after_change` on an addon or a status top addon),
+// with its row tag. Null when there is none.
+function linkBriefOf(b) {
+  if (!b || typeof b !== "object") return null
+  var kind = str(b.kind)
+  return {
+    "tx": str(b.tx), "kind": kind, "at": str(b.at), "addon": str(b.addon),
+    "relation": str(b.relation), "confidence": str(b.confidence),
+    "tag": changeTag(kind),
+    "confidenceWords": b.confidence ? "errors.confidence." + str(b.confidence) : null
+  }
+}
+
+// One error's link to the change before it (`after_change`, design 7.3.1), as the error
+// page shows it: what changed, the confidence word, the weakening facts, the words of
+// each unknown and of a link that no longer stands, and the ways back the binary
+// decided (`commands`, run as given: the widget holds none of the rules of 7.4).
+function linkOf(l) {
+  if (!l || typeof l !== "object") return null
+  var evidence = l.evidence && typeof l.evidence === "object" ? l.evidence : {}
+  var update = evidence.client_update && typeof evidence.client_update === "object" ? evidence.client_update : null
+  var state = str(l.state)
+  var kind = str(l.kind)
+  var unknowns = stringList(evidence.unknowns)
+  return {
+    "tx": str(l.tx), "kind": kind, "at": str(l.at), "actor": str(l.actor),
+    "relation": str(l.relation), "confidence": str(l.confidence),
+    "confidenceWords": l.confidence ? "errors.confidence." + str(l.confidence) : null,
+    "state": state,
+    "current": state === "current",
+    // A link that no longer stands is a sentence with no button.
+    "stateWords": state && state !== "current" ? "errors.link." + state : null,
+    "judgedAt": str(l.judged_at),
+    "tag": changeTag(kind),
+    "changed": (Array.isArray(l.changed) ? l.changed : []).map(function(c) {
+      return {
+        "addon": str(c.addon), "change": str(c.change),
+        "fromVersion": strOrNull(c.from_version), "toVersion": strOrNull(c.to_version),
+        "stillInstalled": c.still_installed === true
+      }
+    }),
+    "sameSession": typeof evidence.same_session === "boolean" ? evidence.same_session : null,
+    "cleanSessions": typeof evidence.clean_sessions === "number" ? evidence.clean_sessions : null,
+    "exact": evidence.exact === true,
+    "otherChanges": num(evidence.other_changes),
+    "clientUpdate": update ? { "from": str(update.from_version), "to": str(update.to_version) } : null,
+    "unknowns": unknowns,
+    "unknownWords": unknowns.map(function(u) { return "errors.unknown." + u }),
+    // One per way back, best first: `rollback` (Go back), `undo` (Undo that change),
+    // `update` (Update); `run` is the classified argv the page's button runs.
+    "commands": (Array.isArray(l.commands) ? l.commands : []).filter(function(c) {
+      return c && Array.isArray(c.argv)
+    }).map(function(c) {
+      return { "action": str(c.action), "run": cliAction(c.command, c.argv, c.destructive) }
+    })
+  }
+}
+
 // `errors --json` as the Issues view shows it (M3-D21: strict text only; a custom
 // message is its length; raw details only when the read asked for them; received
 // reports only as a count).
@@ -2558,7 +2643,12 @@ function reduceErrors(env) {
               "count": num(e.count),
               "new": e["new"] === true,
               "stack": stringList(e.stack),
-              "raw": raw ? { "message": strOrNull(raw.message), "stack": stringList(raw.stack), "locals": strOrNull(raw.locals) } : null
+              "raw": raw ? { "message": strOrNull(raw.message), "stack": stringList(raw.stack), "locals": strOrNull(raw.locals) } : null,
+              // When it began, and the change before it (RG-60).
+              "firstSeen": firstSeenOf(e.first_seen),
+              "afterChange": linkOf(e.after_change),
+              "judgment": e.judgment && typeof e.judgment === "object"
+                ? { "state": str(e.judgment.state), "gap": strOrNull(e.judgment.gap) } : null
             }
           })
           var lastSeen = a.last_seen && typeof a.last_seen === "object" ? str(a.last_seen.at) : ""
@@ -2573,6 +2663,8 @@ function reduceErrors(env) {
             "count": num(a.count),
             "new": num(a["new"]),
             "confidence": confidence,
+            // Its strongest current link: the row's "after update" tag (RG-60).
+            "afterChange": linkBriefOf(a.after_change),
             "errors": reduced
           }
         })
@@ -7580,6 +7672,34 @@ var COPY = {
   "errors.partial": "Some errors couldn't be read: the game was writing.",
   "errors.received": { "one": "1 error sent by other players (not counted)", "other": "{n} errors sent by other players (not counted)" },
   "errors.capture.none": "Lua errors aren't recorded on {client}: install BugGrabber to record them.",
+  // When an error began, and the change before it (RG-60, design 7.3.1 and 7.7). The
+  // confidence words, as `errors` prints them.
+  "errors.confidence.high": "likely",
+  "errors.confidence.medium": "possible",
+  "errors.confidence.low": "weak",
+  "errors.tag.update": "after update",
+  "errors.tag.change": "after a change",
+  "errors.first_seen.observed": "Appeared by {date}",
+  "errors.first_seen.baseline": "Already there when omaddons first looked; its age is unknown",
+  "errors.first_seen.related": "Like an error known since {date}; not treated as new",
+  "errors.first_seen.unknown": "This file could not be read completely",
+  "errors.first_seen.reason.first_read": "Already there when omaddons first read this file; its age is unknown",
+  "errors.first_seen.reason.new_generation": "Already there when this file was reset or put back; its age is unknown",
+  "errors.first_seen.reason.coverage_incomplete": "First found while a file could not be read whole, so omaddons can't say it is new",
+  "errors.first_seen.reason.absence_unproven": "This file could not be read completely, so omaddons can't tell when this began",
+  "errors.first_seen.reason.ledger_full": "omaddons keeps no more records for this client, so it can't tell when this began",
+  "errors.first_seen.reason.ledger_busy": "Another omaddons was recording at the same moment, so this read wasn't kept",
+  "errors.first_seen.reason.ledger_unavailable": "omaddons couldn't record this read, so it can't tell when this began",
+  "errors.unknown.mark": "omaddons didn't look at this file during that change, so it can't count the sessions between",
+  "errors.unknown.sessions": "The session numbers don't fit together, so omaddons can't count the sessions between",
+  "errors.unknown.running": "omaddons couldn't tell whether the game was running during that change",
+  "errors.unknown.accounts": "omaddons couldn't tell which account was playing during that change",
+  "errors.unknown.time": "This error's own time isn't one omaddons can trust",
+  "errors.unknown.client_version": "The game's version at one of the two reads is unknown",
+  "errors.unknown.dependencies": "A folder on a dependency changed again since, so omaddons didn't count that link",
+  "errors.unknown.transition": "The versions that change moved are no longer known",
+  "errors.link.expired": "Recorded {date}, more than 30 days ago",
+  "errors.link.database_replaced": "Recorded {date}; this file has been replaced since",
   "errors.capture.unknown": "Lua errors aren't recorded on {client}, and no BugGrabber build for it is known.",
   "errors.capture.install": "Install BugGrabber",
   "errors.none": "No Lua errors",
