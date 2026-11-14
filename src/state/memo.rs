@@ -712,6 +712,12 @@ pub fn write(
     actor: Actor,
 ) -> Option<String> {
     let path = paths.release_memo();
+    // Where a test holds one run that has fetched while another writes (RG-55's real
+    // merge path): the file it then reads holds the other run's sightings. A failpoint
+    // that errs only skips the write, as a failed write would.
+    if let Err(error) = crate::fsx::failpoint::hit("memo.write.before") {
+        return Some(format!("release memo not written: {error}"));
+    }
     // Read once: merged into, and compared with what the merge would write.
     let on_disk = std::fs::read(&path).ok();
     let loaded = on_disk

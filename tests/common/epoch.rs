@@ -56,8 +56,21 @@ impl Epoch {
     /// so the file is one it could have written. The entry's timeline is asserted at once:
     /// no release first seen after the entry's `fetched_at`.
     pub fn seen(&self, home: &Home, r: &str, tag: &str, offset: SignedDuration) {
+        self.seen_revision(home, r, tag, None, offset);
+    }
+
+    /// [`Epoch::seen`] of `tag` at the source's `revision` (WowAce numbers them, and a
+    /// re-tag is another release with its own first sight).
+    pub fn seen_revision(
+        &self,
+        home: &Home,
+        r: &str,
+        tag: &str,
+        revision: Option<u32>,
+        offset: SignedDuration,
+    ) {
         let at = self.at(offset);
-        let release = ReleaseKey::parse(&format!("{r}@{tag}"), None)
+        let release = ReleaseKey::parse(&format!("{r}@{tag}"), revision)
             .unwrap_or_else(|| panic!("{r}@{tag} names no release")); // ubs:ignore — the test's own failure
         if at < self.base {
             self.early

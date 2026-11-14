@@ -77,7 +77,7 @@ fn error(folder: &str, line: u32, session: u32, when: i64, counter: u32) -> BugE
 
 /// `omaddons errors -t retail <extra> --json`, which must succeed with an envelope valid
 /// against its schemas.
-fn errors(s: &Scene, extra: &[&str]) -> (Value, Run) {
+pub(crate) fn errors(s: &Scene, extra: &[&str]) -> (Value, Run) {
     let mut argv = vec!["errors", "-t", "retail"];
     argv.extend_from_slice(extra);
     let run = s.home.run(&argv);
@@ -114,7 +114,7 @@ fn at_line(envelope: &Value, folder: &str, line: u32) -> Value {
 }
 
 /// The row of `addon`.
-fn addon(envelope: &Value, name: &str) -> Value {
+pub(crate) fn addon(envelope: &Value, name: &str) -> Value {
     addons(envelope)
         .into_iter()
         .find(|a| a["addon"] == name)
@@ -152,7 +152,7 @@ fn age_history(s: &Scene, by: SignedDuration) {
 /// Foo 1 installed from its release three weeks ago, past the judge's window; then
 /// BugGrabber's file saved in session 5 with nothing in it and read by a first `errors`:
 /// the ledger's first read.
-fn foo_installed() -> Scene {
+pub(crate) fn foo_installed() -> Scene {
     let s = Scene::new();
     s.release("foo", "v1", &[folder("Foo", &[])]);
     s.ok(&["install", "gh:o/foo", "-t", "retail"]);
@@ -170,7 +170,7 @@ fn update_foo(s: &Scene, tag: &str) {
 
 /// Foo updated to v2 with the game closed, then an error Foo never threw, seven times in
 /// the first session after: design 5.1. Returns the error's own time.
-fn regression(s: &Scene) -> i64 {
+pub(crate) fn regression(s: &Scene) -> i64 {
     update_foo(s, "v2");
     let when = a_second_later();
     save(

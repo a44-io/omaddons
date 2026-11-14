@@ -811,9 +811,9 @@ fn a_skip_preview_whose_waiting_release_moved_is_stale() {
 ///     1390 and marks 1402, and its undo takes both back; `skip --release --revision`
 ///     marks it again; `unskip --release --revision` clears exactly that.
 ///
-///     Later slices add steps to this same sequence, in place: RG-55 the re-tag's first
-///     sight and `update --auto` holding it, before the update; RG-34 `skip --back`
-///     between the two revisions, after the redo.
+///     RG-34 added `skip --back` between the two revisions, after the redo, in place.
+///     The re-tag's own first sight and `update --auto` holding it until it settles are
+///     scenario 15 of `tests/update_auto.rs` (RG-55), on the same tag and revisions.
 #[test]
 fn the_re_tag_lifecycle_on_one_tag() {
     let log = tlog!();
