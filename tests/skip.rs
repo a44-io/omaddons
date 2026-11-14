@@ -905,3 +905,50 @@ fn the_re_tag_lifecycle_on_one_tag() {
     log.assert_eq("no mark", &marks(&home, "retail", &key).len(), &0);
     log.assert_eq("installed: 1402", &installed(&home), &r1402);
 }
+
+/// RG-39: the README's `skip` and `unskip` example, run on a synthetic home: every line
+/// it shows, with this home's names, and each form of its usage block.
+#[test]
+fn the_readme_skip_and_unskip_examples_run_as_shown() {
+    let log = tlog!();
+    let home = behind(&log);
+    log.step("the example: skip, then unskip");
+    let ran = quiet_human(&log, &home, &["skip", "foo", "-t", "retail"]);
+    ran.ok();
+    says(
+        &log,
+        &ran,
+        "retail: Foo v1 is skipped (installed: v0): update resumes at the next release (tx ",
+    );
+    says(&log, &ran, "undo: omaddons undo ");
+    let ran = quiet_human(&log, &home, &["unskip", "foo", "-t", "retail"]);
+    ran.ok();
+    says(&log, &ran, "retail: Foo v1 is offered again (tx ");
+    says(&log, &ran, "undo: omaddons undo ");
+    says(
+        &log,
+        &ran,
+        "retail: `omaddons update Foo -t retail` installs v1",
+    );
+
+    log.step("the usage block's forms");
+    let by_release = quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--release", "gh:o/foo@v1", "-t", "retail"],
+    );
+    by_release.ok();
+    let tx = by_release.data()["targets"][0]["tx"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    quiet(&log, &home, &["unskip", "--tx", &tx]).ok();
+    quiet(
+        &log,
+        &home,
+        &["skip", "foo", "--version", "v1", "-t", "retail"],
+    )
+    .ok();
+    quiet(&log, &home, &["unskip", "foo", "-t", "retail"]).ok();
+    log.assert_eq("no mark left", &marks(&home, "retail", "foo").len(), &0);
+}

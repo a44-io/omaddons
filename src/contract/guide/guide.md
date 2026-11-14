@@ -60,6 +60,7 @@ Refs: a catalog name, `gh:Owner/Repo` or `Owner/Repo`, `wowi:<id>`, `tukui:<slug
 - **Lost output.** `plans show` changes nothing. Its `state` is `pending`, `completed`, `partial`, `expired` or `unknown`, and `evidence.targets` lists each client that committed, with its `tx`. A second `apply` of an applied plan refuses with `already_applied`.
 - **The doctor.** `omaddons doctor` changes nothing outside its own run record. `doctor fix` keeps what it overwrites or sets aside, and deletes nothing. An undo reverts a repair only while nothing the repair touched has changed since; otherwise it refuses with `undo_conflict` before moving anything.
 - **Two kinds of run.** History's `run` (one invocation, a ULID) is reverted with `undo --run <run>`. A doctor run (a directory named by its UTC time and a ULID) is reverted with `doctor undo <doctor_run>`, which is the fix `undo --run` gives a doctor run.
+- **Skipped releases.** `omaddons skip <name>` marks the release waiting now, and undoing an update marks the release it took away: `update` and `outdated` pass over a marked release and resume at the next one, and the mark stays on the record. Never clear a mark (`unskip`) unless the user asks or the envelope's `commands` suggests it, and then clear only the mark it names (its `--release`, `--version` or `--tx`, as the suggestion gives it).
 
 ## Things omaddons will NEVER do
 

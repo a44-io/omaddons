@@ -2923,6 +2923,10 @@ Both are skipped, as a success with a reason, in these cases:
 - **Stuck journals are suspended, not deleted.** A journal recovery cannot settle is set aside only with its failure mode's id, `--force` and `--yes`: its journal, in-flight lock, state snapshot, stage and client snapshot move into quarantine on their own filesystems. What it moves is found by the transaction id alone, in omaddons' own folders on clients whose marker checks out, never by a path the journal names (`attribution: partial` when something may remain unaccounted for). It records guards (each touched client's record generation and marker, and where readable the folders it would recover and a stamp of `WTF/`), and `doctor undo` reactivates the set only while every guard holds. The set is kept until `doctor gc`.
 - Registry changes and `target.json` are not reverted.
 
+### Skipped releases
+
+A skip mark is a decision, kept on the client's record (format 1.1, `skipped_releases`), never in a cache: deleting `~/.cache/omaddons` keeps it, and no mark is ever dropped to make room (at most 256 per addon, the 257th refused before anything commits). Only these clear one: `unskip` (all of an addon's marks, or exactly those a `--release`, `--version` or `--tx` names), an install that names that version (with `skip_lifted`), re-pointing the addon (`adopt --ref`), the `skip`'s own undo, and the redo of an undo that made the mark. A newer release is an ordinary update; the mark stays. Details in [`skip`](#skip-addon-and-unskip-addon).
+
 ### Ownership and protected folders
 
 | Folder | What happens |
@@ -3388,6 +3392,10 @@ Putting a set-aside journal back would replay it against a client that has chang
 
 The set stays readable in quarantine until `doctor gc`: the journal, in-flight lock and state snapshot under `<state>/omaddons/doctor/runs/<run>/quarantine/state/`, the stage and client snapshot under `<client>/Interface/.omaddons/snapshots/<repair tx>.repair/quarantine/`, each at its relative path; the run's `report.json` and `actions.jsonl` list every move. Copy back by hand what you need.
 
+### `update` says a release is skipped
+
+The item reads `skipped_release` (`OneForAll  left at 6.1.3 · 6.2.5 is skipped`), or naming the addon warns `release_skipped`: a mark on that client holds the release, from `omaddons skip` or from undoing the update that installed it. `omaddons list -v` and `info` show the marks. `omaddons unskip <addon> --release <id> -t <target>` (the warning's fix) offers that one release again; `unskip --tx <tx>` clears exactly what one transaction marked. The next release installs as usual.
+
 ### `locked` (exit 5)
 
 Another omaddons process held the lock for more than 5 seconds. `error.details.holder` names its pid and command. It is retryable: run the command again. A second `apply` of one plan waits 30 seconds for the first instead, and its `locked` names the plan (`details.lease`).
@@ -3757,6 +3765,10 @@ Yes, by design. Use `--json`, read `error.fix_argv` and `commands[].argv`, pass 
 ### Why did `apply` refuse?
 
 Running the plan would no longer do what its preview showed; nothing changed, and the fix previews again. See [`plan_stale` after `apply`](#plan_stale-after-apply).
+
+### Why did omaddons not update X?
+
+`update`'s item says why, in `skip_reason`: `pinned` (`unpin` it), `skipped_release` (that release is [skipped](#update-says-a-release-is-skipped) on the client), `ahead`, `static` (a local file or URL), `unchecked` (run `outdated` first), or `blocked` (the newer release does not load on that client). `omaddons update X -v` lists unchanged addons with theirs.
 
 ### Why did the widget ask me about an update?
 
