@@ -756,9 +756,11 @@ struct Graded<'c> {
     same_session: Option<bool>,
     clean: Option<u32>,
     unknowns: BTreeSet<Unknown>,
-    /// Its own facts are not all known, so its grade could be higher had they been: its
-    /// mark, sessions, whether the game ran, which account played, or a dependency edge.
-    /// What every candidate shares (the entry's time, the game's version) never counts.
+    /// Its grade could be higher had more been known: one of its own facts (its mark,
+    /// sessions, whether the game ran, which account played, or a dependency edge), or
+    /// whether a later change had already taken its code away (`Replaced::Maybe`, which a
+    /// later change's unknown facts can make). What every candidate shares (the entry's
+    /// time, the game's version) never counts.
     open: bool,
 }
 
@@ -870,7 +872,9 @@ fn grade_candidate<'c>(
     };
     let mut addons: Vec<&str> = ops.iter().map(|o| o.addon.as_str()).collect();
     addons.dedup_by(|a, b| same(a, b));
-    let open = unknowns.iter().any(|u| own_fact(*u));
+    // A candidate capped as maybe replaced rivals the winner too (omad-ujq99): blanking
+    // a later change's facts lowers it, and must not hand that later change a way back.
+    let open = unknowns.iter().any(|u| own_fact(*u)) || replaced == Replaced::Maybe;
     Some(Graded {
         change,
         relation,

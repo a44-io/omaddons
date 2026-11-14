@@ -1414,6 +1414,31 @@ fn remove(scene: &Scene, removal: Removal) -> Scene {
     s
 }
 
+/// omad-ujq99, the property's counterexample by hand: two updates of Foo, the error once
+/// in the session after the later one's mark. With every fact known, the earlier change
+/// ran clean in it and is the one before it. With the later one's `running` unknown, the
+/// earlier may already have been replaced, so which change came first is not known:
+/// nothing above `low`, and no way back from the later change.
+#[test]
+fn a_later_change_whose_running_is_unknown_never_takes_the_way_back() {
+    let scene = |running: Option<bool>| {
+        Scene::at(42, 1)
+            .change(1000, "Foo", Some((40, Some(true))))
+            .change(3000, "Foo", Some((41, running)))
+    };
+    let known = scene(Some(true)).suspect().unwrap();
+    assert_eq!(known.tx, id(0));
+    assert!(grade(known.confidence) >= grade(Medium), "{known:?}");
+    let blank = scene(None);
+    assert_eq!(blank.replaced(0), Replaced::Maybe);
+    let link = blank.suspect();
+    assert!(
+        link.as_ref()
+            .is_none_or(|s| grade(s.confidence) < grade(Medium)),
+        "{link:?}"
+    );
+}
+
 /// `after` still says everything `before` did not know. A missing mark leaves every fact
 /// the mark would have told unknown: its sessions, whether the client ran, and so which
 /// account played; the verdict says `mark` for all of them.
