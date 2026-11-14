@@ -61,6 +61,7 @@ pub mod privacy;
 pub mod procfs;
 pub mod product_db;
 pub mod realistic;
+pub mod releases;
 pub mod repair;
 pub mod repairs;
 pub mod shells;

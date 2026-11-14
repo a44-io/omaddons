@@ -91,6 +91,15 @@ pub fn retagged_tree_with(dir: &Path, rev: u32, lua: &str) {
     }
 }
 
+/// The WowAce tag at two revisions (regression guard, design Appendix D): served in
+/// `dir` over the recording, the tag list names `v12.1.1` at revision `rev`, and that
+/// revision's tree has a `BugGrabber.lua` naming it. One scenario at 1390 and the next at
+/// 1402 is the same tag re-tagged upstream, with other bytes.
+pub fn tag_at(dir: &Path, rev: u32) {
+    serve(dir, "PROPFIND", TAGS, 207, moved("v12.1.1", rev).as_bytes());
+    retagged_tree_with(dir, rev, &format!("-- v12.1.1 at revision {rev}\n"));
+}
+
 /// A mod_dav_svn HTML index naming `entries` (a trailing `/` marks a folder).
 pub fn index(entries: &[&str]) -> String {
     let items: String = entries

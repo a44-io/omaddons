@@ -143,6 +143,7 @@ mod search;
 mod shared_addons;
 mod single_writer;
 mod skill;
+mod skip;
 mod skip_command;
 mod sources_github;
 mod sources_github_rest;
