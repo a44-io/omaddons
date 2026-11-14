@@ -1005,6 +1005,7 @@ mod updates {
                 "status": "update_available",
                 "source": "github",
                 "release_id": "gh:o/foo@v2",
+                "revision": null,
                 "asset": "Foo.zip",
                 "published_at": null,
             })

@@ -133,6 +133,10 @@ pub struct Latest {
     pub source: Option<SourceId>,
     /// That release's id, when the status names one.
     pub release_id: Option<String>,
+    /// That release's source revision, when its source numbers revisions (WowAce: the
+    /// tag's revision, which a re-tag moves); `null` otherwise. With `release_id`, it
+    /// names the release exactly (`skip --release <id> --revision <n>`).
+    pub revision: Option<u32>,
     /// The file of that release the status was judged on (the one `update` tries
     /// first), when it names one.
     pub asset: Option<String>,
@@ -153,6 +157,7 @@ pub(super) fn latest_of(status: Option<&UpdateStatus>, r#ref: &Ref) -> Latest {
         status: status.map_or(StatusKind::Unchecked, UpdateStatus::kind),
         source: release.map(|_| SourceId::of(r#ref)),
         release_id: release.map(|l| l.release_id.clone()),
+        revision: release.and_then(|l| l.revision),
         asset: release.and_then(|l| l.asset.clone()),
         published_at: release.and_then(|l| l.published_at),
     }
@@ -612,6 +617,7 @@ mod tests {
                 status,
                 source: Some(SourceId::Github),
                 release_id: Some("gh:o/foo@1.2".to_owned()),
+                revision: None,
                 asset: Some("Foo.zip".to_owned()),
                 published_at: None,
             };
@@ -639,6 +645,7 @@ mod tests {
             status,
             source: Some(source),
             release_id: Some(format!("{r}@v2")),
+            revision: None,
             asset: Some("Foo.zip".into()),
             published_at: None,
         };
@@ -647,6 +654,7 @@ mod tests {
             status,
             source: None,
             release_id: None,
+            revision: None,
             asset: None,
             published_at: None,
         };
@@ -746,6 +754,21 @@ mod tests {
         assert_eq!(
             latest_of(Some(&dated), &gh.parse().unwrap()).published_at,
             Some(at)
+        );
+        // A WowAce re-tag names its revision (the widget's exact `--revision`).
+        let wowace = "wowace:bug-grabber";
+        let retag = UpdateStatus::UpdateAvailable {
+            latest: ReleaseBrief {
+                revision: Some(1402),
+                retagged: true,
+                ..brief(wowace)
+            },
+            confidence: Confidence::Declared,
+        };
+        let got = latest_of(Some(&retag), &wowace.parse().unwrap());
+        assert_eq!(
+            (got.release_id.as_deref(), got.revision),
+            (Some("wowace:bug-grabber@v2"), Some(1402))
         );
     }
 }

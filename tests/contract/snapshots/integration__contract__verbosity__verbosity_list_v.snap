@@ -67,6 +67,7 @@ expression: s.stable(&checked.envelope)
               "asset": "bigwigs.zip",
               "published_at": null,
               "release_id": "gh:o/bigwigs@v1",
+              "revision": null,
               "source": "github",
               "status": "current",
               "version": "v1"
@@ -124,6 +125,7 @@ expression: s.stable(&checked.envelope)
               "asset": null,
               "published_at": null,
               "release_id": null,
+              "revision": null,
               "source": null,
               "status": "static",
               "version": null
@@ -179,6 +181,7 @@ expression: s.stable(&checked.envelope)
               "asset": "littlewigs.zip",
               "published_at": null,
               "release_id": "gh:o/littlewigs@v1",
+              "revision": null,
               "source": "github",
               "status": "current",
               "version": "v1"
@@ -234,6 +237,7 @@ expression: s.stable(&checked.envelope)
               "asset": "WeakAuras.zip",
               "published_at": null,
               "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+              "revision": null,
               "source": "github",
               "status": "current",
               "version": "5.19.2"

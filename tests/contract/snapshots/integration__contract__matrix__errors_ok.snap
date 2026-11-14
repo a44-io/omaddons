@@ -97,6 +97,7 @@ expression: s.stable(&c.envelope)
               "asset": null,
               "published_at": null,
               "release_id": null,
+              "revision": null,
               "source": null,
               "status": "static",
               "version": null

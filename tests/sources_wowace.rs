@@ -707,6 +707,17 @@ fn only_a_re_tag_of_the_installed_tag_is_an_update() {
         "{}",
         human.context()
     );
+    // `list -v` names the re-tag exactly: its id and its revision (the widget's
+    // `--release`/`--revision`).
+    let listed = home
+        .run(&["list", "-v", "-t", "retail", "--json"])
+        .expect(0);
+    let latest = &listed["data"]["targets"][0]["addons"][0]["latest"];
+    assert_eq!(
+        (&latest["release_id"], &latest["revision"]),
+        (&json!("wowace:bug-grabber@v12.1.1"), &json!(404)),
+        "{latest}"
+    );
 
     let r = home.run(&["update", "--all", "-t", "retail"]);
     r.expect(0);

@@ -504,6 +504,8 @@ fn latest_carries_the_release_identity_the_plan_reports() {
             "status": "update_available",
             "source": "github",
             "release_id": "gh:o/foo@v2",
+            // GitHub numbers no revisions.
+            "revision": null,
             "asset": "Foo.zip",
             // GitHub's keyless path (`release.json`) carries no date.
             "published_at": null,
@@ -583,8 +585,8 @@ fn latest_carries_the_release_identity_the_plan_reports() {
     log.assert_eq(
         "Bar's latest",
         &bar,
-        &json!({"version": null, "status": "static", "source": null, "release_id": null, "asset": null,
-            "published_at": null}),
+        &json!({"version": null, "status": "static", "source": null, "release_id": null,
+            "revision": null, "asset": null, "published_at": null}),
     );
 
     log.step("never checked");
@@ -596,7 +598,7 @@ fn latest_carries_the_release_identity_the_plan_reports() {
     log.assert_eq(
         "Foo's latest, never checked",
         &foo_of(listed.data())["latest"],
-        &json!({"version": null, "status": "unchecked", "source": null, "release_id": null, "asset": null,
-            "published_at": null}),
+        &json!({"version": null, "status": "unchecked", "source": null, "release_id": null,
+            "revision": null, "asset": null, "published_at": null}),
     );
 }
