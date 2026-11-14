@@ -17,6 +17,7 @@ use jiff::tz::TimeZone;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::errors_ledger::{self, ClientLedger, FullClient};
 use super::history::{local_time, parse_since};
 use super::list::Latest;
 use super::precondition::{DismissPart, check, of_dismiss, preview_argv};
@@ -37,7 +38,9 @@ use crate::errors::observe::{
     AddonErrors, Observation, Observe, Observed, ReadState, SourceKind, group, read_target,
     shown_time,
 };
-use crate::errors::sanitize::{MessageKind, raw_details, strict_frames, strict_message_on};
+use crate::errors::sanitize::{
+    MessageKind, family_key, raw_details, strict_frames, strict_message_on,
+};
 use crate::fsx::{FileStamp, GlobalLock, WriteSession, Writer, ensure_dir_all};
 use crate::inventory::{Depth, inventory_shared};
 use crate::limits::{ERRORS_MAX_TOTAL_BYTES, ERRORS_SHOWN_PER_ADDON};
@@ -562,6 +565,129 @@ pub struct ErrorInfo {
     /// `--raw-details`: the free text, made as safe as can be.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<RawInfo>,
+    /// What omaddons knows about when this error began on this client, from the errors
+    /// ledger (regression guard, design 7.3.1).
+    pub first_seen: FirstSeenInfo,
+}
+
+/// What omaddons knows about when an error began on its client (design 7.3.1). Only an
+/// error omaddons watched appear (`observed`) has bounds; every other basis says why it
+/// has none, and none of them ever ties an error to a change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct FirstSeenInfo {
+    /// The one time to show beside `basis`: for `observed`, `onset_by_at`; for
+    /// `baseline` and `related`, when the family was first recorded; `null` for
+    /// `unknown`. A display value: the fields below tell an observation from a bound on
+    /// when the error began.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub at: Option<Timestamp>,
+    pub basis: FirstSeenBasis,
+    /// Why the basis is what it is; `null` for `observed` and `related`.
+    pub reason: Option<FirstSeenReason>,
+    /// `observed`: when omaddons' own read first held the error; `null` otherwise.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub observed_at: Option<Timestamp>,
+    /// `observed`: the error was absent from the file the game wrote at this moment;
+    /// `null` when that write time is unknown, and for every other basis.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub onset_after_at: Option<Timestamp>,
+    /// `observed`: the error had occurred by this moment; `null` otherwise.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub onset_by_at: Option<Timestamp>,
+    /// `related`: the fingerprint of the error of the same shape that was known first;
+    /// `null` otherwise.
+    pub related_fingerprint: Option<String>,
+    /// `observed`, one occurrence at a trusted time: `onset_by_at` is when it occurred.
+    /// For the human line only; not on the wire.
+    #[serde(skip)]
+    pub exact: bool,
+}
+
+/// The line under a new error saying what is known of when it began (design 7.3.1);
+/// `None` for an error that is not new.
+fn first_seen_line(e: &ErrorInfo) -> Option<String> {
+    if !e.new || e.origin != Origin::Local {
+        return None;
+    }
+    let f = &e.first_seen;
+    let date = |at: Option<Timestamp>| at.map_or_else(String::new, local_time);
+    Some(match (f.basis, f.reason) {
+        (FirstSeenBasis::Observed, _) => match (f.exact, f.onset_after_at) {
+            (true, _) => format!("first occurred {}", date(f.onset_by_at)),
+            (false, Some(after)) => format!(
+                "appeared between {} and {}",
+                local_time(after),
+                date(f.onset_by_at)
+            ),
+            (false, None) => format!("appeared by {}", date(f.onset_by_at)),
+        },
+        (FirstSeenBasis::Related, _) => format!(
+            "like {}, known since {}: not treated as newly appeared",
+            f.related_fingerprint
+                .as_deref()
+                .unwrap_or("an earlier error"),
+            date(f.at)
+        ),
+        (FirstSeenBasis::Baseline, Some(FirstSeenReason::NewGeneration)) => format!(
+            "already there when this file was reset or put back ({}): its age is unknown",
+            date(f.at)
+        ),
+        (FirstSeenBasis::Baseline, Some(FirstSeenReason::CoverageIncomplete)) => format!(
+            "first found while another account's file could not be read ({}): omaddons cannot say it is new",
+            date(f.at)
+        ),
+        (FirstSeenBasis::Baseline, _) => format!(
+            "already there when omaddons first read this file ({}): its age is unknown",
+            date(f.at)
+        ),
+        (FirstSeenBasis::Unknown, Some(FirstSeenReason::AbsenceUnproven)) => {
+            "this file could not be read completely, so omaddons cannot tell when this began"
+                .to_owned()
+        }
+        (FirstSeenBasis::Unknown, _) => {
+            "omaddons could not record this read, so it cannot tell when this began".to_owned()
+        }
+    })
+}
+
+/// How an error's beginning is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstSeenBasis {
+    /// omaddons read the file without it, then with it: it appeared between the two.
+    Observed,
+    /// It was there when omaddons first read the file (or a reset one): its age is
+    /// unknown.
+    Baseline,
+    /// Another error of its shape was watched appear before: it is not treated as new.
+    Related,
+    /// omaddons cannot tell: `reason` says why.
+    Unknown,
+}
+
+/// Why an error's beginning is known only as `baseline`, or not at all (`unknown`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstSeenReason {
+    /// `baseline`: in the file at omaddons' first complete read of it.
+    FirstRead,
+    /// `baseline`: in the file at the first complete read after it was reset or put back.
+    NewGeneration,
+    /// `baseline`: first found while another of the client's files could not be read
+    /// whole, so "new on this client" could not be established.
+    CoverageIncomplete,
+    /// `unknown`: no complete read of the file has vouched for its absence yet (the file
+    /// was being written, held an entry that does not decode, or was cut at a bound), or
+    /// it was sent by another player, whose errors omaddons never records.
+    AbsenceUnproven,
+    /// `unknown`: another process held the errors ledger, so this read was not recorded.
+    LedgerBusy,
+    /// `unknown`: the errors ledger could not be read or written (a newer omaddons wrote
+    /// it, or an I/O error), or it did not take this read (the file was written after
+    /// the read looked, as a clock set back makes it).
+    LedgerUnavailable,
+    /// `unknown`: the errors ledger is full for this client.
+    LedgerFull,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -755,6 +881,9 @@ fn render_target(w: &mut dyn Write, t: &ErrorsTarget, label: &str) -> std::io::R
                 Some(at) => writeln!(w, "    {at}: {message}")?,
                 None => writeln!(w, "    {message}")?,
             }
+            if let Some(line) = first_seen_line(e) {
+                writeln!(w, "      {line}")?;
+            }
             for frame in &e.stack {
                 writeln!(w, "      {frame}")?;
             }
@@ -857,6 +986,16 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
     let (mut memo, writable) = memo::load(&world.paths);
     let (acks, ack_note) = ack::read(&world.paths);
     let seen = observe(ctx, &world, &mut memo, &acks, now, &mut warnings)?;
+    // The ledger learns from the whole observation, never the filtered view (7.1.7).
+    let clients: Vec<FullClient<'_>> = seen
+        .iter()
+        .map(|s| FullClient {
+            target: s.target,
+            filed_as: &s.filed_as,
+            observation: &s.observation,
+        })
+        .collect();
+    let ledger = errors_ledger::full_read(&world.paths, &clients, now, "errors");
     let found: Vec<Target> = seen.iter().map(|s| s.target.clone()).collect();
     let running_scan = detect_running(&found);
     let (catalog, catalog_warnings) = world.catalog(ctx);
@@ -881,7 +1020,8 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
         let latest =
             |addon: &str| latest_of(&remembered, t, s.record.as_ref(), &world.table, addon);
         let names = WtfPathRedactor::for_client(&s.client);
-        targets.push(view.target(t, &s.filed_as, &s.observation, &latest, &names));
+        let known = ledger.client(&s.filed_as);
+        targets.push(view.target(t, &s.filed_as, &s.observation, &latest, &names, known));
         labels.push(format!("{} ({}, {})", t.id, t.version, t.family));
         if running_scan
             .clients
@@ -1077,6 +1217,7 @@ impl View<'_> {
         observation: &Observation,
         latest: &dyn Fn(&str) -> Option<(String, Latest)>,
         names: &WtfPathRedactor,
+        known: ClientLedger<'_>,
     ) -> ErrorsTarget {
         let local: Vec<&Observed> = observation.local().collect();
         let chosen: Vec<&Observed> = local.iter().copied().filter(|e| self.chosen(e)).collect();
@@ -1217,7 +1358,7 @@ impl View<'_> {
             .collect();
         let addons = groups
             .iter()
-            .map(|g| self.addon_info(g, observation, latest, names))
+            .map(|g| self.addon_info(g, observation, latest, names, known))
             .collect();
         ErrorsTarget {
             target: TargetRef {
@@ -1275,6 +1416,7 @@ impl View<'_> {
         observation: &Observation,
         latest: &dyn Fn(&str) -> Option<(String, Latest)>,
         names: &WtfPathRedactor,
+        known: ClientLedger<'_>,
     ) -> AddonInfo {
         // Errors other players sent are never behind an update hint.
         let local = g.managed && g.origin == Origin::Local;
@@ -1354,6 +1496,19 @@ impl View<'_> {
                                 chunks: raw.chunks,
                             }
                         }),
+                        // Errors other players sent are never sighted: omaddons never
+                        // vouches for when one began.
+                        first_seen: match entry.origin {
+                            Origin::Local => known.first_seen(
+                                &db_key(&db.path),
+                                errors_ledger::proved(observation, e.shown.database),
+                                &e.shown.fingerprint,
+                                &family_key(&entry.message),
+                            ),
+                            Origin::Received => {
+                                errors_ledger::unknown(FirstSeenReason::AbsenceUnproven)
+                            }
+                        },
                     }
                 })
                 .collect(),

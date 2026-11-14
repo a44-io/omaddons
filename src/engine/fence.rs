@@ -1866,8 +1866,8 @@ mod tests {
         ),
         (
             "src/app/errors_ledger.rs",
-            1,
-            "derived data: the light read's evidence lease on the errors ledger, after the change",
+            2,
+            "derived data: the evidence lease on the errors ledger, for the light read after a change and for errors' full read",
         ),
         (
             "src/backup/inventory.rs",

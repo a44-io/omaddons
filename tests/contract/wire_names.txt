@@ -867,6 +867,8 @@ enum error:unmanaged_folder details.folders[].reason case_collision,case_duplica
 enum error:unsafe_archive details.reason absolute_path,bad_name,case_collision,control_character,drive_letter,duplicate_entry,duplicate_metadata,duplicate_name,file_and_directory,invalid_folder_name,manifest_mismatch,missing_metadata,not_utf8,parent_dir,ratio,size_overrun,special_file,special_mode,symlink,symlink_escape,unsupported_entry
 enum errors data.targets[].addons[].errors[].attribution.confidence high,low,medium
 enum errors data.targets[].addons[].errors[].attribution.method blizzard_only,first_addon_frame,library_frame,none,protected_call,taint
+enum errors data.targets[].addons[].errors[].first_seen.basis baseline,observed,related,unknown
+enum errors data.targets[].addons[].errors[].first_seen.reason absence_unproven,coverage_incomplete,first_read,ledger_busy,ledger_full,ledger_unavailable,new_generation
 enum errors data.targets[].addons[].errors[].last_seen.meaning first_or_last,last,unknown
 enum errors data.targets[].addons[].errors[].last_seen.tz explicit,system_assumed
 enum errors data.targets[].addons[].errors[].message_kind blizzard,custom,lua_runtime
@@ -8423,6 +8425,14 @@ output errors data.targets[].addons[].errors[].attribution.method string!
 output errors data.targets[].addons[].errors[].count integer! minimum=0
 output errors data.targets[].addons[].errors[].database string!
 output errors data.targets[].addons[].errors[].fingerprint string!
+output errors data.targets[].addons[].errors[].first_seen object!
+output errors data.targets[].addons[].errors[].first_seen.at string?!
+output errors data.targets[].addons[].errors[].first_seen.basis string!
+output errors data.targets[].addons[].errors[].first_seen.observed_at string?!
+output errors data.targets[].addons[].errors[].first_seen.onset_after_at string?!
+output errors data.targets[].addons[].errors[].first_seen.onset_by_at string?!
+output errors data.targets[].addons[].errors[].first_seen.reason string?!
+output errors data.targets[].addons[].errors[].first_seen.related_fingerprint string?!
 output errors data.targets[].addons[].errors[].last_seen object?!
 output errors data.targets[].addons[].errors[].last_seen.at string?!
 output errors data.targets[].addons[].errors[].last_seen.meaning string!

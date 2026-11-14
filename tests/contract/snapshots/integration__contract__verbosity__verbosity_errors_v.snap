@@ -43,6 +43,15 @@ expression: s.stable(&checked.envelope)
                 "count": 4,
                 "database": "db-1",
                 "fingerprint": "e:87db00f6ab6136f1",
+                "first_seen": {
+                  "at": "<time>",
+                  "basis": "baseline",
+                  "observed_at": null,
+                  "onset_after_at": null,
+                  "onset_by_at": null,
+                  "reason": "first_read",
+                  "related_fingerprint": null
+                },
                 "last_seen": {
                   "at": "<time>",
                   "meaning": "last",

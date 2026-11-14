@@ -88,6 +88,8 @@ fn scene() -> Scene {
     );
     let wtf = s.home.client("_retail_").join("WTF");
     buggrabber::write_files(&wtf, &[db.file()]);
+    // Past the racy slack: a file read within it proves nothing, and `first_seen` says so.
+    std::thread::sleep(std::time::Duration::from_millis(30));
 
     let captured = "2026-10-14T21:15:00Z".parse().unwrap();
     super::common::backups::seed_backup(

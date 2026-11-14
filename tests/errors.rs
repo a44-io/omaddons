@@ -75,8 +75,12 @@ mod support {
             self.home.client("_retail_").join("WTF")
         }
 
+        /// Writes `files`, then waits past the racy slack (`RACY_SLACK_NS`): a file read
+        /// within it reads as one still being written, which proves nothing, and the
+        /// errors ledger's `first_seen` would say so (`absence_unproven`) on a busy machine.
         pub fn write(&self, files: &[SvFile]) {
             write_files(&self.wtf(), files);
+            std::thread::sleep(std::time::Duration::from_millis(30));
         }
 
         /// `omaddons errors <args> --json --progress json` with the clock frozen.

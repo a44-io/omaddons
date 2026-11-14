@@ -15,22 +15,28 @@
 //! records the sightings and a change mark per database whose state was a proved read.
 //! Neither half can fail or delay a change past `LEDGER_LOCK_TIMEOUT`: what goes wrong
 //! is one `-vv` line, and that change has no mark.
+//!
+//! The full read is `errors`' (7.1.7, phases 1 and 2): every database it read, whole,
+//! sighted with [`SightMode::Full`] in one session ([`full_read`]), and each error's
+//! `first_seen` looked up in the ledger that session stored ([`ClientLedger`]).
 
 use std::path::PathBuf;
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
+use crate::app::errors::{FirstSeenBasis, FirstSeenInfo, FirstSeenReason};
 use crate::errors::ack::db_key;
 use crate::errors::buggrabber::{Origin, evidence};
 use crate::errors::ledger::{
-    self, ChangeMark, ClientNow, DbLedger, DbRead, DbSighting, EntrySighting, Restored, SightMode,
-    TargetLedger,
+    self, BaselineReason, ChangeMark, ClientNow, DbLedger, DbRead, DbSighting, EntrySighting,
+    ErrorsLedger, FamilyFirst, LedgerUnavailable, Restored, SightMode, TargetLedger,
 };
 use crate::errors::locate::{self, Coverage as WalkCoverage};
 use crate::errors::memo::{self, TargetMemo};
-use crate::errors::observe::read_stable;
-use crate::errors::sanitize::identities;
+use crate::errors::observe::{Coverage, Observation, read_stable};
+use crate::errors::sanitize::{family_key, identities};
+use crate::errors::suspect::onset;
 use crate::fsx::{FileStamp, ScopeTable};
 use crate::limits::LEDGER_PRECHANGE_MAX_BYTES;
 use crate::model::{RunId, Target, TargetKey, TxKind};
@@ -192,6 +198,20 @@ struct CapturedDb {
     /// Where the file is, for the second look only: never recorded.
     path: PathBuf,
     sighting: DbSighting,
+}
+
+/// Since when a restore can concern a database `ledger` (a client's, as loaded) shows:
+/// the oldest of their newest proved states, else `loaded_at`. A pure function.
+fn restores_horizon(ledger: Option<&TargetLedger>, loaded_at: Timestamp) -> Timestamp {
+    ledger
+        .into_iter()
+        .flat_map(|l| l.databases.values())
+        .map(|db| {
+            db.reads
+                .last()
+                .map_or(db.started_at, |r| r.last_observed_at)
+        })
+        .fold(loaded_at, Timestamp::min)
 }
 
 /// The ledger's key for `target`, as the errors memo files it.
@@ -363,15 +383,7 @@ pub fn capture(
                 .into_iter()
                 .filter_map(|file| look(file, ledger, looked_at, &mut budget, &tz))
                 .collect();
-            let since = ledger
-                .into_iter()
-                .flat_map(|l| l.databases.values())
-                .map(|db| {
-                    db.reads
-                        .last()
-                        .map_or(db.started_at, |r| r.last_observed_at)
-                })
-                .fold(loaded_at, Timestamp::min);
+            let since = restores_horizon(ledger, loaded_at);
             CapturedClient {
                 target: (*target).clone(),
                 filed_as,
@@ -559,6 +571,295 @@ fn mark_of(
         running,
         settled,
     })
+}
+
+// ---------------------------------------------------------------------------------------
+// The full read (design 7.1.7): `errors`.
+
+/// One client `errors` read, as the full read sights it.
+pub struct FullClient<'a> {
+    pub target: &'a Target,
+    /// Where its memo and ledger are filed: its key, or its id until registered.
+    pub filed_as: &'a str,
+    /// Everything read on it, before any view filter.
+    pub observation: &'a Observation,
+}
+
+/// What `errors` shows `first_seen` from: the ledger its own read stored, or, when that
+/// could not be stored, the ledger as it was on disk and why this read is not in it.
+#[derive(Debug, Clone, Default)]
+pub struct LedgerView {
+    pub ledger: Option<ErrorsLedger>,
+    /// Why this run's sightings are not in `ledger`; `None` when they are.
+    pub missing: Option<FirstSeenReason>,
+}
+
+impl LedgerView {
+    /// The view of one client, filed as `filed_as`.
+    pub fn client(&self, filed_as: &str) -> ClientLedger<'_> {
+        ClientLedger {
+            readable: self.ledger.is_some(),
+            ledger: self.ledger.as_ref().and_then(|l| l.targets.get(filed_as)),
+            missing: self.missing,
+        }
+    }
+}
+
+/// One client's ledger as `errors` shows it.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientLedger<'a> {
+    /// A ledger was had at all (stored by this read, or read from the file).
+    pub readable: bool,
+    /// What it holds of this client; `None` when it holds nothing of it.
+    pub ledger: Option<&'a TargetLedger>,
+    pub missing: Option<FirstSeenReason>,
+}
+
+impl ClientLedger<'_> {
+    /// What the ledger knows of when the local error `fingerprint` (of family `family`)
+    /// began, in the database keyed `database`, which this read of it vouched for
+    /// (`proved`) or not (design 7.1.2's lookup):
+    ///
+    /// - a member of a cluster that appeared in that database is `observed`, with the
+    ///   bounds of its appearance (`suspect::onset`);
+    /// - else its family decides: one watched appear before is `related` (naming that
+    ///   appearance's first member), a baseline is `baseline` with its reason, one met
+    ///   only in reads that proved nothing is `unknown` (`absence_unproven`);
+    /// - a family the ledger does not hold is `unknown`, with why: the client is
+    ///   untracked (`ledger_full`), this read was not stored (its reason), or this read
+    ///   of the database could not vouch for anything (`absence_unproven`).
+    ///
+    /// A pure function. Nothing here ties an error to a change.
+    pub fn first_seen(
+        &self,
+        database: &str,
+        proved: bool,
+        fingerprint: &str,
+        family: &str,
+    ) -> FirstSeenInfo {
+        if !self.readable {
+            return unknown(self.missing.unwrap_or(FirstSeenReason::LedgerUnavailable));
+        }
+        // A ledger that holds nothing of this client (its first read proved nothing yet).
+        let empty = TargetLedger::default();
+        let ledger = self.ledger.unwrap_or(&empty);
+        let member = ledger
+            .clusters
+            .values()
+            .filter(|c| c.appearance.database == database)
+            .filter(|c| c.fingerprints.iter().any(|f| f == fingerprint))
+            .max_by_key(|c| c.appearance.found.observed_at);
+        if let Some(cluster) = member {
+            let (bounds, _) = onset(&cluster.appearance);
+            return FirstSeenInfo {
+                at: Some(bounds.by),
+                basis: FirstSeenBasis::Observed,
+                reason: None,
+                observed_at: Some(cluster.appearance.found.observed_at),
+                onset_after_at: bounds.after,
+                onset_by_at: Some(bounds.by),
+                related_fingerprint: None,
+                exact: bounds.exact,
+            };
+        }
+        match ledger.families.get(family).map(|f| &f.first) {
+            Some(FamilyFirst::Observed { cluster }) => match ledger.clusters.get(cluster) {
+                Some(first) => FirstSeenInfo {
+                    at: Some(first.appearance.found.observed_at),
+                    basis: FirstSeenBasis::Related,
+                    reason: None,
+                    observed_at: None,
+                    onset_after_at: None,
+                    onset_by_at: None,
+                    related_fingerprint: first.fingerprints.first().cloned(),
+                    exact: false,
+                },
+                // The appearance it names is gone: nothing to point at.
+                None => unknown(FirstSeenReason::LedgerUnavailable),
+            },
+            Some(FamilyFirst::Baseline { at, reason }) => FirstSeenInfo {
+                at: Some(*at),
+                basis: FirstSeenBasis::Baseline,
+                reason: Some(match reason {
+                    BaselineReason::FirstRead => FirstSeenReason::FirstRead,
+                    BaselineReason::NewGeneration => FirstSeenReason::NewGeneration,
+                    BaselineReason::CoverageIncomplete => FirstSeenReason::CoverageIncomplete,
+                }),
+                observed_at: None,
+                onset_after_at: None,
+                onset_by_at: None,
+                related_fingerprint: None,
+                exact: false,
+            },
+            Some(FamilyFirst::Pending(_)) => unknown(FirstSeenReason::AbsenceUnproven),
+            None if ledger.untracked => unknown(FirstSeenReason::LedgerFull),
+            None => unknown(match self.missing {
+                Some(reason) => reason,
+                None if !proved => FirstSeenReason::AbsenceUnproven,
+                None => FirstSeenReason::LedgerUnavailable,
+            }),
+        }
+    }
+}
+
+/// `first_seen` of an error omaddons cannot place, for `reason`.
+pub fn unknown(reason: FirstSeenReason) -> FirstSeenInfo {
+    FirstSeenInfo {
+        at: None,
+        basis: FirstSeenBasis::Unknown,
+        reason: Some(reason),
+        observed_at: None,
+        onset_after_at: None,
+        onset_by_at: None,
+        related_fingerprint: None,
+        exact: false,
+    }
+}
+
+/// What `observation` read, as the ledger sights it at `now` (the run's one time,
+/// common rule 13): one sighting per database, with its local entries (their family
+/// keys and fingerprints), whatever the view will filter. Received entries are other
+/// players' errors and are not sighted. A pure function.
+pub fn sightings(observation: &Observation, now: Timestamp) -> Vec<DbSighting> {
+    observation
+        .databases
+        .iter()
+        .enumerate()
+        .map(|(index, db)| {
+            let entries = observation
+                .local()
+                .filter(|o| o.database == index)
+                .map(|o| EntrySighting {
+                    family: family_key(&o.entry.message),
+                    fingerprint: o.fingerprint.clone(),
+                    session: o.entry.session,
+                    time: o.evidence,
+                    counter: o.entry.counter,
+                })
+                .collect();
+            DbSighting {
+                key: db_key(&db.path),
+                provider: db.provider.clone(),
+                stamp: db.stamp.fingerprint(),
+                written_at: db.written_at,
+                observed_at: now,
+                session: db.session,
+                read: Some(DbRead {
+                    coverage: db.coverage,
+                    entries,
+                }),
+            }
+        })
+        .collect()
+}
+
+/// Whether `observation` read database `index` whole enough to vouch for an error's
+/// absence (design 7.1.3).
+pub fn proved(observation: &Observation, index: usize) -> bool {
+    observation
+        .databases
+        .get(index)
+        .is_some_and(|db| db.coverage == Coverage::Proved)
+}
+
+/// One client of a full read, ready for the session: its sightings and the restores its
+/// databases may have met (`None`: the history does not read whole).
+type Prepared<'c, 'a> = (&'c FullClient<'a>, Vec<DbSighting>, Option<Vec<Restored>>);
+
+/// `errors`' full read of `clients` (design 7.1.7, phases 1 and 2): the restores each
+/// client's databases may have met, read before the lock; then one session under the
+/// evidence lock that sights every database each read whole (`SightMode::Full`) and
+/// stores the ledger. Returns the ledger the view reads. What cannot be had is one `-vv`
+/// line, never an error: the view then reads the ledger as it is on disk, and says why
+/// an error it does not know cannot be placed.
+pub fn full_read(
+    paths: &Paths,
+    clients: &[FullClient<'_>],
+    now: Timestamp,
+    command: &str,
+) -> LedgerView {
+    let loaded = ledger::load(paths);
+    let unstored = |why: &LedgerUnavailable, loaded: Option<ErrorsLedger>| {
+        trace::emit(|| format!("errors ledger: this read was not recorded: {why:?}"));
+        LedgerView {
+            ledger: loaded,
+            missing: Some(match why {
+                LedgerUnavailable::Busy => FirstSeenReason::LedgerBusy,
+                LedgerUnavailable::TooLarge { .. } => FirstSeenReason::LedgerFull,
+                LedgerUnavailable::Newer | LedgerUnavailable::Io(_) => {
+                    FirstSeenReason::LedgerUnavailable
+                }
+            }),
+        }
+    };
+    // Looked at first, the restores after: a restore that commits after this read is
+    // after every look, and the next session finds it.
+    let prepared: Vec<Prepared<'_, '_>> = clients
+        .iter()
+        .map(|client| {
+            let known = loaded.as_ref().and_then(|l| l.targets.get(client.filed_as));
+            let since = restores_horizon(known, now);
+            (
+                client,
+                sightings(client.observation, now),
+                restores_since(paths, client.target, since),
+            )
+        })
+        .collect();
+    let scopes = match ScopeTable::new(paths, &[], None) {
+        Ok(scopes) => scopes,
+        Err(err) => return unstored(&LedgerUnavailable::Io(err.message.clone()), loaded),
+    };
+    let mut session = match ledger::open(paths, &scopes, command) {
+        Ok(session) => session,
+        Err(why) => return unstored(&why, loaded),
+    };
+    for (client, dbs, restores) in &prepared {
+        // A history that cannot be read whole may hide a restore: nothing appears.
+        let (restores, discovered) = match restores {
+            Some(restores) => (
+                restores.as_slice(),
+                client.observation.coverage == WalkCoverage::Complete,
+            ),
+            None => {
+                trace::emit(|| {
+                    format!(
+                        "errors ledger: {}: the history does not read whole, so no error is recorded as newly appeared",
+                        client.target.id
+                    )
+                });
+                (&[][..], false)
+            }
+        };
+        let at = ClientNow {
+            version: Some(client.target.version.to_string()),
+            now,
+        };
+        let sighted = session.sight(
+            client.filed_as,
+            dbs,
+            restores,
+            &at,
+            discovered,
+            SightMode::Full,
+        );
+        if !sighted.appeared.is_empty() {
+            trace::emit(|| {
+                format!(
+                    "errors ledger: {}: {} newly appeared",
+                    client.target.id,
+                    sighted.appeared.len()
+                )
+            });
+        }
+    }
+    match session.commit() {
+        Ok(accepted) => LedgerView {
+            ledger: Some(accepted.ledger.clone()),
+            missing: None,
+        },
+        Err(why) => unstored(&why, loaded),
+    }
 }
 
 #[cfg(test)]
@@ -1307,5 +1608,334 @@ mod tests {
             &|_| Some(false),
             "test",
         );
+    }
+
+    /// An entry of family `family` and fingerprint `fingerprint`, in `session`, once,
+    /// at the unix time `seconds` (its last occurrence).
+    fn entry(family: &str, fingerprint: &str, session: u32, seconds: i64) -> EntrySighting {
+        EntrySighting {
+            family: family.to_owned(),
+            fingerprint: fingerprint.to_owned(),
+            session: Some(session),
+            time: crate::errors::buggrabber::TimeEvidence {
+                at: Some(at(seconds)),
+                meaning: crate::errors::buggrabber::TimeMeaning::Last,
+                tz: crate::errors::buggrabber::TzEvidence::Explicit,
+            },
+            counter: 1,
+        }
+    }
+
+    /// Database `d1` in state `stamp`, written at `written`, read at `observed` in
+    /// `session`: proved, or degraded by a dropped entry.
+    fn read(
+        stamp: &str,
+        written: i64,
+        observed: i64,
+        session: u32,
+        proved: bool,
+        entries: Vec<EntrySighting>,
+    ) -> DbSighting {
+        DbSighting {
+            key: "d1".to_owned(),
+            provider: "!BugGrabber".to_owned(),
+            stamp: stamp.to_owned(),
+            written_at: Some(at(written)),
+            observed_at: at(observed),
+            session: Some(session),
+            read: Some(DbRead {
+                coverage: if proved {
+                    Coverage::Proved
+                } else {
+                    Coverage::Degraded(crate::errors::observe::Gap::Dropped)
+                },
+                entries,
+            }),
+        }
+    }
+
+    /// The ledger after three full reads of `d1`: A alone (the first read), then A and
+    /// B (B appeared), then a read that could not vouch for anything holding P.
+    fn watched() -> TargetLedger {
+        let mut ledger = TargetLedger::default();
+        let full = |ledger: &mut TargetLedger, db: DbSighting, now: i64| {
+            let client = ClientNow {
+                version: Some("12.1.5.70391".to_owned()),
+                now: at(now),
+            };
+            ledger::sight(ledger, &[db], &[], &client, true, SightMode::Full);
+        };
+        full(
+            &mut ledger,
+            read("s1", 100, 110, 4, true, vec![entry("a:a", "e:a1", 4, 90)]),
+            110,
+        );
+        full(
+            &mut ledger,
+            read(
+                "s2",
+                200,
+                210,
+                5,
+                true,
+                vec![entry("a:a", "e:a1", 4, 90), entry("a:b", "e:b1", 5, 150)],
+            ),
+            210,
+        );
+        full(
+            &mut ledger,
+            read(
+                "s3",
+                300,
+                310,
+                6,
+                false,
+                vec![
+                    entry("a:a", "e:a1", 4, 90),
+                    entry("a:b", "e:b1", 5, 150),
+                    entry("a:p", "e:p1", 6, 290),
+                ],
+            ),
+            310,
+        );
+        ledger
+    }
+
+    #[test]
+    fn first_seen_follows_the_ledger_s_lookup_and_never_more() {
+        use FirstSeenBasis::{Baseline, Observed, Related, Unknown};
+        use FirstSeenReason::{
+            AbsenceUnproven, FirstRead, LedgerBusy, LedgerFull, LedgerUnavailable,
+        };
+        let ledger = watched();
+        let mut untracked = ledger.clone();
+        untracked.untracked = true;
+        let known = |missing| ClientLedger {
+            readable: true,
+            ledger: Some(&ledger),
+            missing,
+        };
+        let none = |readable, missing| ClientLedger {
+            readable,
+            ledger: None,
+            missing,
+        };
+        // (case, view, database, proved, fingerprint, family, basis, reason, at)
+        type Case<'a> = (
+            &'a str,
+            ClientLedger<'a>,
+            &'a str,
+            bool,
+            &'a str,
+            &'a str,
+            FirstSeenBasis,
+            Option<FirstSeenReason>,
+            Option<Timestamp>,
+        );
+        let cases: Vec<Case<'_>> = vec![
+            (
+                "there at the first read",
+                known(None),
+                "d1",
+                true,
+                "e:a1",
+                "a:a",
+                Baseline,
+                Some(FirstRead),
+                Some(at(110)),
+            ),
+            (
+                "the bug moved: another line of a baseline family",
+                known(None),
+                "d1",
+                true,
+                "e:a9",
+                "a:a",
+                Baseline,
+                Some(FirstRead),
+                Some(at(110)),
+            ),
+            (
+                "watched appear",
+                known(None),
+                "d1",
+                true,
+                "e:b1",
+                "a:b",
+                Observed,
+                None,
+                Some(at(150)),
+            ),
+            (
+                "another line of an observed family",
+                known(None),
+                "d1",
+                true,
+                "e:b2",
+                "a:b",
+                Related,
+                None,
+                Some(at(210)),
+            ),
+            (
+                "a member in another database is only related",
+                known(None),
+                "d2",
+                true,
+                "e:b1",
+                "a:b",
+                Related,
+                None,
+                Some(at(210)),
+            ),
+            (
+                "met only in a read that proved nothing",
+                known(None),
+                "d1",
+                false,
+                "e:p1",
+                "a:p",
+                Unknown,
+                Some(AbsenceUnproven),
+                None,
+            ),
+            (
+                "unknown to the ledger, this read degraded",
+                known(None),
+                "d1",
+                false,
+                "e:x1",
+                "a:x",
+                Unknown,
+                Some(AbsenceUnproven),
+                None,
+            ),
+            (
+                "unknown to a ledger that holds this read",
+                known(None),
+                "d1",
+                true,
+                "e:x1",
+                "a:x",
+                Unknown,
+                Some(LedgerUnavailable),
+                None,
+            ),
+            (
+                "unknown while the ledger was busy",
+                known(Some(LedgerBusy)),
+                "d1",
+                true,
+                "e:x1",
+                "a:x",
+                Unknown,
+                Some(LedgerBusy),
+                None,
+            ),
+            (
+                "known while the ledger was busy: as it has it",
+                known(Some(LedgerBusy)),
+                "d1",
+                true,
+                "e:a1",
+                "a:a",
+                Baseline,
+                Some(FirstRead),
+                Some(at(110)),
+            ),
+            (
+                "an untracked client",
+                ClientLedger {
+                    readable: true,
+                    ledger: Some(&untracked),
+                    missing: None,
+                },
+                "d1",
+                true,
+                "e:x1",
+                "a:x",
+                Unknown,
+                Some(LedgerFull),
+                None,
+            ),
+            (
+                "a ledger holding nothing of the client, this read degraded",
+                none(true, None),
+                "d1",
+                false,
+                "e:a1",
+                "a:a",
+                Unknown,
+                Some(AbsenceUnproven),
+                None,
+            ),
+            (
+                "a ledger holding nothing of the client, busy",
+                none(true, Some(LedgerBusy)),
+                "d1",
+                true,
+                "e:a1",
+                "a:a",
+                Unknown,
+                Some(LedgerBusy),
+                None,
+            ),
+            (
+                "no ledger, busy",
+                none(false, Some(LedgerBusy)),
+                "d1",
+                true,
+                "e:a1",
+                "a:a",
+                Unknown,
+                Some(LedgerBusy),
+                None,
+            ),
+            (
+                "no ledger at all",
+                none(false, None),
+                "d1",
+                true,
+                "e:a1",
+                "a:a",
+                Unknown,
+                Some(LedgerUnavailable),
+                None,
+            ),
+        ];
+        for (case, view, database, proved, fingerprint, family, basis, reason, when) in cases {
+            let got = view.first_seen(database, proved, fingerprint, family);
+            assert_eq!(
+                (got.basis, got.reason, got.at),
+                (basis, reason, when),
+                "{case}: {got:?}"
+            );
+            // Bounds and a pointer only where the basis has them.
+            assert_eq!(got.onset_by_at.is_some(), basis == Observed, "{case}");
+            assert_eq!(got.observed_at.is_some(), basis == Observed, "{case}");
+            assert_eq!(
+                got.related_fingerprint.is_some(),
+                basis == Related,
+                "{case}"
+            );
+        }
+        // The appearance's bounds: absent from the file written at 100, present by its
+        // own trusted time (150, before the file holding it was written at 200), found
+        // by the read at 210; one occurrence at a trusted time is exact.
+        let b = known(None).first_seen("d1", true, "e:b1", "a:b");
+        assert_eq!(
+            (b.onset_after_at, b.onset_by_at, b.observed_at, b.exact),
+            (Some(at(100)), Some(at(150)), Some(at(210)), true)
+        );
+        let related = known(None).first_seen("d1", true, "e:b2", "a:b");
+        assert_eq!(related.related_fingerprint.as_deref(), Some("e:b1"));
+    }
+
+    #[test]
+    fn restores_horizon_is_the_oldest_newest_read() {
+        let ledger = watched();
+        assert_eq!(restores_horizon(None, at(1_000)), at(1_000));
+        assert_eq!(restores_horizon(Some(&ledger), at(1_000)), at(210));
+        assert_eq!(restores_horizon(Some(&ledger), at(50)), at(50));
     }
 }

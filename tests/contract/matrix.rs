@@ -2368,6 +2368,8 @@ fn errors() {
     let wtf = s.home.client("_retail_").join("WTF");
     let mut file = db.file();
     write_files(&wtf, std::slice::from_ref(&file));
+    // Past the racy slack: a file read within it proves nothing, and `first_seen` says so.
+    std::thread::sleep(std::time::Duration::from_millis(30));
     let env = [("OMADDONS_NOW", "2026-10-15T18:30:00Z")];
     let c = s.json_env(&["errors", "-t", "retail"], &env, 0);
     insta::assert_json_snapshot!("errors_ok", s.stable(&c.envelope));
@@ -2378,6 +2380,7 @@ fn errors() {
     let cut = file.bytes.len() - 20;
     file.bytes.truncate(cut);
     write_files(&wtf, &[file]);
+    std::thread::sleep(std::time::Duration::from_millis(30));
     let c = s.json_env(&["errors", "-t", "retail", "--check"], &env, 6);
     insta::assert_json_snapshot!("errors_check_incomplete", s.stable(&c.envelope));
     let c = s.json(&["errors", "-t", "nowhere"], 3);
