@@ -230,6 +230,17 @@ impl Engine {
         self.undo_bound(req, None)
     }
 
+    /// Whether the history line `entries[at]`, on the client in `client_dir`, could be
+    /// undone now, as `undo --dry-run` would find (design 7.4.1). Reads only.
+    pub fn undoable_now(
+        &self,
+        client_dir: &std::path::Path,
+        entries: &[crate::state::history::HistoryEntry],
+        at: usize,
+    ) -> bool {
+        crate::engine::undo::undoable_now(&self.paths, client_dir, entries, at)
+    }
+
     /// The undo of the repair-family line `read.entries[at]`, and the report its run
     /// recorded once its run directory existed (`doctor undo`, §6.11).
     pub fn undo_repair_reported(

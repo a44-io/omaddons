@@ -173,6 +173,20 @@ impl SourceId {
         }
     }
 
+    /// How this source serves a release that is no longer its newest (design 7.4.1):
+    /// one input of a rollback's `restorable`, never the answer alone, since an archive
+    /// still in the blob cache goes back whatever its source.
+    pub const fn older_releases(self) -> OlderReleases {
+        match self {
+            Self::Github => OlderReleases::ByTag,
+            Self::Wowace => OlderReleases::ByRevision,
+            Self::Git => OlderReleases::ByCommit,
+            Self::Wowi | Self::Tukui | Self::Url | Self::Local | Self::Curseforge | Self::Wago => {
+                OlderReleases::No
+            }
+        }
+    }
+
     /// The milestone a source this build lacks arrives in.
     pub(crate) const fn later(self) -> Option<&'static str> {
         match self {
@@ -186,6 +200,23 @@ impl SourceId {
             | Self::Wowace => None,
         }
     }
+}
+
+/// How a source can be asked again for a release that is no longer its newest, and what
+/// can hold its answer to the files that were installed (design 7.4.1, decision RG-D12):
+/// a tag alone never proves the bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OlderReleases {
+    /// By its tag (GitHub releases): only the archive's hash proves the bytes.
+    ByTag,
+    /// By its tag (WowAce, which can publish one tag at several revisions): the recorded
+    /// revision, or the archive's hash.
+    ByRevision,
+    /// By a full commit id (git), which is its own proof; a branch or a short id is not.
+    ByCommit,
+    /// Not at all: only its current file (WoWInterface, Tukui), no versions (`url:`,
+    /// `file:`), or not in this build (CurseForge, Wago).
+    No,
 }
 
 /// Which sources config.toml turns off (`[sources.<id>] enabled = false`). Every
@@ -627,6 +658,31 @@ mod tests {
 
     use super::*;
     use crate::net::{Request, Response};
+
+    /// RG-34a: how each source serves a release that is no longer its newest, for every
+    /// source id (design 7.4.1).
+    #[test]
+    fn which_sources_serve_an_older_release_and_what_holds_it() {
+        let table = [
+            (SourceId::Github, OlderReleases::ByTag),
+            (SourceId::Git, OlderReleases::ByCommit),
+            (SourceId::Url, OlderReleases::No),
+            (SourceId::Local, OlderReleases::No),
+            (SourceId::Wowi, OlderReleases::No),
+            (SourceId::Tukui, OlderReleases::No),
+            (SourceId::Curseforge, OlderReleases::No),
+            (SourceId::Wago, OlderReleases::No),
+            (SourceId::Wowace, OlderReleases::ByRevision),
+        ];
+        assert_eq!(
+            table.map(|(id, _)| id),
+            SourceId::ALL,
+            "every source, in order"
+        );
+        for (id, want) in table {
+            assert_eq!(id.older_releases(), want, "{}", id.name());
+        }
+    }
 
     /// Counts calls and refs; fails refs named in `failing`.
     struct Counting {

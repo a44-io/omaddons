@@ -368,16 +368,31 @@ impl BlobCache {
     /// here and never marked used. One larger than the download cap is a miss without
     /// being read. Each blob is hashed once per process while it is unchanged (the memo).
     pub fn get(&self, scopes: &ScopeTable, sha256: &str) -> Result<Option<BlobRef>> {
-        let sha256 = sha256.to_ascii_lowercase();
-        if !is_sha256(&sha256) {
-            return Ok(None);
-        }
-        let path = self.paths.blob(&sha256);
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        let Some(blob) = self.verified(sha256) else {
             return Ok(None);
         };
+        self.touch(scopes, &blob.sha256, blob.size)?;
+        Ok(Some(blob))
+    }
+
+    /// Whether the blob with this hash is cached and still hashes to its name, as
+    /// [`BlobCache::get`] would answer, without marking it used: a question that writes
+    /// nothing (a rollback's `restorable`). Damage is recorded as `get` records it.
+    pub fn holds(&self, sha256: &str) -> bool {
+        self.verified(sha256).is_some()
+    }
+
+    /// [`BlobCache::get`]'s check alone: the blob, when it is a file within the download
+    /// cap whose bytes hash to its name; a damaged one is recorded and missed.
+    fn verified(&self, sha256: &str) -> Option<BlobRef> {
+        let sha256 = sha256.to_ascii_lowercase();
+        if !is_sha256(&sha256) {
+            return None;
+        }
+        let path = self.paths.blob(&sha256);
+        let meta = std::fs::symlink_metadata(&path).ok()?;
         if !meta.is_file() || meta.len() > self.max_download {
-            return Ok(None);
+            return None;
         }
         let size = match self.memo.verify(&path, &sha256, &mut || false, now_ns()) {
             Verification::Matches { size } => size,
@@ -389,7 +404,7 @@ impl BlobCache {
                     size,
                     damage,
                 });
-                return Ok(None);
+                return None;
             }
             Verification::Unreadable { kind } => {
                 let size = meta.len();
@@ -400,12 +415,11 @@ impl BlobCache {
                     size,
                     damage,
                 });
-                return Ok(None);
+                return None;
             }
-            Verification::Gone | Verification::Stopped => return Ok(None),
+            Verification::Gone | Verification::Stopped => return None,
         };
-        self.touch(scopes, &sha256, size)?;
-        Ok(Some(BlobRef { sha256, size, path }))
+        Some(BlobRef { sha256, size, path })
     }
 
     /// Opens a blob for reading.

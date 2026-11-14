@@ -1117,6 +1117,35 @@ fn select(entries: &[HistoryEntry], selector: UndoSelector) -> Result<usize> {
     }
 }
 
+/// Whether `entries[at]` could be undone now (design 7.4.1): its snapshots exist and no
+/// later transaction touched its folders or undid it, as `undo <tx> --dry-run` would
+/// find. `entries` is the whole history, oldest first; `client_dir` its client's
+/// discovered directory. Reads only.
+///
+/// It may be optimistic about SavedVariables: it does not ask whether a later whole
+/// restore wrote settings the undo would put back (the undo itself decides, and its
+/// error names its own fix), nor whether the client runs. A repair (`doctor undo`), a
+/// whole restore and a line undo does not revert are left to their own commands:
+/// `false`. So is a transaction an undo already reverted, even one whose settings were
+/// deferred: its folders are back, and there is nothing to go back from.
+pub fn undoable_now(paths: &Paths, client_dir: &Path, entries: &[HistoryEntry], at: usize) -> bool {
+    let Some(reverted) = entries.get(at) else {
+        return false;
+    };
+    if !reverted.kind.is_undoable()
+        || super::repair::undo::is_repair_family(reverted)
+        || restores_wtf(reverted)
+    {
+        return false;
+    }
+    let ctx = ConflictCtx { paths, client_dir };
+    if check_conflicts_in(entries, at, None, false, Some(&ctx)).is_err() {
+        return false;
+    }
+    let client = ClientPaths::new(client_dir);
+    snapshot_of(&client, &reverted.tx).is_dir() && state_snapshot_of(paths, &reverted.tx).is_dir()
+}
+
 /// The transactions whose undo deferred its SavedVariables restore and whose follow-up
 /// (`undo <tx> --saved-variables restore`) would still pass its conflict check: it has
 /// not run, the deferred undo was not undone, and nothing later changed those folders.
@@ -3634,6 +3663,70 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::GameRunning);
         assert_eq!(tree(&scene), before);
+    }
+
+    /// `undoable_now` for `tx`, and whether `undo <tx> --dry-run` succeeds, on one scene;
+    /// asking changes nothing.
+    fn undoable_and_dry_run(scene: &TxScene, tx: TxId) -> (bool, bool) {
+        let read = history::read(&scene.paths, &HistoryFilter::default()).unwrap();
+        let at = read.entries.iter().position(|e| e.tx == tx).unwrap();
+        let client_dir = scene.current_target().target.client_dir;
+        let before = tree(scene);
+        let now = undoable_now(&scene.paths, &client_dir, &read.entries, at);
+        assert_eq!(tree(scene), before, "asking changed nothing");
+        let dry = scene.undo_with(UndoSelector::Tx(tx), SvPolicy::Auto, true);
+        (now, dry.is_ok())
+    }
+
+    /// RG-34a: `undoable_now` answers as `undo --dry-run` does for a plain update, an
+    /// update already undone, one whose snapshot was pruned, and one a later change to
+    /// the same folders superseded.
+    #[test]
+    fn undoable_now_agrees_with_the_dry_run() {
+        let scene = TxScene::new();
+        install(&scene, "v1.zip", V1);
+        let update = install(&scene, "v2.zip", V2);
+        assert_eq!(
+            undoable_and_dry_run(&scene, update),
+            (true, true),
+            "a plain update"
+        );
+
+        scene
+            .undo(UndoSelector::Tx(update), SvPolicy::Auto)
+            .unwrap();
+        assert_eq!(
+            undoable_and_dry_run(&scene, update),
+            (false, false),
+            "already undone"
+        );
+
+        let scene = TxScene::new();
+        install(&scene, "v1.zip", V1);
+        let update = install(&scene, "v2.zip", V2);
+        std::fs::remove_dir_all(scene.client.snapshots(&update)).unwrap();
+        assert_eq!(
+            undoable_and_dry_run(&scene, update),
+            (false, false),
+            "its snapshot pruned"
+        );
+
+        let scene = TxScene::new();
+        let first = install(&scene, "v1.zip", V1);
+        let update = install(&scene, "v2.zip", V2);
+        assert_eq!(
+            undoable_and_dry_run(&scene, first),
+            (false, false),
+            "superseded by a later change to its folders"
+        );
+        assert_eq!(undoable_and_dry_run(&scene, update), (true, true));
+
+        let read = history::read(&scene.paths, &HistoryFilter::default()).unwrap();
+        let client_dir = scene.current_target().target.client_dir;
+        assert!(
+            !undoable_now(&scene.paths, &client_dir, &read.entries, read.entries.len()),
+            "no such line"
+        );
     }
 
     #[test]

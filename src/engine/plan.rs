@@ -23,7 +23,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::blobs::{
-    BlobCache, BlobRef, DamagedBlob, DownloadTarget, Fetched, Storage, damaged_instead,
+    BlobCache, BlobRef, DamagedBlob, DownloadTarget, Fetched, Storage, damaged_instead, is_sha256,
 };
 use super::edit::{
     EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, effective_edits,
@@ -6222,6 +6222,64 @@ pub fn local_blob_candidate(
     })
 }
 
+/// Whether the exact files of a release an addon had installed can be had again
+/// (design 7.4.1, decision RG-D12): going back means the same files, never the same
+/// label, since tags move and assets are replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restorable {
+    /// The archive it was installed from is still in the blob cache and hashes to its
+    /// name. Works offline, whatever the source.
+    Cached,
+    /// Its source can be asked for that release, and the witness can hold the answer to
+    /// the same files: an archive hash to verify against, a WowAce revision, or a git
+    /// commit. A prediction: the fetch is held to the witness and may still answer
+    /// `hash_mismatch` if the source now serves other bytes.
+    Fetchable,
+    /// Neither.
+    No,
+}
+
+/// Whether `prior`, a release the addon whose ref is now `r` had installed, can be had
+/// again exactly. Reads only: it asks no source and writes nothing (not even the blob
+/// index's use time, unlike [`BlobCache::get`]).
+///
+/// - `Cached` when its recorded archive hash names a cached blob that still hashes to it.
+/// - `Fetchable` when its key names which release to ask for, from a source of `r`'s
+///   kind (an addon re-pointed to another kind of source has no way back to it here),
+///   and the source's [`OlderReleases`] can be held to the witness: GitHub by the
+///   archive hash, WowAce by the recorded revision or the hash, git by a full commit.
+/// - `No` otherwise: WoWInterface and Tukui serve only their current file, `url:` and
+///   `file:` have no versions, and a transition recorded before witnesses has none.
+///
+/// [`OlderReleases`]: crate::sources::OlderReleases
+pub fn restorable(r: &Ref, prior: &InstalledRelease, blobs: &BlobCache) -> Restorable {
+    use crate::sources::OlderReleases;
+    let witness = &prior.witness;
+    let hash = witness.blob_sha256.as_deref().filter(|h| is_sha256(h));
+    if hash.is_some_and(|h| blobs.holds(h)) {
+        return Restorable::Cached;
+    }
+    let source = SourceId::of(r);
+    let Some(key) = prior.release.as_ref().filter(|key| {
+        key.source
+            .parse::<Ref>()
+            .is_ok_and(|from| SourceId::of(&from) == source)
+    }) else {
+        return Restorable::No;
+    };
+    let held = match source.older_releases() {
+        OlderReleases::ByTag => hash.is_some(),
+        OlderReleases::ByRevision => key.revision.is_some() || hash.is_some(),
+        OlderReleases::ByCommit => witness.commit.is_some(),
+        OlderReleases::No => false,
+    };
+    if held {
+        Restorable::Fetchable
+    } else {
+        Restorable::No
+    }
+}
+
 /// `--file <zip>`: the archive itself, as the only candidate of the ref.
 fn file_candidate(file: &std::path::Path, wanted: &Wanted) -> Candidate {
     let location = if file.is_dir() {
@@ -6461,6 +6519,169 @@ mod tests {
             blobs.found_damaged(&sha).is_some(),
             "the cache recorded the damage"
         );
+    }
+
+    /// RG-34a: whether a prior release's exact files can be had again, from the blob
+    /// cache and the recorded witness, never from the source's kind alone; and asking
+    /// writes nothing (no request can be made: it is given no `Http`).
+    #[test]
+    fn restorable_follows_the_cache_and_the_witness() {
+        use Restorable::{Cached, Fetchable, No};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let paths = Paths::with_roots(root, root.join("c"), root.join("s"), root.join("k"));
+        let memo = Box::leak(Box::new(crate::engine::blobs::VerifyMemo::new()));
+        let blobs = BlobCache::new(&paths).with_memo(memo);
+        let sha_of = |bytes: &[u8]| -> String {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        let cached = sha_of(b"PK the archive v1 came from");
+        let damaged = sha_of(b"PK an archive since overwritten");
+        let evicted = sha_of(b"PK an archive evicted since");
+        std::fs::create_dir_all(paths.blobs_dir()).unwrap();
+        std::fs::write(paths.blob(&cached), b"PK the archive v1 came from").unwrap();
+        std::fs::write(paths.blob(&damaged), b"other bytes under its name").unwrap();
+        let prior = |id: &str, revision: Option<u32>, hash: Option<&str>| InstalledRelease {
+            version: "v1".to_owned(),
+            release: ReleaseKey::parse(id, revision),
+            witness: crate::model::ArtifactWitness {
+                blob_sha256: hash.map(str::to_owned),
+                commit: None,
+            },
+        };
+        // A git record's witness, as the record makes it: a commit only for a full id.
+        let git = |tag: &str, hash: Option<&str>| {
+            let mut record = installed("v1", false, Channel::Stable, AddonReason::Explicit);
+            record.r#ref = "git:https://example.org/o/foo#main".parse().unwrap();
+            record.release_id = Some(format!("git:https://example.org/o/foo#main@{tag}"));
+            record.blob_sha256 = hash.map(str::to_owned);
+            InstalledRelease::of(&record)
+        };
+        let full = "0123456789abcdef0123456789abcdef01234567";
+        let r = |s: &str| -> Ref { s.parse().unwrap() };
+        let cases: Vec<(&str, Ref, InstalledRelease, Restorable)> = vec![
+            (
+                "cached, hashing to its name",
+                r("gh:o/foo"),
+                prior("gh:o/foo@v1", None, Some(&cached)),
+                Cached,
+            ),
+            (
+                "cached under its name, other bytes: fetched again, held to the hash",
+                r("gh:o/foo"),
+                prior("gh:o/foo@v1", None, Some(&damaged)),
+                Fetchable,
+            ),
+            (
+                "evicted, a source that serves old tags, a recorded hash",
+                r("gh:o/foo"),
+                prior("gh:o/foo@v1", None, Some(&evicted)),
+                Fetchable,
+            ),
+            (
+                "a GitHub tag with no hash to hold it to",
+                r("gh:o/foo"),
+                prior("gh:o/foo@v1", None, None),
+                No,
+            ),
+            (
+                "WowAce with its revision",
+                r("wowace:foo"),
+                prior("wowace:foo@v1", Some(1402), None),
+                Fetchable,
+            ),
+            (
+                "WowAce with only the hash",
+                r("wowace:foo"),
+                prior("wowace:foo@v1", None, Some(&evicted)),
+                Fetchable,
+            ),
+            (
+                "WowAce with neither",
+                r("wowace:foo"),
+                prior("wowace:foo@v1", None, None),
+                No,
+            ),
+            (
+                "git at a full commit",
+                r("git:https://example.org/o/foo#main"),
+                git(full, None),
+                Fetchable,
+            ),
+            (
+                "git at a short id, evicted",
+                r("git:https://example.org/o/foo#main"),
+                git("0123456", Some(&evicted)),
+                No,
+            ),
+            (
+                "git at a short id, cached",
+                r("git:https://example.org/o/foo#main"),
+                git("0123456", Some(&cached)),
+                Cached,
+            ),
+            (
+                "WoWInterface serves only its current file",
+                r("wowi:5108"),
+                prior("wowi:5108@abc", None, Some(&evicted)),
+                No,
+            ),
+            (
+                "WoWInterface, cached",
+                r("wowi:5108"),
+                prior("wowi:5108@abc", None, Some(&cached)),
+                Cached,
+            ),
+            (
+                "Tukui serves only its current file",
+                r("tukui:elvui"),
+                prior("tukui:elvui@13.80", None, Some(&evicted)),
+                No,
+            ),
+            (
+                "a URL has no versions",
+                r("url:https://example.org/foo.zip"),
+                prior("url:https://example.org/foo.zip", None, Some(&evicted)),
+                No,
+            ),
+            (
+                "re-pointed: the release was another kind of source's",
+                r("gh:o/foo"),
+                prior("wowi:5108@abc", None, Some(&evicted)),
+                No,
+            ),
+            (
+                "a transition from before witnesses",
+                r("gh:o/foo"),
+                prior("gh:o/foo@v1", None, None),
+                No,
+            ),
+            (
+                "a hash that is no hash",
+                r("gh:o/foo"),
+                prior("gh:o/foo@v1", None, Some("aa")),
+                No,
+            ),
+        ];
+        for (why, r, prior, want) in cases {
+            assert_eq!(restorable(&r, &prior, &blobs), want, "{why}");
+        }
+        assert!(
+            !paths.blobs_dir().join("index.json").exists(),
+            "asking marked no blob used"
+        );
+        let mut left: Vec<_> = std::fs::read_dir(paths.blobs_dir())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        left.sort();
+        let mut want: Vec<std::ffi::OsString> = vec![cached.clone().into(), damaged.clone().into()];
+        want.sort();
+        assert_eq!(left, want, "nothing written, nothing removed");
     }
 
     fn inspected(names: &[&str]) -> Inspected {
