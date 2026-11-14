@@ -910,6 +910,28 @@ pub fn parse(text: &str, filter: &HistoryFilter) -> HistoryRead {
 /// a string value the quotes would be escaped, so this marks a line's start only.
 const LINE_START: &str = "{\"schema_version\":";
 
+/// A line's own `at`, read from its text without parsing the rest: the first `"at":"…"`
+/// key before anything nested, which is the top-level `at` of every line this crate
+/// writes ([`HistoryEntry`] and [`SettingEntry`] put it before their arrays and
+/// objects). The quotes inside a string value are escaped, so the key's text is a key.
+/// `None` when the line does not start as a JSON object, when something nested (or a
+/// bracket inside a string) comes first, when the value is no timestamp, or when the
+/// line holds a second line's start: two lines run together, of which [`read_line`]
+/// reads the later. A reader that skips a line by this `at` reads it whole when this
+/// says nothing.
+pub fn line_at(line: &str) -> Option<Timestamp> {
+    if line.rfind(LINE_START).is_some_and(|start| start > 0) {
+        return None;
+    }
+    let body = line.strip_prefix('{')?;
+    let key = body.find("\"at\":\"")?;
+    if body[..key].contains(['{', '[']) {
+        return None;
+    }
+    let value = &body[key + "\"at\":\"".len()..];
+    value[..value.find('"')?].parse().ok()
+}
+
 /// One complete line, read.
 enum Line {
     Entry(Box<HistoryEntry>),
@@ -1564,6 +1586,53 @@ mod tests {
             doctor_run_id: None,
             repairs: Vec::new(),
             transitions: Vec::new(),
+        }
+    }
+
+    /// `line_at` reads the `at` of every line this crate writes, and says nothing of a
+    /// line whose own `at` its text alone cannot tell (RG-73).
+    #[test]
+    fn line_at_reads_a_lines_own_at_from_its_text_or_says_nothing() {
+        let at = "2026-10-21T18:00:00Z";
+        let written = serde_json::to_string(&entry(1, Actor::Human, TxKind::Install, at)).unwrap();
+        let setting = r#"{"schema_version":1,"tx":"01JB8Q2VA00000000000000001","kind":"config_set","at":"2026-10-21T18:00:00Z","target":null}"#;
+        assert!(written.starts_with(LINE_START));
+        // (case, line, its `at`)
+        let cases: [(&str, String, Option<&str>); 10] = [
+            ("a written transaction", written.clone(), Some(at)),
+            ("a written setting", setting.to_owned(), Some(at)),
+            (
+                "a line cut after its `at`",
+                written[..written.find("\"target\"").unwrap()].to_owned(),
+                Some(at),
+            ),
+            (
+                "two lines run together",
+                format!("{}{written}", &written[..written.len() / 2]),
+                None,
+            ),
+            (
+                "something nested first",
+                format!(r#"{{"ops":[{{"at":"{at}"}}],"at":"2027-01-01T00:00:00Z"}}"#),
+                None,
+            ),
+            (
+                "a bracket in a string first",
+                format!(r#"{{"reason":"a [note]","at":"{at}"}}"#),
+                None,
+            ),
+            ("no timestamp", r#"{"at":"yesterday"}"#.to_owned(), None),
+            (
+                "a key ending in at",
+                format!(r#"{{"started_at":"{at}"}}"#),
+                None,
+            ),
+            ("spaced", format!(r#"{{"at" : "{at}"}}"#), None),
+            ("no object", format!(r#"["at","{at}"]"#), None),
+        ];
+        for (case, line, want) in cases {
+            let want: Option<Timestamp> = want.map(|w| w.parse().unwrap());
+            assert_eq!(line_at(&line), want, "{case}: {line}");
         }
     }
 

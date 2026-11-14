@@ -224,8 +224,12 @@ pub const BACKUP_MIN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// Runs with an undoable entry the history projection (`history_tail.json`) keeps whole,
 /// newest first; runs with none (backups, settings) never count.
 pub const HISTORY_TAIL_RUNS: usize = 16;
-/// The most bytes of history lines the history projection keeps.
-pub const HISTORY_TAIL_MAX_BYTES: u64 = MIB;
+/// The most bytes of history lines the history projection keeps. The errors ledger's
+/// light read loads the projection after every change for the client's restores (design
+/// 7.1.8 step 5), within 7.9's 2 ms for both halves at 100 families; 384 KiB is the
+/// largest size that holds, with a margin (RG-73: about 1.55 ms here, 2.3 ms at 512
+/// KiB). Sixteen ordinary runs hold far less.
+pub const HISTORY_TAIL_MAX_BYTES: u64 = 384 * 1024;
 /// Table nesting the SavedVariables parser follows, building or skipping.
 pub const LUA_MAX_DEPTH: usize = 64;
 /// Values the SavedVariables parser builds per parse (skipped globals build none).

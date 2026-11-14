@@ -124,16 +124,37 @@ pub fn restores_in_projection(
     restores_of(&projected(tail?, since, &filter)?, key, since)
 }
 
-/// The history projection read with `filter`, when it reaches back to `since`.
+/// The history projection's restores read with `filter` (from `since` on, as both
+/// callers build it), when the projection reaches back to `since`: its oldest entry, the
+/// first of its lines that reads as one, is not later. A line whose own `at`
+/// ([`history::line_at`]) is before `since` is passed over unparsed: it can neither
+/// match `filter` nor make the read doubtful ([`may_concern`]). `since` is the previous
+/// change's light read, so a projection near its byte cap is mostly such lines (RG-73).
 fn projected(tail: &HistoryTail, since: Timestamp, filter: &HistoryFilter) -> Option<HistoryRead> {
-    let mut text = tail.lines.join("\n");
-    text.push('\n');
     let reaches = tail.covers.from == 0
-        || history::parse(&text, &HistoryFilter::default())
-            .entries
-            .first()
+        || tail
+            .lines
+            .iter()
+            .find_map(|line| {
+                history::parse(&format!("{line}\n"), &HistoryFilter::default())
+                    .entries
+                    .into_iter()
+                    .next()
+            })
             .is_some_and(|oldest| oldest.at <= since);
-    reaches.then(|| history::parse(&text, filter))
+    if !reaches {
+        return None;
+    }
+    let mut text = String::new();
+    for line in tail
+        .lines
+        .iter()
+        .filter(|line| !history::line_at(line).is_some_and(|at| at < since))
+    {
+        text.push_str(line);
+        text.push('\n');
+    }
+    Some(history::parse(&text, filter))
 }
 
 fn restores_of(read: &HistoryRead, key: TargetKey, since: Timestamp) -> Option<Vec<Restored>> {
@@ -174,8 +195,14 @@ fn restore(entry: &HistoryEntry) -> Option<Restored> {
 }
 
 /// Whether a line that does not read may be a restore on `key` at or after `since`: yes,
-/// unless what of it still reads names another client, or a time before `since`.
+/// unless what of it still reads names another client, or a time before `since`. What
+/// still reads is its own `at` while nothing nested comes before it
+/// ([`history::line_at`], which a projection's reader skips lines by), else what of it
+/// parses as JSON.
 fn may_concern(raw: &str, key: TargetKey, since: Timestamp) -> bool {
+    if history::line_at(raw).is_some_and(|at| at < since) {
+        return false;
+    }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return true;
     };
@@ -1740,12 +1767,86 @@ mod tests {
                 r#"{"at":"2026-01-01T00:00:00Z","kind":"from_the_future"}"#.to_owned(),
                 true,
             ),
+            (
+                "broken after its own `at`, older than since",
+                format!(r#"{{"schema_version":1,"at":"2026-01-01T00:00:00Z","target":"{KEY}",#"#),
+                true,
+            ),
+            (
+                "broken after its own `at`, not older",
+                format!(r#"{{"schema_version":1,"at":"2027-12-01T00:00:00Z","target":"{KEY}",#"#),
+                false,
+            ),
+            (
+                "an older line run together with a broken one",
+                format!(
+                    r#"{{"schema_version":1,"at":"2026-01-01T00:00:00Z"{{"schema_version":1,"target":"{KEY}",#"#
+                ),
+                false,
+            ),
         ] {
             let (_dir, paths) = home();
             write_history(&paths, &[good.clone(), bad]);
             let got = restores_on(&paths, key, at(100));
             assert_eq!(got.is_some(), reads, "{case}: {got:?}");
         }
+    }
+
+    /// RG-73: the projection's reader parses only the lines that may be from `since` on,
+    /// and finds what parsing every line finds: an older restore left out, a newer one
+    /// appended right after an older line a crash cut short (two lines run together, read
+    /// whole), and the projection's oldest entry still telling whether it reaches back.
+    #[test]
+    fn a_projection_passes_over_lines_before_since_and_finds_the_rest() {
+        let older = line(KEY, 50, TxKind::Restore, vec![op(FolderOp::Wtf, "WTF")]);
+        let cut = older[..older.len() / 2].to_owned();
+        let lines = [
+            older.clone(),
+            line(
+                KEY,
+                110,
+                TxKind::Restore,
+                vec![op(FolderOp::SavedVariables, "!BugGrabber")],
+            ),
+            format!(
+                "{cut}{}",
+                line(KEY, 120, TxKind::Restore, vec![op(FolderOp::Wtf, "WTF")])
+            ),
+            line(KEY, 130, TxKind::Install, vec![op(FolderOp::Add, "Bar")]),
+        ];
+        assert_eq!(history::line_at(&lines[0]), Some(at(50)));
+        assert_eq!(history::line_at(&lines[2]), None, "read whole");
+        let (_dir, paths) = home();
+        write_history(&paths, &lines);
+        history_tail::rebuild_if_stale(&paths, "test", Actor::Human);
+        let key: TargetKey = KEY.parse().unwrap();
+        let filter = HistoryFilter {
+            target: Some(key),
+            since: Some(at(100)),
+            ..HistoryFilter::default()
+        };
+        let skipped = from_projection(&paths, at(100), &filter).expect("a fresh projection");
+        let mut text = lines.join("\n");
+        text.push('\n');
+        let whole = history::parse(&text, &filter);
+        assert_eq!(
+            restores_of(&skipped, key, at(100)),
+            restores_of(&whole, key, at(100))
+        );
+        assert_eq!(
+            restores_of(&skipped, key, at(100)),
+            Some(vec![
+                restored(110, false, &["!BugGrabber"]),
+                restored(120, true, &[]),
+            ])
+        );
+        // Without its first line, and not from the history's first byte, its oldest entry
+        // is the restore at 110: it reaches back to 115, not to 100.
+        let mut short = history_tail::fresh(&paths).expect("a fresh projection");
+        short.covers.from = 1;
+        short.lines.remove(0);
+        assert!(projected(&short, at(100), &filter).is_none());
+        assert!(projected(&short, at(115), &filter).is_some());
     }
 
     #[test]

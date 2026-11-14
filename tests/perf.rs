@@ -747,10 +747,14 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
          {errors_memo_bytes} bytes; 200 backups; the bar widget installed",
         bug.len()
     ));
-    assert!(
-        median < Duration::from_millis(5),
-        "status --cached median {median:?} (memo {memo_bytes} bytes; runs {times:?})"
-    );
+    // Each phase's miss is kept and the test fails after the last one, so a run reports
+    // every phase.
+    let mut misses: Vec<String> = Vec::new();
+    if median >= Duration::from_millis(5) {
+        misses.push(format!(
+            "status --cached median {median:?} (memo {memo_bytes} bytes; runs {times:?})"
+        ));
+    }
 
     // A 20 MB history of three runs at a time interleaving, written around omaddons:
     // the next change rebuilds the projection, and `--cached` reads that alone.
@@ -794,10 +798,126 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
          the change that rebuilt the projection {rebuilt:?}",
         text.len() >> 20
     ));
-    assert!(
-        median < Duration::from_millis(5),
-        "status --cached median {median:?} with a 20 MB history (runs {times:?})"
-    );
+    if median >= Duration::from_millis(5) {
+        misses.push(format!(
+            "status --cached median {median:?} with a 20 MB history (runs {times:?})"
+        ));
+    }
+
+    // RG-73: 5 addons of 4 links each (design 7.9), the errors memo's cap per addon. A
+    // 17th account holds new errors of 5 managed addons: `errors` reads its first session
+    // as the baseline and its second as new. Play cannot grade 4 changes before one
+    // cluster `high` or `medium` (the rival rule caps them), so the links are written
+    // into the memo: three expired, which `status` finds only after every other test of
+    // each (design 7.3.2), then one that holds. Each addon's check walks all four.
+    use common::buggrabber::{BugDb, BugEntry, TimeKind, Writer as BugWriter, stack_era_c};
+    use jiff::SignedDuration;
+    use omaddons::errors::attribute::Confidence;
+    use omaddons::errors::memo::MemoLink;
+    use omaddons::errors::suspect::Relation;
+    use omaddons::limits::{MEMO_LINKS_PER_ADDON, SUSPECT_ALGORITHM};
+    use omaddons::model::{Actor, TxId, TxKind};
+    let linked: Vec<String> = (0..5).map(|i| format!("Addon{i:03}")).collect();
+    let sv = home
+        .client("_retail_")
+        .join("WTF/Account/FAKEACCT16/SavedVariables");
+    fs::create_dir_all(&sv).unwrap();
+    let save = |session: u32| {
+        let mut db = BugDb::new(BugWriter::Modern, session);
+        for (i, addon) in (0u32..).zip(&linked) {
+            db = db.entry(BugEntry::new(
+                &format!(
+                    "{} attempt to index a nil value",
+                    stack_era_c(addon, "core.lua", session * 100 + i)
+                ),
+                session,
+                (TimeKind::Unix, Timestamp::now().as_second()),
+            ));
+        }
+        fs::write(sv.join(common::buggrabber::FILE), db.render()).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    save(1);
+    home.run(&["errors"]).expect(0);
+    save(2);
+    home.run(&["errors"]).expect(0);
+    let (unlinked, _) = median_of_21(|| {
+        home.run(&["status", "--cached"]).expect(0);
+    });
+    let state = paths(&home.env);
+    let (mut errors, writable) = omaddons::errors::memo::load(&state);
+    assert!(writable);
+    let client = errors.targets.get_mut(&key.to_string()).unwrap();
+    assert!(client.projected_at.is_some(), "errors projected the links");
+    let db = client
+        .databases
+        .iter_mut()
+        .find(|d| d.path.contains("FAKEACCT16"))
+        .unwrap();
+    let generation = db.generation.clone().unwrap();
+    let now = Timestamp::now();
+    let expired = now.checked_sub(SignedDuration::from_mins(1)).unwrap();
+    let fresh = now.checked_add(SignedDuration::from_hours(7 * 24)).unwrap();
+    let mut holding: Vec<(String, TxId)> = Vec::new();
+    for a in db.addons.iter_mut().filter(|a| linked.contains(&a.addon)) {
+        let session = *a.sessions.keys().max().unwrap();
+        a.links = (0..MEMO_LINKS_PER_ADDON)
+            .map(|n| MemoLink {
+                cluster: format!("c:{}:{n}", a.addon),
+                fingerprints: vec![format!("e:{}:{n}", a.addon)],
+                generation: generation.clone(),
+                session,
+                tx: TxId::new(),
+                kind: TxKind::Update,
+                at: now.checked_sub(SignedDuration::from_hours(1)).unwrap(),
+                addon: a.addon.clone(),
+                release: None,
+                relation: Relation::Own,
+                confidence: Confidence::High,
+                algorithm: SUSPECT_ALGORITHM,
+                fresh_until_at: if n + 1 < MEMO_LINKS_PER_ADDON {
+                    expired
+                } else {
+                    fresh
+                },
+            })
+            .collect();
+        holding.extend(a.links.last().map(|l| (a.addon.clone(), l.tx)));
+    }
+    assert_eq!(holding.len(), 5, "the 5 addons' errors are in the memo");
+    assert!(omaddons::errors::memo::store(&state, &errors, Actor::Human));
+    let errors_memo_bytes = fs::metadata(&errors_memo).unwrap().len();
+    let check = home.run(&["status", "--cached"]).expect(0);
+    let top = check["data"]["targets"][0]["errors"]["top_addons"].clone();
+    for (addon, tx) in &holding {
+        let shown = top
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["addon"] == addon.as_str())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            shown["after_change"]["tx"],
+            tx.to_string(),
+            "{addon}'s fourth link holds: {top}"
+        );
+    }
+    let (median, times) = median_of_21(|| {
+        home.run(&["status", "--cached"]).expect(0);
+    });
+    let p95 = times[times.len() * 95 / 100];
+    measured(format_args!(
+        "ledger status --cached, 5 addons of {MEMO_LINKS_PER_ADDON} links each (3 expired, 1 \
+         holding), 17 accounts: median {median:?}, p95 {p95:?}; the same home before the \
+         links: median {unlinked:?}; errors memo {errors_memo_bytes} bytes"
+    ));
+    if median >= Duration::from_millis(5) {
+        misses.push(format!(
+            "status --cached median {median:?} with 5 addons of 4 links (runs {times:?})"
+        ));
+    }
+    assert!(misses.is_empty(), "{misses:#?}");
 }
 
 /// Every commit holds the global lock under 50 ms (vision §7 M1): 20 updates of one
@@ -1932,6 +2052,11 @@ mod ledger_shapes {
     /// its own family), saved in session `session`. Each error carries what a modern
     /// client writes: a six-frame stack and a few locals.
     pub fn bugfile(families: impl Iterator<Item = usize>, session: u32) -> Vec<u8> {
+        bugdb(families, session).render()
+    }
+
+    /// [`bugfile`]'s database, before it is rendered.
+    pub fn bugdb(families: impl Iterator<Item = usize>, session: u32) -> BugDb {
         let mut db = BugDb::new(Writer::Modern, session);
         for i in families {
             let line = u32::try_from(i % 997).unwrap() + 1;
@@ -1958,7 +2083,7 @@ mod ledger_shapes {
                 ),
             );
         }
-        db.render()
+        db
     }
 
     /// What the light read's capture makes of one file the ledger has not seen in this
@@ -2537,4 +2662,598 @@ fn ledger_history_read_of_10000_lines_is_recorded() {
         mib(peak_rss().saturating_sub(start))
     ));
     assert_eq!(entries, 10_000);
+}
+
+// RG-73: the finished slice against design 7.9's table. The light read goes through its
+// real halves (`errors_ledger::capture` and `commit`, each after its own scan of `/proc`,
+// as `Engine::light_capture` and `light_commit` call them) on a home the binary built: a
+// registered client, its history and projection, and the errors memo and ledger that
+// `errors` left. The commit window and an `errors` run that judges go through the binary.
+// Each line starts with `ledger`, so `argc bench` prints it.
+#[cfg(test)]
+mod wired {
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    use omaddons::app::errors_ledger;
+    use omaddons::discover::DiscoverySource;
+    use omaddons::discover::battlenet::{BattlenetHints, discover_root};
+    use omaddons::discover::registry::read_marker;
+    use omaddons::discover::running::{RunningScan, detect_running};
+    use omaddons::errors::ledger;
+    use omaddons::limits::HISTORY_TAIL_MAX_BYTES;
+    use omaddons::model::{Actor, RunId, Target, TargetKey};
+    use omaddons::rules::RulesTable;
+    use omaddons::state::history_tail;
+    use omaddons::state::paths::Paths;
+
+    use super::history_line;
+    use super::ledger_shapes::{Shape, bugfile};
+    use crate::common;
+    use crate::common::addons::toc;
+    use crate::common::archives::zip_text;
+    use crate::common::home::Home;
+
+    /// History lines that fill the projection to its byte cap: more than
+    /// `HISTORY_TAIL_MAX_BYTES` holds of lines that each record an update replacing 12
+    /// folders (about 950 bytes), in 16 runs, so it keeps as many as it may.
+    pub const FULL_PROJECTION: usize = HISTORY_TAIL_MAX_BYTES as usize / 900 + 64;
+
+    /// Whether a client runs, from one scan, as the engine's `running_clients` answers
+    /// it (`None` for each when `/proc` cannot be read).
+    fn running(scan: &RunningScan) -> impl Fn(&Target) -> Option<bool> + '_ {
+        move |target| {
+            scan.unavailable
+                .is_none()
+                .then(|| scan.clients.contains_key(&target.client_dir))
+        }
+    }
+
+    /// The paths the binary uses in `home`.
+    pub fn paths(home: &Home) -> Paths {
+        let env = &home.env;
+        Paths::with_roots(env.home(), env.config(), env.state(), env.cache())
+    }
+
+    /// BugGrabber installed in `home`'s retail.
+    pub fn bug_grabber(home: &Home) {
+        common::addons::addon_folder(
+            &home.addons("_retail_"),
+            "!BugGrabber",
+            &[(
+                "!BugGrabber.toc",
+                &toc("120105", &["## SavedVariables: BugGrabberDB"]),
+            )],
+            &[],
+        );
+    }
+
+    /// The `!BugGrabber.lua` of each of `accounts` accounts of `client`.
+    pub fn databases(client: &Path, accounts: usize) -> Vec<PathBuf> {
+        (0..accounts)
+            .map(|db| {
+                let dir = client.join(format!("WTF/Account/ACCT{db:02}/SavedVariables"));
+                fs::create_dir_all(&dir).unwrap();
+                dir.join(common::buggrabber::FILE)
+            })
+            .collect()
+    }
+
+    /// Each of `files` saved in `session` holding `shape`'s families (database 0 the gone
+    /// ones too when `with_gone`), then past the kernel's timestamp slack, so the next
+    /// read is stable.
+    pub fn save(files: &[PathBuf], shape: &Shape, session: u32, with_gone: bool) {
+        for (db, path) in files.iter().enumerate() {
+            let gone = if db == 0 && with_gone {
+                shape.gone()
+            } else {
+                0..0
+            };
+            fs::write(path, bugfile(shape.present(db).chain(gone), session)).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+
+    /// What one light read's parts took: both scans of `/proc`, the capture, the commit.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct Parts {
+        pub scans: Duration,
+        pub capture: Duration,
+        pub commit: Duration,
+    }
+
+    impl Parts {
+        /// The median over `samples` of what `f` takes from each.
+        pub fn median(samples: &[Parts], f: fn(&Parts) -> Duration) -> Duration {
+            let mut v: Vec<Duration> = samples.iter().map(f).collect();
+            v.sort();
+            v[v.len() / 2]
+        }
+
+        /// Both halves: the capture and the commit, as `errors_ledger` runs them.
+        pub fn halves(&self) -> Duration {
+            self.capture + self.commit
+        }
+
+        /// The medians of `samples`, as a measurement line's clause.
+        pub fn medians(samples: &[Parts]) -> String {
+            format!(
+                "halves {:?} (capture {:?}, commit {:?}), the two /proc scans {:?}",
+                Self::median(samples, Parts::halves),
+                Self::median(samples, |p| p.capture),
+                Self::median(samples, |p| p.commit),
+                Self::median(samples, |p| p.scans)
+            )
+        }
+    }
+
+    /// Retail of a home the binary built, holding `shape`.
+    pub struct Wired {
+        /// Kept for its directories, which go with it.
+        pub _home: Home,
+        pub paths: Paths,
+        pub target: Target,
+        pub key: TargetKey,
+        pub files: Vec<PathBuf>,
+        pub shape: Shape,
+        /// The history projection's bytes: what `commit` parses for the restores.
+        pub projection: usize,
+    }
+
+    impl Wired {
+        /// Retail holding `shape`, registered by an install. `history` lines in 16 runs
+        /// are written around omaddons before a change rebuilds the projection (0: the
+        /// install's line alone). `errors` reads every file twice: once with the gone
+        /// families in database 0, once without, so the ledger holds a proved read of
+        /// each file as it is.
+        pub fn new(shape: Shape, history: usize) -> Self {
+            let home = Home::new(&["wow"]);
+            let paths = paths(&home);
+            bug_grabber(&home);
+            let zip = home.env.root().join("seed.zip");
+            fs::write(&zip, zip_text(&[("Seed/Seed.toc", &toc("120105", &[]))])).unwrap();
+            let zip = zip.display().to_string();
+            home.run(&[
+                "install",
+                "gh:perf/seed",
+                "--file",
+                &zip,
+                "-t",
+                "retail",
+                "--offline",
+            ])
+            .expect(0);
+            let key = common::state::key_of(&home, "retail");
+            if history > 0 {
+                let file = paths.history_file();
+                let mut text = fs::read_to_string(&file).unwrap();
+                for _ in 0..16 {
+                    let run = RunId::new();
+                    for _ in 0..history.div_ceil(16) {
+                        text.push_str(&serde_json::to_string(&history_line(key, run)).unwrap());
+                        text.push('\n');
+                    }
+                }
+                fs::write(&file, text).unwrap();
+                home.run(&["config", "set", "check_interval_hours", "6"])
+                    .expect(0);
+            }
+            let tail = history_tail::fresh(&paths).expect("a fresh projection");
+            let projection: usize = tail.lines.iter().map(|l| l.len() + 1).sum();
+            if history >= FULL_PROJECTION {
+                let cap = HISTORY_TAIL_MAX_BYTES as usize;
+                assert!(
+                    projection <= cap && projection > cap - 2_000,
+                    "the projection at its cap: {projection} bytes"
+                );
+            }
+            let (found, _) = discover_root(
+                &home.root,
+                &RulesTable::builtin(),
+                &BattlenetHints::default(),
+                "battlenet",
+                &DiscoverySource::Scan,
+            );
+            let mut target = found
+                .into_iter()
+                .map(|t| t.target)
+                .find(|t| t.flavor_dir.as_deref() == Some("_retail_"))
+                .unwrap();
+            target.key = read_marker(&target.client_dir);
+            assert_eq!(target.key, Some(key), "the client is registered");
+            let files = databases(&target.client_dir, shape.accounts);
+            save(&files, &shape, 1, true);
+            home.run(&["errors", "-t", "retail"]).expect(0);
+            save(&files, &shape, 2, false);
+            home.run(&["errors", "-t", "retail"]).expect(0);
+            Self {
+                _home: home,
+                paths,
+                target,
+                key,
+                files,
+                shape,
+                projection,
+            }
+        }
+
+        /// One light read around a change, both halves, as the engine runs them: the
+        /// bytes its session wrote, its run, and what its parts took.
+        pub fn light_read(&self) -> (u64, RunId, Parts) {
+            let before = fs::metadata(self.paths.errors_ledger())
+                .map(|m| m.ino())
+                .ok();
+            let targets = std::slice::from_ref(&self.target);
+            let started = Instant::now();
+            let scan = detect_running(targets);
+            let scanned = started.elapsed();
+            let started = Instant::now();
+            let captured = errors_ledger::capture(&self.paths, &[&self.target], &running(&scan));
+            let capture = started.elapsed();
+            // The change runs here.
+            let run = RunId::new();
+            let started = Instant::now();
+            let scan = detect_running(targets);
+            let scans = scanned + started.elapsed();
+            let started = Instant::now();
+            errors_ledger::commit(
+                &self.paths,
+                captured,
+                run,
+                &running(&scan),
+                "update",
+                Actor::Human,
+            );
+            let commit = started.elapsed();
+            let written = match fs::metadata(self.paths.errors_ledger()) {
+                Ok(m) if Some(m.ino()) != before => m.len(),
+                _ => 0,
+            };
+            (
+                written,
+                run,
+                Parts {
+                    scans,
+                    capture,
+                    commit,
+                },
+            )
+        }
+
+        /// The databases whose newest change mark is `run`'s.
+        pub fn marked(&self, run: RunId) -> usize {
+            ledger::load(&self.paths)
+                .and_then(|l| l.targets.get(&self.key.to_string()).cloned())
+                .map_or(0, |t| {
+                    t.databases
+                        .values()
+                        .filter(|db| db.marks.last().is_some_and(|m| m.run == run))
+                        .count()
+                })
+        }
+
+        pub fn ledger_bytes(&self) -> u64 {
+            fs::metadata(self.paths.errors_ledger()).map_or(0, |m| m.len())
+        }
+    }
+}
+
+/// RG-73: the light read through its real halves over unchanged databases, both halves
+/// together (`errors_ledger::capture` and `commit`, their restores read and memo work
+/// included): under 2 ms with 100 families and under 20 ms with 5,000, median of 21.
+/// Once after the install alone, and once with the history projection at its byte cap,
+/// which the commit half loads for the client's restores. The engine's two looks at
+/// `/proc`, whose answers the halves are handed, are recorded beside them, with the
+/// whole; `detect_running_on_the_real_proc_under_2_ms` holds each look to its own budget.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_wired_light_read_of_unchanged_databases_stays_within_its_budgets() {
+    use ledger_shapes::Shape;
+    use wired::{FULL_PROJECTION, Parts, Wired};
+    let mut misses = Vec::new();
+    for (families, budget) in [(100, 2), (5_000, 20)] {
+        for history in [0, FULL_PROJECTION] {
+            let w = Wired::new(
+                Shape {
+                    accounts: 1,
+                    entries: families,
+                    absent: 0,
+                },
+                history,
+            );
+            let (mut written, mut last, mut parts) = (0, None, Vec::new());
+            let start = reset_peak_rss();
+            let (median, times) = median_of_21(|| {
+                let (bytes, run, took) = w.light_read();
+                written = bytes;
+                last = Some(run);
+                parts.push(took);
+            });
+            measured(format_args!(
+                "ledger wired light read, unchanged, {families} families, projection {} \
+                 bytes: median {median:?}, max {:?}, {written} bytes written, ledger {} \
+                 bytes, peak RSS added {:.1} MiB; {}",
+                w.projection,
+                times[times.len() - 1],
+                w.ledger_bytes(),
+                mib(peak_rss().saturating_sub(start)),
+                Parts::medians(&parts)
+            ));
+            assert_eq!(
+                w.marked(last.unwrap()),
+                1,
+                "the light read marked its database"
+            );
+            let halves = Parts::median(&parts, Parts::halves);
+            if halves >= Duration::from_millis(budget) {
+                misses.push(format!(
+                    "{families} families, projection {} bytes: halves {halves:?}",
+                    w.projection
+                ));
+            }
+        }
+    }
+    assert!(misses.is_empty(), "{misses:?}");
+}
+
+/// RG-73: the multi-account client through the real halves: 8 databases of 500 errors,
+/// 4,000 families gone. Unchanged, both halves under 10 ms, median of 21, and the ledger
+/// under 1 MiB, with either history; the looks at `/proc` and the whole recorded as in
+/// the case above. After the game wrote every file (each then parsed): recorded.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_wired_light_read_of_a_multi_account_client_stays_within_its_budgets() {
+    use ledger_shapes::Shape;
+    use wired::{FULL_PROJECTION, Parts, Wired, save};
+    let shape = Shape {
+        accounts: 8,
+        entries: 500,
+        absent: 4_000,
+    };
+    for history in [0, FULL_PROJECTION] {
+        let w = Wired::new(shape, history);
+        let (mut written, mut last, mut parts) = (0, None, Vec::new());
+        let start = reset_peak_rss();
+        let (median, times) = median_of_21(|| {
+            let (bytes, run, took) = w.light_read();
+            written = bytes;
+            last = Some(run);
+            parts.push(took);
+        });
+        let ledger = w.ledger_bytes();
+        measured(format_args!(
+            "ledger wired light read, 8 accounts of 500, 4000 gone, unchanged, projection {} \
+             bytes: median {median:?}, max {:?}, {written} bytes written, ledger {ledger} \
+             bytes, peak RSS added {:.1} MiB; {}",
+            w.projection,
+            times[times.len() - 1],
+            mib(peak_rss().saturating_sub(start)),
+            Parts::medians(&parts)
+        ));
+        assert_eq!(
+            w.marked(last.unwrap()),
+            8,
+            "the light read marked every database"
+        );
+        let halves = Parts::median(&parts, Parts::halves);
+        assert!(
+            halves < Duration::from_millis(10),
+            "projection {} bytes: halves {halves:?}, the light read with the scans {median:?}",
+            w.projection
+        );
+        assert!(ledger < 1 << 20, "the ledger is {ledger} bytes");
+        if history == 0 {
+            let mut changed: Vec<Duration> = (0..21u32)
+                .map(|run| {
+                    save(&w.files, &w.shape, 3 + run, false);
+                    let start = Instant::now();
+                    written = w.light_read().0;
+                    start.elapsed()
+                })
+                .collect();
+            changed.sort();
+            measured(format_args!(
+                "ledger wired light read, 8 accounts of 500, 4000 gone, every file written \
+                 since: median {:?}, max {:?}, {written} bytes written",
+                changed[10], changed[20]
+            ));
+        }
+    }
+}
+
+/// RG-73: the commit window with the light read around every change, which runs outside
+/// the transaction lock. The changes of `commits_hold_the_lock_under_50_ms` on a client
+/// without BugGrabber, then on one whose 8 accounts hold 500 errors each, read by `errors`:
+/// every commit holds the lock under 50 ms either way, and with the databases each change
+/// leaves its mark on each. Each change's whole run is recorded, which the light read
+/// lengthens.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_commit_window_with_the_light_read_holds_the_lock_under_50_ms() {
+    use ledger_shapes::Shape;
+    use omaddons::errors::ledger;
+    use wired::{bug_grabber, databases, paths, save};
+    let shape = Shape {
+        accounts: 8,
+        entries: 500,
+        absent: 0,
+    };
+    for with_errors in [false, true] {
+        let s = Scene::new();
+        for name in ["Baz", "Qux"] {
+            let zip = s.dl.join(format!("{}.zip", name.to_ascii_lowercase()));
+            fs::write(
+                &zip,
+                zip_text(&[(&format!("{name}/{name}.toc"), "## Interface: 120105\n")]),
+            )
+            .unwrap();
+        }
+        s.install("gh:o/foo", "v1");
+        if with_errors {
+            bug_grabber(&s.home);
+            let files = databases(&s.home.client("_retail_"), shape.accounts);
+            save(&files, &shape, 1, false);
+            s.home.run(&["errors", "-t", "retail"]).expect(0);
+        }
+        let mut held: Vec<(String, u64)> = Vec::new();
+        let mut wall: Vec<Duration> = Vec::new();
+        let mut run = |what: String, mut args: Vec<String>| {
+            args.push("-v".to_owned());
+            let start = Instant::now();
+            let r = s.run(&args, "");
+            wall.push(start.elapsed());
+            assert_eq!(r.code, 0, "{what}\n{}", r.context());
+            let ms = lock_held_ms(&r);
+            assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
+            held.extend(ms.map(|ms| (what, ms)));
+        };
+        for i in 0..20 {
+            let zip = if i % 2 == 0 { "v2" } else { "v1" };
+            run(format!("update {i}"), s.install_args("gh:o/foo", zip));
+        }
+        let (bar, baz, qux) = (s.zip("bar"), s.zip("baz"), s.zip("qux"));
+        run(
+            "install of three".into(),
+            s.args(&["install", &bar, &baz, &qux]),
+        );
+        run(
+            "remove of three".into(),
+            s.args(&["remove", "Bar", "Baz", "Qux"]),
+        );
+        run("undo of the remove".into(), s.args(&["undo"]));
+        let marks = ledger::load(&paths(&s.home))
+            .into_iter()
+            .flat_map(|l| l.targets.into_values())
+            .flat_map(|t| t.databases.into_values())
+            .map(|db| db.marks.len())
+            .min()
+            .unwrap_or(0);
+        let mut ms: Vec<u64> = held.iter().map(|(_, ms)| *ms).collect();
+        ms.sort_unstable();
+        wall.sort();
+        measured(format_args!(
+            "ledger commit window, {}: lock_held_ms over {} commits: min {} median {} max {}; \
+             each change's run: median {:?}, max {:?}; change marks per database {marks}",
+            if with_errors {
+                "8 BugGrabber databases of 500"
+            } else {
+                "no BugGrabber"
+            },
+            ms.len(),
+            ms[0],
+            ms[ms.len() / 2],
+            ms[ms.len() - 1],
+            wall[wall.len() / 2],
+            wall[wall.len() - 1],
+        ));
+        if with_errors {
+            assert!(
+                marks >= held.len(),
+                "each change marked each database: at least {marks} marks for {} changes",
+                held.len()
+            );
+        }
+        assert!(
+            held.iter().all(|(_, ms)| *ms < 50),
+            "lock hold times {held:?}"
+        );
+    }
+}
+
+/// RG-73: an `errors` run that judges. Design 7.9's `errors` row adds to its parse the
+/// ledger's two sessions, a second hash per entry and a second stat per file, and reads
+/// history only for a cluster owed a judgment. Foo is updated with its light read, then
+/// the game saves a session holding its new error beside 4 MiB of other errors. 21 runs
+/// each start from the state that session left, so each judges; 21 more run warm, with
+/// the judgment stored. Both are recorded; the row's own budget is the parse's
+/// (`a_4_mb_buggrabber_file_parses_under_20_ms`).
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_errors_run_that_judges_is_recorded() {
+    use common::buggrabber::{BugEntry, TimeKind, stack_era_c};
+    use common::trees::copy_tree_exact;
+    use ledger_shapes::bugdb;
+    use omaddons::limits::BUGGRABBER_MAX_ENTRIES;
+    use wired::bug_grabber;
+    let s = Scene::new();
+    s.install("gh:o/foo", "v1");
+    bug_grabber(&s.home);
+    let file = s
+        .home
+        .client("_retail_")
+        .join("WTF/Account/FAKEACCT/SavedVariables")
+        .join(common::buggrabber::FILE);
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    // The other errors: as many as make 4 MiB, or as the decoder reads whole with the new
+    // one beside them (its entry cap), whichever is fewer.
+    let per_entry = bugdb(0..100, 5).render().len() / 100;
+    let others = ((4 << 20) / per_entry).min(BUGGRABBER_MAX_ENTRIES - 1);
+    fs::write(&file, bugdb(0..others, 5).render()).unwrap();
+    std::thread::sleep(Duration::from_millis(30));
+    s.home.run(&["errors", "-t", "retail"]).expect(0);
+    s.install("gh:o/foo", "v2");
+    // A second later the game saves session 6, which holds Foo's new error.
+    std::thread::sleep(Duration::from_millis(1_100));
+    let mut db = bugdb(0..others, 5);
+    db.session = 6;
+    db.entries.push(
+        BugEntry::new(
+            &format!(
+                "{} attempt to index a nil value",
+                stack_era_c("Foo", "core.lua", 12)
+            ),
+            6,
+            (TimeKind::Unix, Timestamp::now().as_second()),
+        )
+        .counter(7),
+    );
+    let bytes = db.render();
+    fs::write(&file, &bytes).unwrap();
+    std::thread::sleep(Duration::from_millis(30));
+    // The state and cache that session left, put back before each judging run.
+    let (state, cache) = (s.home.env.state(), s.home.env.cache());
+    let kept = tempfile::tempdir().unwrap();
+    copy_tree_exact(&state, &kept.path().join("state"));
+    copy_tree_exact(&cache, &kept.path().join("cache"));
+    let mut judging: Vec<Duration> = Vec::new();
+    let mut first = None;
+    for _ in 0..21 {
+        fs::remove_dir_all(&state).unwrap();
+        fs::remove_dir_all(&cache).unwrap();
+        copy_tree_exact(&kept.path().join("state"), &state);
+        copy_tree_exact(&kept.path().join("cache"), &cache);
+        let start = Instant::now();
+        let run = s.home.run(&["errors", "-t", "retail"]);
+        judging.push(start.elapsed());
+        let envelope = run.expect(0);
+        first.get_or_insert(envelope);
+    }
+    judging.sort();
+    // Each run judged: Foo's new error is linked to the update.
+    let first = first.unwrap();
+    let foo = first["data"]["targets"][0]["addons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["addon"] == "Foo")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        foo["errors"][0]["after_change"].is_object(),
+        "Foo's error is judged: {foo}"
+    );
+    let (warm, warm_times) = median_of_21(|| {
+        s.home.run(&["errors", "-t", "retail"]).expect(0);
+    });
+    measured(format_args!(
+        "ledger errors run that judges: {} bytes, {} entries: median {:?}, max {:?}; judged \
+         already: median {warm:?}, max {:?}",
+        bytes.len(),
+        others + 1,
+        judging[10],
+        judging[20],
+        warm_times[20]
+    ));
 }

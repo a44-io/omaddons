@@ -890,7 +890,7 @@ expression: "(politeness, REGISTRY)"
     {
       "name": "HISTORY_TAIL_MAX_BYTES",
       "value": {
-        "bytes": 1048576
+        "bytes": 393216
       },
       "unit": "bytes",
       "config_key": null,
