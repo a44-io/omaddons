@@ -717,6 +717,33 @@ fn only_a_re_tag_of_the_installed_tag_is_an_update() {
         "{}",
         r.context()
     );
+    // Its history line records two keys that differ only in revision (RG-02), under one
+    // version label, so the two trees stay apart after the snapshot is pruned.
+    let history = fs::read_to_string(home.state().join("history.jsonl")).unwrap();
+    let line: Value = serde_json::from_str(history.lines().last().unwrap()).unwrap();
+    let moved = &line["transitions"];
+    assert_eq!(moved.as_array().map(Vec::len), Some(1), "{line}");
+    let (from, to) = (&moved[0]["from"], &moved[0]["to"]);
+    assert_eq!(
+        (&moved[0]["change"], &from["version"], &to["version"]),
+        (&json!("updated"), &json!("v12.1.1"), &json!("v12.1.1")),
+        "{line}"
+    );
+    assert_eq!(
+        (&from["release"]["revision"], &to["release"]["revision"]),
+        (&json!(403), &json!(404)),
+        "{line}"
+    );
+    let without_revision = |release: &Value| {
+        let mut release = release.clone();
+        release.as_object_mut().unwrap().remove("revision");
+        release
+    };
+    assert_eq!(
+        without_revision(&from["release"]),
+        without_revision(&to["release"]),
+        "the same source and tag: {line}"
+    );
     let lua = home.addons("_retail_").join("!BugGrabber/BugGrabber.lua");
     assert_eq!(fs::read_to_string(lua).unwrap(), "-- re-tagged\n");
     assert_eq!(outdated(&home)["status"], "current");

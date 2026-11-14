@@ -99,6 +99,7 @@ mod git_github;
 mod help_pages;
 mod history;
 mod history_items;
+mod history_transitions;
 mod info_about;
 mod info_netlog;
 mod info_releases;

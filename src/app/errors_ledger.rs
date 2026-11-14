@@ -614,6 +614,7 @@ mod tests {
             plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
+            transitions: Vec::new(),
         })
         .unwrap()
     }

@@ -1041,6 +1041,8 @@ impl Window<'_> {
             plan: self.ctx.applying,
             doctor_run_id: None,
             repairs: Vec::new(),
+            // A settings restore moves no release.
+            transitions: Vec::new(),
         })
     }
 }
@@ -1666,6 +1668,7 @@ mod tests {
                 plan: None,
                 doctor_run_id: None,
                 repairs: Vec::new(),
+                transitions: Vec::new(),
             }
         }
 

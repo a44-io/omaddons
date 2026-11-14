@@ -2,7 +2,7 @@
 //! target and its `generation`, which every commit increments. Lock-free planning
 //! records generations and re-plans under the lock if one changed (D24).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::paths::Paths;
 use super::store::{self, Loaded, SchemaVersion, VersionStatus, Versioned};
 use crate::error::Result;
-use crate::model::{AddonRecord, TargetKey};
+use crate::model::{AddonRecord, InstalledRelease, ReleaseTransition, TargetKey, TransitionChange};
 
 /// The managed addons of one target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -57,6 +57,53 @@ impl TargetRecord {
     pub fn bump(&mut self) {
         self.generation += 1;
     }
+}
+
+/// What a transaction did to each addon's installed release, from the record it found
+/// (`before`) and the record it left (`after`) (design 7.2.1): one transition per addon
+/// that only `before` holds, only `after` holds, or both hold at another
+/// [`InstalledRelease`] (its version, release key or artifact witness), sorted by addon
+/// name ignoring case, as the record keys them. `reverted` (an undo) names each of them
+/// [`TransitionChange::Reverted`].
+///
+/// Only the installed release counts: a pin, a skip mark, a channel, a dependency's
+/// `required_by` and a reinstall of the same release move none. A local file or folder
+/// installed again under the same version is no transition either, since its release id
+/// names no source release ([`crate::model::ReleaseKey::of_record`]).
+///
+/// The commit (`engine::tx`) and an undo (`engine::undo`) both call it, so a line
+/// recovery writes holds exactly what a clean commit would have.
+pub fn transitions(
+    before: &TargetRecord,
+    after: &TargetRecord,
+    reverted: bool,
+) -> Vec<ReleaseTransition> {
+    // In key order: the case-folded name, one per addon.
+    let keys: BTreeSet<&String> = before.addons.keys().chain(after.addons.keys()).collect();
+    keys.into_iter()
+        .filter_map(|key| {
+            let (was, is) = (before.addons.get(key), after.addons.get(key));
+            let from = was.map(InstalledRelease::of);
+            let to = is.map(InstalledRelease::of);
+            if from == to {
+                return None;
+            }
+            let change = match (&from, &to) {
+                _ if reverted => TransitionChange::Reverted,
+                (None, _) => TransitionChange::Installed,
+                (_, None) => TransitionChange::Removed,
+                _ => TransitionChange::Updated,
+            };
+            // The name the record leaves, else the one it held.
+            let addon = is.or(was)?.name.clone();
+            Some(ReleaseTransition {
+                addon,
+                change,
+                from,
+                to,
+            })
+        })
+        .collect()
 }
 
 /// Loads a target's record; a missing record is an empty one at generation 0.
@@ -143,6 +190,211 @@ mod tests {
             "{text}"
         );
         assert_eq!(load_record(&paths, &key).unwrap().value, record);
+    }
+
+    /// `name` at `version` of `gh:o/<name>`, released as `<ref>@<version>` at `revision`
+    /// from an archive hashing to `blob`; `local` installs it from a zip instead.
+    fn at(name: &str, version: &str, revision: Option<u32>, blob: Option<&str>) -> AddonRecord {
+        let slug = name.to_ascii_lowercase();
+        AddonRecord {
+            r#ref: format!("gh:o/{slug}").parse().unwrap(),
+            release_id: Some(format!("gh:o/{slug}@{version}")),
+            version: version.into(),
+            revision,
+            blob_sha256: blob.map(str::to_owned),
+            ..addon(name, &[slug.as_str()])
+        }
+    }
+
+    fn local(name: &str, version: &str, content: &str) -> AddonRecord {
+        AddonRecord {
+            r#ref: format!("file:/home/me/{name}.zip").parse().unwrap(),
+            release_id: Some(format!("file:/home/me/{name}.zip@{content}")),
+            version: version.into(),
+            ..addon(name, &[name])
+        }
+    }
+
+    fn holding(addons: Vec<AddonRecord>) -> TargetRecord {
+        let mut record = TargetRecord::empty(KEY.parse().unwrap());
+        for a in addons {
+            record.addons.insert(TargetRecord::addon_key(&a.name), a);
+        }
+        record
+    }
+
+    /// `(addon, change, from version, to version, from revision, to revision)` per
+    /// transition, for compact assertions; `-` is no release on that side.
+    fn moves(transitions: &[ReleaseTransition]) -> Vec<String> {
+        let side = |r: &Option<InstalledRelease>| match r {
+            None => "-".to_owned(),
+            Some(r) => match r.release.as_ref().and_then(|k| k.revision) {
+                Some(rev) => format!("{}#r{rev}", r.version),
+                None => r.version.clone(),
+            },
+        };
+        transitions
+            .iter()
+            .map(|t| {
+                let change = serde_json::to_value(t.change).unwrap();
+                format!(
+                    "{} {} {} -> {}",
+                    t.addon,
+                    change.as_str().unwrap(),
+                    side(&t.from),
+                    side(&t.to)
+                )
+            })
+            .collect()
+    }
+
+    /// One case: its name, the addons before and after, whether it is an undo, and the
+    /// moves expected (as [`moves`] spells them).
+    type Case = (
+        &'static str,
+        Vec<AddonRecord>,
+        Vec<AddonRecord>,
+        bool,
+        Vec<&'static str>,
+    );
+
+    #[test]
+    fn transitions_name_each_addon_whose_installed_release_moved() {
+        let pinned = |a: AddonRecord| AddonRecord { pinned: true, ..a };
+        let required = |a: AddonRecord| AddonRecord {
+            required_by: vec!["Other".into()],
+            ..a
+        };
+        let cases: Vec<Case> = vec![
+            ("nothing", vec![], vec![], false, vec![]),
+            (
+                "added",
+                vec![],
+                vec![at("Foo", "v1", None, Some("aa"))],
+                false,
+                vec!["Foo installed - -> v1"],
+            ),
+            (
+                "removed",
+                vec![at("Foo", "v1", None, Some("aa"))],
+                vec![],
+                false,
+                vec!["Foo removed v1 -> -"],
+            ),
+            (
+                "updated",
+                vec![at("Foo", "v1", None, Some("aa"))],
+                vec![at("Foo", "v2", None, Some("bb"))],
+                false,
+                vec!["Foo updated v1 -> v2"],
+            ),
+            (
+                "unchanged: a reinstall of the same release",
+                vec![at("Foo", "v1", None, Some("aa"))],
+                vec![at("Foo", "v1", None, Some("aa"))],
+                false,
+                vec![],
+            ),
+            (
+                "unchanged: a pin and a requester are no move",
+                vec![at("Foo", "v1", None, Some("aa"))],
+                vec![required(pinned(at("Foo", "v1", None, Some("aa"))))],
+                false,
+                vec![],
+            ),
+            (
+                "a WowAce re-tag: the same label at another revision",
+                vec![at("Foo", "v12", Some(401), Some("aa"))],
+                vec![at("Foo", "v12", Some(403), Some("bb"))],
+                false,
+                vec!["Foo updated v12#r401 -> v12#r403"],
+            ),
+            (
+                "the same release with other bytes",
+                vec![at("Foo", "v1", None, Some("aa"))],
+                vec![at("Foo", "v1", None, Some("bb"))],
+                false,
+                vec!["Foo updated v1 -> v1"],
+            ),
+            (
+                "a local zip installed again under its version names no release",
+                vec![local("Bar", "2.1.0", "h1")],
+                vec![local("Bar", "2.1.0", "h2")],
+                false,
+                vec![],
+            ),
+            (
+                "a local zip at a new version",
+                vec![local("Bar", "2.1.0", "h1")],
+                vec![local("Bar", "2.2.0", "h2")],
+                false,
+                vec!["Bar updated 2.1.0 -> 2.2.0"],
+            ),
+            (
+                "an undo: every move is reverted, an install's undo included",
+                vec![
+                    at("Foo", "v2", None, Some("bb")),
+                    at("New", "v1", None, Some("cc")),
+                ],
+                vec![
+                    at("Foo", "v1", None, Some("aa")),
+                    at("Old", "v3", None, None),
+                ],
+                true,
+                vec![
+                    "Foo reverted v2 -> v1",
+                    "New reverted v1 -> -",
+                    "Old reverted - -> v3",
+                ],
+            ),
+            (
+                "sorted by name ignoring case, the unchanged left out",
+                vec![
+                    at("Zed", "1", None, None),
+                    at("alpha", "1", None, None),
+                    at("Mid", "1", None, None),
+                ],
+                vec![
+                    at("Zed", "2", None, None),
+                    at("alpha", "2", None, None),
+                    at("Mid", "1", None, None),
+                ],
+                false,
+                vec!["alpha updated 1 -> 2", "Zed updated 1 -> 2"],
+            ),
+        ];
+        for (name, before, after, reverted, expected) in cases {
+            let (before, after) = (holding(before), holding(after));
+            let got = transitions(&before, &after, reverted);
+            assert_eq!(moves(&got), expected, "{name}");
+            // Each side is the record's own release, key and witness included.
+            let of = |record: &TargetRecord, addon: &str| {
+                record
+                    .addons
+                    .get(&TargetRecord::addon_key(addon))
+                    .map(InstalledRelease::of)
+            };
+            for t in &got {
+                assert_eq!(t.from, of(&before, &t.addon), "{name}: {} from", t.addon);
+                assert_eq!(t.to, of(&after, &t.addon), "{name}: {} to", t.addon);
+            }
+        }
+    }
+
+    #[test]
+    fn transitions_keep_the_name_the_record_gives() {
+        // A record renamed in case keeps its key: the transition names it as it is after,
+        // and as it was before when it is gone.
+        let before = holding(vec![
+            at("foo", "v1", None, None),
+            at("Gone", "v1", None, None),
+        ]);
+        let after = holding(vec![at("Foo", "v2", None, None)]);
+        let names: Vec<String> = transitions(&before, &after, false)
+            .into_iter()
+            .map(|t| t.addon)
+            .collect();
+        assert_eq!(names, ["Foo", "Gone"]);
     }
 
     /// A record as 1.0 wrote it: the same keys, no `skipped_releases`.

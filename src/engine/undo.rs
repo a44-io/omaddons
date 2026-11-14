@@ -55,8 +55,8 @@ use crate::fsx::{
     mutate_with, sha256_from_hex,
 };
 use crate::model::{
-    Actor, AddonRecord, FolderName, ReleaseKey, ReloadRequired, RunId, SkipOrigin, SkippedNote,
-    SkippedRelease, Target, TargetKey, TxId, TxKind,
+    Actor, AddonRecord, FolderName, ReleaseKey, ReleaseTransition, ReloadRequired, RunId,
+    SkipOrigin, SkippedNote, SkippedRelease, Target, TargetKey, TxId, TxKind,
 };
 use crate::state::files_index::FilesIndex;
 use crate::state::history::{
@@ -64,7 +64,7 @@ use crate::state::history::{
     TxResult, UnreadableLine,
 };
 use crate::state::paths::{ClientPaths, Paths};
-use crate::state::records::{TargetRecord, load_record};
+use crate::state::records::{self, TargetRecord, load_record};
 use crate::state::store;
 use crate::toc::{DiskFolder, loaded_toc};
 
@@ -538,6 +538,7 @@ fn commit(
         plan: ctx.applying,
         doctor_run_id: None,
         repairs: Vec::new(),
+        transitions: planned.transitions.clone(),
     };
     let sv_restore = (!planned.sv.restore.is_empty()).then(|| SvRestore {
         from: reverts,
@@ -674,6 +675,9 @@ struct Planned {
     generation: u64,
     folders: FolderPlan,
     record: TargetRecord,
+    /// What the undo does to each addon's installed release: from the record now to
+    /// `record`, each `reverted` (RG-02).
+    transitions: Vec<ReleaseTransition>,
     index: IndexChanges,
     changes: Vec<Change>,
     sv: SvPlan,
@@ -981,12 +985,14 @@ fn plan(
         None => Vec::new(),
     };
     let (skips_marked, skips_cleared) = skip_notes(&current, &record);
+    let transitions = records::transitions(&current, &record, true);
     Ok(Planned {
         reverts: reverted.tx,
         key,
         generation: current.generation,
         folders,
         record,
+        transitions,
         index,
         changes,
         sv,
@@ -2734,6 +2740,7 @@ mod tests {
             plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
+            transitions: Vec::new(),
         }
     }
 

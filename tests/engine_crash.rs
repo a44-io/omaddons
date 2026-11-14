@@ -141,6 +141,41 @@ mod support {
         }
     }
 
+    /// History line `n` of `s` (torn lines skipped, as [`Scene::history`] counts them).
+    pub fn history_line(s: &Scene, n: usize) -> serde_json::Value {
+        fs::read_to_string(s.home.state().join("history.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .nth(n)
+            .unwrap_or_default()
+    }
+
+    /// The release transitions `op`'s history line records when it runs without a
+    /// failpoint (RG-02); never empty, so the check that uses it is never vacuous. Run
+    /// once per op on each test thread.
+    pub fn reference_transitions(op: Op) -> serde_json::Value {
+        thread_local! {
+            static RUN: std::cell::RefCell<BTreeMap<String, serde_json::Value>> =
+                const { std::cell::RefCell::new(BTreeMap::new()) };
+        }
+        let key = format!("{op:?}");
+        if let Some(known) = RUN.with(|r| r.borrow().get(&key).cloned()) {
+            return known;
+        }
+        let mut s = op.scene();
+        let args = op.prepare(&mut s);
+        let before = s.history().len();
+        s.run(&args, "").expect(0);
+        let transitions = history_line(&s, before)["transitions"].clone();
+        assert!(
+            transitions.as_array().is_some_and(|t| !t.is_empty()),
+            "{op:?} records the release it moves: {transitions}"
+        );
+        RUN.with(|r| r.borrow_mut().insert(key, transitions.clone()));
+        transitions
+    }
+
     /// The state after `op` runs without a failpoint.
     pub fn expected_new(op: Op) -> Foo {
         let mut s = op.scene();
@@ -410,6 +445,16 @@ mod support {
         }
         history.push("install".to_owned());
         assert_eq!(s.history(), history, "{}", context("history"));
+        if went_new {
+            // RG-02: a commit recovery rolled forward writes the line its journal carried,
+            // so the change records the same release transitions a clean run does.
+            assert_eq!(
+                history_line(&s, old_history.len())["transitions"],
+                reference_transitions(op),
+                "{}",
+                context("transitions")
+            );
+        }
         if let Some(inode) = old_inode {
             assert_eq!(
                 s.lock_inode(),

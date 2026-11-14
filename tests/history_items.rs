@@ -4,9 +4,10 @@
 //! unpin, an adoption, a backup with a one-addon and a whole settings restore, a plan run
 //! with `apply`, a remove and a repair; then every one of them is undone, newest first.
 //! `history -v --json` must name each addon a line's ops touched, the change and both
-//! versions, read from the undo snapshots. With a line's snapshot gone, the stored plan
-//! it names gives them; with the plan gone too, they are `null`. `history` without `-v`
-//! has no `items`, and no file on disk changes shape.
+//! versions. A line records the releases it moved (RG-02), so they outlive its snapshot.
+//! A line from before that reads as it did: from the undo snapshots; with its snapshot
+//! gone, from the stored plan it names; with the plan gone too, `null`. `history` without
+//! `-v` has no `items`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -463,9 +464,78 @@ fn every_kind_of_change_and_its_undo_names_the_addon_the_change_and_both_version
 }
 
 #[test]
-fn a_line_whose_snapshot_is_gone_takes_its_versions_from_its_plan_else_null() {
+fn a_line_whose_snapshot_is_gone_keeps_the_versions_it_recorded() {
     let log = tlog!();
     let (home, c) = every_change(&log);
+    let state = home.state();
+
+    log.step("the update's undo snapshot pruned");
+    fs::remove_dir_all(state.join("snapshots").join(&c.update)).unwrap();
+    let items = items_by_tx(&log, &home, "history -v after the prune");
+    // Each line recorded the releases it moved (RG-02): no snapshot is needed for them.
+    log.assert_eq(
+        "update",
+        &items[&c.update],
+        &json!([item(Some("Foo"), "updated", 1, Some("v1"), Some("v2"))]),
+    );
+    log.assert_eq(
+        "install",
+        &items[&c.install],
+        &json!([item(Some("Foo"), "installed", 1, None, Some("v1"))]),
+    );
+
+    log.step("the applied install's undo snapshot pruned, and its plan swept");
+    fs::remove_dir_all(state.join("snapshots").join(&c.apply)).unwrap();
+    fs::remove_file(paths(&home.env).plan(&c.plan.parse().unwrap())).unwrap();
+    let items = items_by_tx(&log, &home, "history -v: nothing but the line");
+    log.assert_eq(
+        "apply: its own record of the install",
+        &items[&c.apply],
+        &json!([item(Some("Bar"), "installed", 1, None, Some("v1"))]),
+    );
+}
+
+/// Rewrites `history.jsonl` as an omaddons from before RG-02 would have written it: every
+/// line without its `transitions`, the last key a line carries.
+fn without_transitions(log: &TestLog, home: &Home) {
+    log.step("history.jsonl as written before transitions were recorded");
+    let path = home.state().join("history.jsonl");
+    let text = fs::read_to_string(&path).unwrap();
+    let mut old = String::new();
+    for line in text.lines() {
+        match line.find(",\"transitions\":") {
+            Some(at) => {
+                assert!(line.ends_with("]}"), "transitions is the last key: {line}");
+                old.push_str(&line[..at]);
+                old.push('}');
+            }
+            None => old.push_str(line),
+        }
+        old.push('\n');
+    }
+    assert_ne!(old, text, "some line recorded transitions");
+    fs::write(&path, old).unwrap();
+}
+
+#[test]
+fn a_line_from_before_transitions_reads_as_it_did() {
+    let log = tlog!();
+    let (home, _) = every_change(&log);
+    let recorded = items_by_tx(&log, &home, "history -v with transitions");
+    without_transitions(&log, &home);
+    log.assert_eq(
+        "with every snapshot there, the items are the same",
+        &json!(items_by_tx(&log, &home, "history -v without them")),
+        &json!(recorded),
+    );
+}
+
+#[test]
+fn a_line_from_before_transitions_whose_snapshot_is_gone_takes_its_versions_from_its_plan_else_null()
+ {
+    let log = tlog!();
+    let (home, c) = every_change(&log);
+    without_transitions(&log, &home);
     let state = home.state();
 
     log.step("the update's undo snapshot pruned");

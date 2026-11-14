@@ -475,6 +475,8 @@ pub fn history_line(prepared: &RepairPrepared) -> HistoryEntry {
             .iter()
             .map(|step| RepairEntry::from_step(step, target_of))
             .collect(),
+        // A repair writes no client record, so it moves no release.
+        transitions: Vec::new(),
     };
     debug_assert!(entry.well_formed(), "a repair's history line reads back");
     debug_assert!(

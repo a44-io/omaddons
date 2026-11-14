@@ -393,6 +393,160 @@ fn the_0_2_1_build_leaves_this_build_s_skips_alone() {
     log.assert_eq("the marks are kept", &skip_marks(&home, "Foo"), &3);
 }
 
+/// RG-02: this build's history lines record `transitions`, and so does the history line
+/// an interrupted change carries in its journal. With such lines in `history.jsonl`, and
+/// a change of this build killed after its swap, the 0.2.1 build reads history (its
+/// `history` and `undo` included) or refuses cleanly, refuses to change the client, and
+/// leaves the journal, the record, the stage and `history.jsonl` byte for byte. This
+/// build then rolls the change forward, writing the transitions the journal carried.
+#[test]
+#[ignore = "builds v0.2.1: cargo test --test integration compat_v021:: -- --ignored --nocapture"]
+fn the_0_2_1_build_leaves_this_build_s_transitions_alone() {
+    let log = tlog!();
+    let build = v0_2_1();
+    announce(&log, build);
+    let home = marked_home(&log);
+    let state = common::http::paths(&home.env);
+
+    log.step("this build updates Foo to 2.0");
+    let source = local(&home, "Foo", "2.0");
+    let updated = log.run(&home, &["install", &source, "-t", "retail", "--json"]);
+    updated.ok();
+    let update_tx = updated.data()["tx"].as_str().unwrap().to_owned();
+    let history = fs::read_to_string(state.history_file()).unwrap();
+    log.assert_eq(
+        "every line of this build's changes records transitions",
+        &history
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"install\""))
+            .all(|l| l.contains("\"transitions\":[")),
+        &true,
+    );
+
+    log.step("this build's update to 3.0 is killed after its swap");
+    let source = local(&home, "Foo", "3.0");
+    log.cmd(&home, &["install", &source, "-t", "retail", "--json"])
+        .failpoints("engine.swapped=abort")
+        .run()
+        .aborted();
+    let journals: Vec<PathBuf> = fs::read_dir(home.state().join("journal"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(journals.len(), 1, "one journal: {journals:?}");
+    let journal = journals[0].clone();
+    let tx = journal
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .trim_end_matches(".jsonl")
+        .to_owned();
+    let stage = home
+        .client(RETAIL)
+        .join("Interface/.omaddons/stage")
+        .join(&tx);
+    let bytes = || {
+        (
+            fs::read(&journal).unwrap_or_default(),
+            fs::read(record_path(&home)).unwrap(),
+            if stage.exists() {
+                tree_hash(&stage)
+            } else {
+                "absent".to_owned()
+            },
+            fs::read(state.history_file()).unwrap(),
+        )
+    };
+    let before = bytes();
+    log.assert_eq(
+        "the journal's history line carries the transitions",
+        &String::from_utf8_lossy(&before.0).contains("\"transitions\":[{\"addon\":\"Foo\""),
+        &true,
+    );
+
+    let runner = OldRunner { home: &home, build };
+    let bar = local(&home, "Bar", "1.0");
+    let probes: [(&str, Vec<&str>, bool); 6] = [
+        ("status", vec!["status", "--json"], false),
+        ("history", vec!["history", "--json"], false),
+        ("list", vec!["list", "--json"], false),
+        (
+            "install a new addon",
+            vec!["install", &bar, "-t", "retail", "--json"],
+            true,
+        ),
+        ("undo the update", vec!["undo", &update_tx, "--json"], true),
+        ("undo", vec!["undo", "--json"], true),
+    ];
+    for (name, argv, refused) in probes {
+        log.step(&format!("0.2.1: {name}"));
+        let ran = log.run(&runner, &argv);
+        log.note(format!(
+            "exit {:?}, error {:?}, warnings {:?}",
+            ran.envelope()["exit_code"],
+            ran.error_code(),
+            ran.warnings()
+        ));
+        if refused {
+            log.assert_eq(
+                &format!("{name}: refused"),
+                &(ran.envelope()["exit_code"] != 0),
+                &true,
+            );
+        } else {
+            log.assert_eq(
+                &format!("{name}: one envelope, read or refused cleanly"),
+                &ran.envelope()["exit_code"].is_i64(),
+                &true,
+            );
+        }
+        let after = bytes();
+        log.assert_eq(
+            &format!("{name}: the journal"),
+            &(after.0 == before.0),
+            &true,
+        );
+        log.assert_eq(
+            &format!("{name}: the record"),
+            &(after.1 == before.1),
+            &true,
+        );
+        log.assert_eq(&format!("{name}: the stage"), &after.2, &before.2);
+        log.assert_eq(
+            &format!("{name}: history.jsonl"),
+            &(after.3 == before.3),
+            &true,
+        );
+    }
+
+    log.step("this build rolls its update forward with the transitions it carried");
+    let recovered = log.run(&home, &["install", &bar, "-t", "retail", "--json"]);
+    recovered.ok();
+    log.assert_eq(
+        "recovered",
+        &recovered
+            .warnings()
+            .contains(&"journal_recovered".to_owned()),
+        &true,
+    );
+    log.assert_eq("no journal left", &journal.exists(), &false);
+    let history = fs::read_to_string(state.history_file()).unwrap();
+    let line: serde_json::Value = history
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|l| l["tx"] == tx.as_str())
+        .unwrap();
+    log.assert_eq(
+        "the rolled-forward line",
+        &(
+            &line["transitions"][0]["from"]["version"],
+            &line["transitions"][0]["to"]["version"],
+        ),
+        &(&serde_json::json!("2.0"), &serde_json::json!("3.0")),
+    );
+    log.assert_eq("the marks are kept", &skip_marks(&home, "Foo"), &2);
+}
+
 /// An interrupted change of this build, at each position, is left byte for byte by every
 /// command of the 0.2.1 build, at once and two hours on; this build then recovers it and
 /// keeps the marks.

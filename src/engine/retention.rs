@@ -1003,6 +1003,7 @@ mod tests {
                 plan: None,
                 doctor_run_id: None,
                 repairs: Vec::new(),
+                transitions: Vec::new(),
             };
             let mut s = WriteSession::untracked(Writer::Mutating, &self.scopes, "test");
             history::append(&mut s, &self.paths, &entry).unwrap();
@@ -1406,6 +1407,7 @@ mod tests {
             plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
+            transitions: Vec::new(),
         };
         let mut s = WriteSession::untracked(Writer::Backup, &f.scopes, "test");
         history::append(&mut s, &f.paths, &entry).unwrap();
@@ -1442,6 +1444,7 @@ mod tests {
             plan: None,
             doctor_run_id: Some("2026-10-25T12:00:00Z__01M9Z00000000000000000000".into()),
             repairs: Vec::new(),
+            transitions: Vec::new(),
         }
     }
 

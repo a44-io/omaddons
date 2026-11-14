@@ -27,11 +27,15 @@ use crate::engine::repair_action::{Endpoint, Endpoints, Guard, Primitive, Step};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{Op, WriteSession, ensure_dir_all, mutate};
 use crate::limits::{DISCOVERY_FILE_MAX_BYTES, REASON_MAX_CHARS};
-use crate::model::{Actor, BackupId, FolderName, PlanId, RunId, TargetKey, TxId, TxKind};
+use crate::model::{
+    Actor, BackupId, FolderName, PlanId, ReleaseTransition, RunId, TargetKey, TxId, TxKind,
+};
 
-/// The version of the line format. 1.1: the kind `skip` (`skip` and `unskip`, RG-33). A
-/// 1.0 line reads as written; a build that knows only 1.0 skips a `skip` line it cannot
-/// decode (`history_lines_skipped`), as it skips any line it cannot read.
+/// The version of the line format. 1.1: the kind `skip` (`skip` and `unskip`, RG-33),
+/// and `transitions`, the releases each addon was moved from and to (RG-02). A 1.0 line
+/// reads as written; a build that knows only 1.0 skips a `skip` line it cannot decode
+/// (`history_lines_skipped`), as it skips any line it cannot read, and reads a line with
+/// `transitions` without them.
 pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
 
 /// The schema of one line of `history.jsonl`: either shape the reader decodes, with the
@@ -116,6 +120,13 @@ pub struct HistoryEntry {
     /// every other line.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repairs: Vec<RepairEntry>,
+    /// What this transaction did to each addon's installed release, sorted by addon name
+    /// (design 7.2.1). Written when it commits, so the versions outlive its undo snapshot;
+    /// omitted when it moved none (a pin, a skip, a backup, a reinstall) and on lines from
+    /// before this field. Facts about what the transaction did, never an observation made
+    /// afterwards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transitions: Vec<ReleaseTransition>,
 }
 
 /// One filesystem operation of a repair (M4-D31), as its history line records it.
@@ -1552,6 +1563,7 @@ mod tests {
             plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
+            transitions: Vec::new(),
         }
     }
 

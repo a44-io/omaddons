@@ -1622,6 +1622,8 @@ fn backup_line(ctx: &Context, created: &Created, run: RunId) -> HistoryEntry {
         plan: None,
         doctor_run_id: None,
         repairs: Vec::new(),
+        // A backup moves no release.
+        transitions: Vec::new(),
     }
 }
 

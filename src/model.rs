@@ -1057,9 +1057,9 @@ impl InstalledRelease {
     }
 }
 
-/// What one transaction did to one addon's installed release (design 7.2.1). Types only
-/// for now: history lines record them (RG-02), and the regression guard's verdicts
-/// hold them (RG-10).
+/// What one transaction did to one addon's installed release (design 7.2.1). A history
+/// line records them when its transaction commits (`HistoryEntry::transitions`, made by
+/// `state::records::transitions`), and the regression guard's verdicts hold them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseTransition {
     /// The addon's name, as its record names it.
@@ -1083,6 +1083,22 @@ pub enum TransitionChange {
     Removed,
     /// An undo put back what was installed before the transaction it reverts.
     Reverted,
+}
+
+/// Where the [`ReleaseTransition`]s of one history line came from (design 7.2.1). Lines
+/// written before transitions were recorded have none of their own; their snapshots can
+/// stand in only while retention keeps them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionSource {
+    /// The line recorded them when its transaction committed, or the line writes no
+    /// client record (a backup), so it moved no release.
+    Recorded,
+    /// Worked out from the records its undo snapshots hold: the one it found, and the
+    /// one it left, exactly one commit later.
+    Snapshot,
+    /// Neither: a line from before transitions were recorded whose records are no longer
+    /// both known. Nothing is made up in their place.
+    Unavailable,
 }
 
 // ---------------------------------------------------------------------------------------

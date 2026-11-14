@@ -1020,6 +1020,7 @@ enum file:history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version
 enum file:history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.repairs[].pre<untagged=path,to>.path.kind absent,dir,file,symlink
 enum file:history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.repairs[].pre<untagged=path,to>.to.kind absent,dir,file,symlink
 enum file:history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.result committed
+enum file:history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].change installed,removed,reverted,updated
 enum file:history <untagged=actor,argv,at,kind,ops,result,run,schema_version,target,tx>.actor agent,human,widget
 enum file:history <untagged=actor,argv,at,kind,ops,result,run,schema_version,target,tx>.kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
 enum file:history <untagged=actor,argv,at,kind,ops,result,run,schema_version,target,tx>.ops[].from backup,snapshot
@@ -1039,6 +1040,7 @@ enum file:journal <type=prepared>.commit.history.repairs[].pre<untagged=kind>.ki
 enum file:journal <type=prepared>.commit.history.repairs[].pre<untagged=path,to>.path.kind absent,dir,file,symlink
 enum file:journal <type=prepared>.commit.history.repairs[].pre<untagged=path,to>.to.kind absent,dir,file,symlink
 enum file:journal <type=prepared>.commit.history.result committed
+enum file:journal <type=prepared>.commit.history.transitions[].change installed,removed,reverted,updated
 enum file:journal <type=prepared>.commit.record.addons{}.channel alpha,beta,stable
 enum file:journal <type=prepared>.commit.record.addons{}.left_out[].reason below_client_floor,dependency_skipped,game_type_excluded,interface_not_in_family,no_interface,no_loadable_toc,target_interface_unknown
 enum file:journal <type=prepared>.commit.record.addons{}.reason dependency,explicit
@@ -2768,6 +2770,28 @@ file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,targ
 file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.target string?!
 file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.targets array
 file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.targets[] string
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions array
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[] object
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].addon string!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].change string!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].from object?!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].from.release object?!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].from.release.revision integer? minimum=0
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].from.release.source string!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].from.release.tag string!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].from.version string!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].from.witness object!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].from.witness.blob_sha256 string?
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].from.witness.commit string?
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].to object?!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].to.release object?!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].to.release.revision integer? minimum=0
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].to.release.source string!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].to.release.tag string!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].to.version string!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].to.witness object!
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].to.witness.blob_sha256 string?
+file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.transitions[].to.witness.commit string?
 file history <untagged=actor,argv,at,kind,ops,result,reverts,schema_version,target,tx>.tx string!
 file history <untagged=actor,argv,at,kind,ops,result,run,schema_version,target,tx> variant
 file history <untagged=actor,argv,at,kind,ops,result,run,schema_version,target,tx>.actor string!
@@ -2956,6 +2980,28 @@ file journal <type=prepared>.commit.history.sv_restored integer? minimum=0
 file journal <type=prepared>.commit.history.target string?!
 file journal <type=prepared>.commit.history.targets array
 file journal <type=prepared>.commit.history.targets[] string
+file journal <type=prepared>.commit.history.transitions array
+file journal <type=prepared>.commit.history.transitions[] object
+file journal <type=prepared>.commit.history.transitions[].addon string!
+file journal <type=prepared>.commit.history.transitions[].change string!
+file journal <type=prepared>.commit.history.transitions[].from object?!
+file journal <type=prepared>.commit.history.transitions[].from.release object?!
+file journal <type=prepared>.commit.history.transitions[].from.release.revision integer? minimum=0
+file journal <type=prepared>.commit.history.transitions[].from.release.source string!
+file journal <type=prepared>.commit.history.transitions[].from.release.tag string!
+file journal <type=prepared>.commit.history.transitions[].from.version string!
+file journal <type=prepared>.commit.history.transitions[].from.witness object!
+file journal <type=prepared>.commit.history.transitions[].from.witness.blob_sha256 string?
+file journal <type=prepared>.commit.history.transitions[].from.witness.commit string?
+file journal <type=prepared>.commit.history.transitions[].to object?!
+file journal <type=prepared>.commit.history.transitions[].to.release object?!
+file journal <type=prepared>.commit.history.transitions[].to.release.revision integer? minimum=0
+file journal <type=prepared>.commit.history.transitions[].to.release.source string!
+file journal <type=prepared>.commit.history.transitions[].to.release.tag string!
+file journal <type=prepared>.commit.history.transitions[].to.version string!
+file journal <type=prepared>.commit.history.transitions[].to.witness object!
+file journal <type=prepared>.commit.history.transitions[].to.witness.blob_sha256 string?
+file journal <type=prepared>.commit.history.transitions[].to.witness.commit string?
 file journal <type=prepared>.commit.history.tx string!
 file journal <type=prepared>.commit.index object!
 file journal <type=prepared>.commit.index.remove array!

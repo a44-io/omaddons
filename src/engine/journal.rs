@@ -58,7 +58,8 @@ pub use super::simulate::{
 /// older build may ignore; a newer major is never recovered by this one. 1.2: the commit
 /// payload's record may hold `skipped_releases` (target record 1.1, RG-30); a 1.1 reader
 /// ignores them, and its roll-forward then cannot save over the 1.1 record on disk
-/// (`state_too_new`).
+/// (`state_too_new`). Also in 1.2: the payload's history line may hold `transitions`
+/// (RG-02), which a 1.1 reader ignores as well.
 pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 2);
 
 /// One journal line.
@@ -2751,6 +2752,7 @@ mod tests {
                     plan: None,
                     doctor_run_id: None,
                     repairs: Vec::new(),
+                    transitions: Vec::new(),
                 },
                 stage_dir: "/c/_retail_/Interface/.omaddons/stage/x".into(),
                 sv_restore: None,
@@ -3176,6 +3178,7 @@ mod tests {
                     plan: None,
                     doctor_run_id: None,
                     repairs: Vec::new(),
+                    transitions: Vec::new(),
                 },
                 stage_dir: stage_dir.clone(),
                 sv_restore: None,
@@ -3332,6 +3335,7 @@ mod tests {
                         plan: None,
                         doctor_run_id: None,
                         repairs: Vec::new(),
+                        transitions: Vec::new(),
                     },
                     stage_dir: client.join(format!("Interface/.omaddons/stage/{undo}")),
                     sv_restore: Some(SvRestore {
@@ -3500,6 +3504,7 @@ mod tests {
                         plan: None,
                         doctor_run_id: None,
                         repairs: Vec::new(),
+                        transitions: Vec::new(),
                     },
                     stage_dir: stage_dir.clone(),
                     sv_restore: None,

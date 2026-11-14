@@ -73,7 +73,7 @@ use crate::state::history::{
     self, BackupNote, FolderOp, HistoryEdit, HistoryEntry, HistoryOp, TxResult,
 };
 use crate::state::paths::{ClientPaths, Paths};
-use crate::state::records::{TargetRecord, load_record};
+use crate::state::records::{self, TargetRecord, load_record};
 use crate::state::status::{StatusFile, TargetMeta, write_monotonic};
 use crate::state::store;
 
@@ -924,6 +924,7 @@ fn backup_line(
         plan: None,
         doctor_run_id: None,
         repairs: Vec::new(),
+        transitions: Vec::new(),
     }
 }
 
@@ -1459,6 +1460,8 @@ fn locked(
         plan: ctx.applying,
         doctor_run_id: None,
         repairs: Vec::new(),
+        // In the journal's payload with the line, so recovery writes the same facts.
+        transitions: records::transitions(&current.value, &record, false),
     };
     let prepared = Prepared {
         schema_version: journal::CURRENT,

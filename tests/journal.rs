@@ -227,6 +227,7 @@ mod support {
                         plan: None,
                         doctor_run_id: None,
                         repairs: Vec::new(),
+                        transitions: Vec::new(),
                     },
                     stage_dir: self.stage.clone(),
                     sv_restore: None,

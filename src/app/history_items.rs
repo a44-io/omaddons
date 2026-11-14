@@ -1,8 +1,10 @@
 //! `history -v`'s `items`: what each transaction did to each addon, grouped from its
 //! ops, with the addon's version before and after.
 //!
-//! No persisted format changes for this. The versions come from what the store already
-//! keeps:
+//! The versions come first from the line itself: a transaction committed since RG-02
+//! records what it did to each addon's installed release (`transitions`), so they
+//! outlive its undo snapshot. For an addon the line names no transition for (a line from
+//! before that, or a change that moved no release), they come from what the store keeps:
 //!
 //! - **Before:** the record the transaction found, which its undo snapshot holds
 //!   (`<state>/snapshots/<tx>/<key>.json`, or `<tx>.wtf/`).
@@ -27,12 +29,13 @@ use crate::app::approval::{Approval, ApprovedItem};
 use crate::engine::edit::{EditField, changed_fields};
 use crate::engine::retention::state_snapshot_of;
 use crate::model::{
-    AddonRecord, PlanId, SkipIdentity, SkippedNote, SkippedRelease, TargetKey, TxId, TxKind,
+    AddonRecord, InstalledRelease, PlanId, ReleaseTransition, SkipIdentity, SkippedNote,
+    SkippedRelease, TargetKey, TransitionSource, TxId, TxKind,
 };
 use crate::state::history::{FolderOp, HistoryEntry, HistoryOp};
 use crate::state::paths::Paths;
 use crate::state::plans;
-use crate::state::records::TargetRecord;
+use crate::state::records::{self, TargetRecord};
 use crate::state::store::{self, VersionStatus};
 
 /// What one transaction did to one addon (`history -v`).
@@ -164,8 +167,9 @@ pub struct Around<'a> {
 }
 
 /// `entry`'s items: its ops grouped by addon (an empty name, a whole `WTF/`, is one
-/// group of its own), in the order the line recorded them. A side `around` does not know
-/// takes `plan`'s versions for the addon on the line's client.
+/// group of its own), in the order the line recorded them. An addon's versions are its
+/// transition's when the line records one; otherwise a side `around` does not know takes
+/// `plan`'s versions for the addon on the line's client.
 pub fn items(
     entry: &HistoryEntry,
     around: Around<'_>,
@@ -188,13 +192,18 @@ pub fn items(
                 addon_in(around.after, key.as_deref()),
             );
             let approved = || approved_item(plan, entry.target, key.as_deref());
-            let from_version = match before {
-                Some(addon) => addon.map(|a| a.version.clone()),
-                None => approved().and_then(|i| i.from_version.clone()),
+            let moved = transition_of(entry, key.as_deref());
+            let version =
+                |side: &Option<InstalledRelease>| side.as_ref().map(|r| r.version.clone());
+            let from_version = match (moved, before) {
+                (Some(t), _) => version(&t.from),
+                (None, Some(addon)) => addon.map(|a| a.version.clone()),
+                (None, None) => approved().and_then(|i| i.from_version.clone()),
             };
-            let to_version = match after {
-                Some(addon) => addon.map(|a| a.version.clone()),
-                None => approved().and_then(|i| i.to_version.clone()),
+            let to_version = match (moved, after) {
+                (Some(t), _) => version(&t.to),
+                (None, Some(addon)) => addon.map(|a| a.version.clone()),
+                (None, None) => approved().and_then(|i| i.to_version.clone()),
             };
             let mut folders: Vec<&str> = ops.iter().map(|o| o.folder.key()).collect();
             folders.sort_unstable();
@@ -205,7 +214,7 @@ pub fn items(
             };
             Some(HistoryItem {
                 addon: key.as_ref().map(|_| first.addon.clone()),
-                change: change_of(entry.kind, &ops, before, after),
+                change: change_of(entry.kind, &ops, before, after, moved),
                 folders: folders.len(),
                 from_version,
                 to_version,
@@ -214,6 +223,17 @@ pub fn items(
             })
         })
         .collect()
+}
+
+/// The transition `entry` records for the addon `key` (a record key); `None` for a whole
+/// `WTF/`, and for an addon whose installed release the transaction did not move or whose
+/// line is from before transitions were recorded.
+fn transition_of<'e>(entry: &'e HistoryEntry, key: Option<&str>) -> Option<&'e ReleaseTransition> {
+    let key = key?;
+    entry
+        .transitions
+        .iter()
+        .find(|t| TargetRecord::addon_key(&t.addon) == key)
 }
 
 /// The addon `key` (a record key) in `record`: `None` when the record is not known,
@@ -243,12 +263,14 @@ fn approved_item<'a>(
 
 /// What `kind` did to an addon with these `ops` (at least one), whose record was
 /// `before` and is `after`: `None` where the record is not known, `Some(None)` where it
-/// holds no such addon.
+/// holds no such addon. `moved` is the transition the line records for it, which says
+/// whether it was installed before and after where a record is not known.
 fn change_of(
     kind: TxKind,
     ops: &[&HistoryOp],
     before: Option<Option<&AddonRecord>>,
     after: Option<Option<&AddonRecord>>,
+    moved: Option<&ReleaseTransition>,
 ) -> HistoryChange {
     use HistoryChange::*;
     if kind == TxKind::Undo {
@@ -261,8 +283,12 @@ fn change_of(
     if ops.iter().all(|o| o.edit.is_some()) {
         return Edited;
     }
-    let was = before.map(|a| a.is_some());
-    let is = after.map(|a| a.is_some());
+    let was = before
+        .map(|a| a.is_some())
+        .or_else(|| moved.map(|t| t.from.is_some()));
+    let is = after
+        .map(|a| a.is_some())
+        .or_else(|| moved.map(|t| t.to.is_some()));
     match (was, is) {
         (Some(false), Some(true)) if kind == TxKind::Adopt => return Adopted,
         (Some(false), Some(true)) => return Installed,
@@ -284,6 +310,10 @@ fn change_of(
             } else {
                 Updated
             };
+        }
+        // A recorded move from one release to another; a reinstall records none.
+        if moved.is_some_and(|t| t.from.is_some() && t.to.is_some()) {
+            return Updated;
         }
         if ops.iter().all(|o| o.op == FolderOp::Add) {
             return Installed;
@@ -400,24 +430,7 @@ impl<'a> Reader<'a> {
         if entry.ops.is_empty() {
             return Vec::new();
         }
-        let (before, after) = match entry.target {
-            Some(key) if writes_record(entry) => {
-                let before = self.found(entry.tx, key);
-                let after = match self.next.get(&entry.tx).copied() {
-                    Some(next) => self.found(next, key),
-                    None => self.live(key),
-                };
-                // The record it left is one commit past the one it found, or unknown.
-                let after = match (&before, after) {
-                    (Some(b), Some(a)) if b.generation.checked_add(1) == Some(a.generation) => {
-                        Some(a)
-                    }
-                    _ => None,
-                };
-                (before, after)
-            }
-            _ => (None, None),
-        };
+        let (before, after) = self.around(entry);
         let plan = match (entry.plan, &before, &after) {
             (Some(id), _, _) if before.is_none() || after.is_none() => self.plan(id),
             _ => None,
@@ -427,6 +440,28 @@ impl<'a> Reader<'a> {
             after: after.as_deref(),
         };
         items(entry, around, plan.as_deref())
+    }
+
+    /// The records around `entry` on its client: the one it found and the one it left,
+    /// each `None` where not known. The record it left is believed only when it is exactly
+    /// one commit past the one it found. Both `None` for a line that writes no record.
+    fn around(
+        &mut self,
+        entry: &HistoryEntry,
+    ) -> (Option<Rc<TargetRecord>>, Option<Rc<TargetRecord>>) {
+        let Some(key) = entry.target.filter(|_| writes_record(entry)) else {
+            return (None, None);
+        };
+        let before = self.found(entry.tx, key);
+        let after = match self.next.get(&entry.tx).copied() {
+            Some(next) => self.found(next, key),
+            None => self.live(key),
+        };
+        let after = match (&before, after) {
+            (Some(b), Some(a)) if b.generation.checked_add(1) == Some(a.generation) => Some(a),
+            _ => None,
+        };
+        (before, after)
     }
 
     /// The record `tx` found on `key`'s client: its undo snapshot's copy, an empty record
@@ -484,10 +519,43 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// What `entry`'s transaction did to each addon's installed release, and where that comes
+/// from (design 7.2.1), for the regression guard's judge and `skip --back`:
+///
+/// - **Recorded:** the line's own transitions, or none at all for a line that writes no
+///   client record (a backup moves no release).
+/// - **Snapshot:** a line from before transitions were recorded, while `reader` knows
+///   both the record it found (its undo snapshot) and the record it left (one commit
+///   later): [`records::transitions`] over them, exactly what its commit would have
+///   recorded, release keys and witnesses included.
+/// - **Unavailable:** otherwise, an empty list. A side the store no longer shows is
+///   never made up from a version label.
+///
+/// A line committed since RG-02 that moved no release (a pin, a reinstall) also has an
+/// empty list of its own; it reads as `Snapshot` while its snapshots last, then as
+/// `Unavailable`, the same as an older line.
+pub fn transitions_of(
+    entry: &HistoryEntry,
+    reader: &mut Reader<'_>,
+) -> (Vec<ReleaseTransition>, TransitionSource) {
+    if !entry.transitions.is_empty() || !writes_record(entry) {
+        return (entry.transitions.clone(), TransitionSource::Recorded);
+    }
+    match reader.around(entry) {
+        (Some(before), Some(after)) => (
+            records::transitions(&before, &after, entry.kind == TxKind::Undo),
+            TransitionSource::Snapshot,
+        ),
+        _ => (Vec::new(), TransitionSource::Unavailable),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Actor, AddonReason, AddonState, Channel, FolderName, VersionConfidence};
+    use crate::model::{
+        Actor, AddonReason, AddonState, Channel, FolderName, TransitionChange, VersionConfidence,
+    };
     use crate::state::history::{self as history_state, HistoryEdit, TxResult, WtfSource};
 
     const KEY: &str = "01JB8Q2V9W0000000000000000";
@@ -531,6 +599,7 @@ mod tests {
             plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
+            transitions: Vec::new(),
         }
     }
 
@@ -640,7 +709,7 @@ mod tests {
         for (case, before, after, change, marked, cleared) in cases {
             let (b, a) = (foo(before), foo(after));
             assert_eq!(
-                change_of(TxKind::Skip, &ops, Some(Some(&b)), Some(Some(&a))),
+                change_of(TxKind::Skip, &ops, Some(Some(&b)), Some(Some(&a)), None),
                 change,
                 "{case}: before={:?} after={:?}",
                 b.skipped_releases,
@@ -974,6 +1043,226 @@ mod tests {
         for (name, around, expected) in cases {
             assert_eq!(rows(&items(&e, around, Some(&plan))), expected, "{name}");
         }
+    }
+
+    /// A transition of `addon` between versions of `gh:o/<addon>`; an empty version is no
+    /// release on that side.
+    fn moved(addon: &str, change: TransitionChange, from: &str, to: &str) -> ReleaseTransition {
+        let release = |version: &str| {
+            (!version.is_empty()).then(|| InstalledRelease {
+                version: version.into(),
+                release: crate::model::ReleaseKey::parse(
+                    &format!("gh:o/{}@{version}", addon.to_ascii_lowercase()),
+                    None,
+                ),
+                witness: crate::model::ArtifactWitness::default(),
+            })
+        };
+        ReleaseTransition {
+            addon: addon.into(),
+            change,
+            from: release(from),
+            to: release(to),
+        }
+    }
+
+    /// One case of a line's recorded transitions: its name, the transaction's kind, ops
+    /// and transitions, and the rows expected.
+    type Recorded = (
+        &'static str,
+        TxKind,
+        Vec<HistoryOp>,
+        Vec<ReleaseTransition>,
+        Vec<Row>,
+    );
+
+    #[test]
+    fn recorded_transitions_give_the_versions_once_the_snapshots_are_gone() {
+        use FolderOp::{Add, Remove, Replace};
+        use HistoryChange::*;
+        use TransitionChange as T;
+        // Every case knows no record: the snapshots are gone.
+        let cases: Vec<Recorded> = vec![
+            (
+                "an update",
+                TxKind::Update,
+                vec![op(Replace, "Foo", "Foo")],
+                vec![moved("Foo", T::Updated, "v1", "v2")],
+                vec![row("Foo", Updated, 1, "v1", "v2")],
+            ),
+            (
+                "an update that only adds a folder is no install",
+                TxKind::Update,
+                vec![op(Add, "Foo_Extra", "Foo")],
+                vec![moved("Foo", T::Updated, "v1", "v2")],
+                vec![row("Foo", Updated, 1, "v1", "v2")],
+            ),
+            (
+                "an install over an unmanaged folder is no update",
+                TxKind::Install,
+                vec![op(Replace, "Foo", "Foo")],
+                vec![moved("Foo", T::Installed, "", "v1")],
+                vec![row("Foo", Installed, 1, "", "v1")],
+            ),
+            (
+                "a removal",
+                TxKind::Remove,
+                vec![op(Remove, "Foo", "Foo")],
+                vec![moved("Foo", T::Removed, "v1", "")],
+                vec![row("Foo", Removed, 1, "v1", "")],
+            ),
+            (
+                "an undo",
+                TxKind::Undo,
+                vec![op(Replace, "Foo", "Foo")],
+                vec![moved("Foo", T::Reverted, "v2", "v1")],
+                vec![row("Foo", Reverted, 1, "v2", "v1")],
+            ),
+            (
+                "matched by the addon's record key",
+                TxKind::Update,
+                vec![op(Replace, "DBM-Core", "DBM")],
+                vec![moved("dbm", T::Updated, "12.1.14", "12.1.15")],
+                vec![row("DBM", Updated, 1, "12.1.14", "12.1.15")],
+            ),
+            (
+                "an addon the line names no transition for reads as before",
+                TxKind::Update,
+                vec![op(Replace, "Foo", "Foo"), op(Replace, "Bar", "Bar")],
+                vec![moved("Foo", T::Updated, "v1", "v2")],
+                vec![
+                    row("Foo", Updated, 1, "v1", "v2"),
+                    row("Bar", Updated, 1, "", ""),
+                ],
+            ),
+        ];
+        for (name, kind, ops, transitions, expected) in cases {
+            let e = HistoryEntry {
+                transitions,
+                ..entry(kind, ops)
+            };
+            assert_eq!(
+                rows(&items(&e, Around::default(), None)),
+                expected,
+                "{name}: {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_transitions_win_over_the_records_and_the_plan() {
+        // A line's own facts are what it did; a record read later only stands in for them.
+        let e = HistoryEntry {
+            transitions: vec![moved("Foo", TransitionChange::Updated, "v1", "v2")],
+            ..entry(TxKind::Update, vec![op(FolderOp::Replace, "Foo", "Foo")])
+        };
+        let (before, after) = (
+            record(1, &[("Foo", "v0", false)]),
+            record(2, &[("Foo", "v9", false)]),
+        );
+        let around = Around {
+            before: Some(&before),
+            after: Some(&after),
+        };
+        assert_eq!(
+            rows(&items(&e, around, None)),
+            vec![row("Foo", HistoryChange::Updated, 1, "v1", "v2")]
+        );
+    }
+
+    #[test]
+    fn transitions_of_says_where_a_line_s_transitions_come_from() {
+        use TransitionSource::{Recorded, Snapshot, Unavailable};
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::with_roots(
+            &root,
+            root.join(".config"),
+            root.join(".local/state"),
+            root.join(".cache"),
+        );
+        let write = |path: &std::path::Path, record: &TargetRecord| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, store::encode(record).unwrap()).unwrap();
+        };
+        let in_snapshot = |tx: &TxId| {
+            let name = paths.target_record(&key()).file_name().unwrap().to_owned();
+            paths.state_snapshot(tx).join(name)
+        };
+        let update = || entry(TxKind::Update, vec![op(FolderOp::Replace, "Foo", "Foo")]);
+        let old: TxId = TX.parse().unwrap();
+        let found = record(1, &[("Foo", "v1", false), ("Bar", "b1", false)]);
+        let left = record(2, &[("Foo", "v2", false), ("Bar", "b1", false)]);
+        let snapshot_transitions = records::transitions(&found, &left, false);
+        assert_eq!(snapshot_transitions.len(), 1, "only Foo moved");
+
+        // Nothing on disk yet: an old line with no records known.
+        let all = [update()];
+        let mut reader = Reader::new(&paths, &all);
+        assert_eq!(
+            transitions_of(&all[0], &mut reader),
+            (Vec::new(), Unavailable),
+            "no snapshot"
+        );
+
+        // Its snapshot holds the record it found; the live record is the one it left.
+        write(&in_snapshot(&old), &found);
+        write(&paths.target_record(&key()), &left);
+        let mut reader = Reader::new(&paths, &all);
+        assert_eq!(
+            transitions_of(&all[0], &mut reader),
+            (snapshot_transitions.clone(), Snapshot),
+            "both records known: what its commit would have recorded"
+        );
+
+        // A record left two commits later is no record of what it did.
+        write(
+            &paths.target_record(&key()),
+            &record(3, &[("Foo", "v3", false)]),
+        );
+        let mut reader = Reader::new(&paths, &all);
+        assert_eq!(
+            transitions_of(&all[0], &mut reader),
+            (Vec::new(), Unavailable),
+            "the record it left is not known"
+        );
+
+        // A line's own transitions win, whatever the store holds.
+        let recorded = vec![moved("Foo", TransitionChange::Updated, "v1", "v2")];
+        let line = HistoryEntry {
+            transitions: recorded.clone(),
+            ..update()
+        };
+        let mut reader = Reader::new(&paths, std::slice::from_ref(&line));
+        assert_eq!(
+            transitions_of(&line, &mut reader),
+            (recorded, Recorded),
+            "recorded"
+        );
+
+        // A line that writes no record moved no release.
+        let backup = entry(TxKind::Backup, Vec::new());
+        let mut reader = Reader::new(&paths, std::slice::from_ref(&backup));
+        assert_eq!(
+            transitions_of(&backup, &mut reader),
+            (Vec::new(), Recorded),
+            "a backup"
+        );
+
+        // An undo's snapshot transitions are reverted.
+        let undo = entry(TxKind::Undo, vec![op(FolderOp::Replace, "Foo", "Foo")]);
+        write(&in_snapshot(&undo.tx), &left);
+        write(
+            &paths.target_record(&key()),
+            &record(3, &[("Foo", "v1", false), ("Bar", "b1", false)]),
+        );
+        let mut reader = Reader::new(&paths, std::slice::from_ref(&undo));
+        let (got, source) = transitions_of(&undo, &mut reader);
+        assert_eq!(source, Snapshot);
+        assert_eq!(
+            got.iter().map(|t| t.change).collect::<Vec<_>>(),
+            [TransitionChange::Reverted]
+        );
     }
 
     #[test]

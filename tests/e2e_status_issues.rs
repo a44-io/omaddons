@@ -201,6 +201,7 @@ mod support {
                     plan: None,
                     doctor_run_id: None,
                     repairs: Vec::new(),
+                    transitions: Vec::new(),
                 },
                 stage_dir: home.client("_retail_").join("Interface/.omaddons/stage/x"),
                 sv_restore: None,

@@ -340,6 +340,7 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
                 plan: None,
                 doctor_run_id: None,
                 repairs: Vec::new(),
+                transitions: Vec::new(),
             },
             stage_dir: m
                 .home

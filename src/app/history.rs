@@ -929,6 +929,7 @@ mod tests {
             plan: None,
             doctor_run_id: run_dir.map(str::to_owned),
             repairs,
+            transitions: Vec::new(),
         }
     }
 
