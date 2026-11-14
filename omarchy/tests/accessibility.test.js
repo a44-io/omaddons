@@ -299,6 +299,21 @@ describe("colour alone: every coloured state is told some other way too", () => 
     }
   })
 
+  // RG-61: a link's grade on the error page is its word ("likely", "possible", "weak"),
+  // always printed, whatever its colour; the page colours no grade.
+  test("Error page: a link's grade is a word, always printed", () => {
+    for (const name of ["errors-link", "errors-link-unknowns", "errors-related"]) {
+      for (const row of M.errorRows(M.errorSections(M.reduceErrors(fixture(name)), [], "", NOW))) {
+        for (const e of M.errorPage(row, NOW).errors.filter((x) => x.change)) {
+          expect(["likely", "possible", "weak"], name).toContain(e.change.word)
+        }
+      }
+    }
+    for (const grade of ["high", "medium", "low"]) {
+      expect(M.copy("errors.confidence." + grade)).toMatch(/^[a-z]+$/)
+    }
+  })
+
   test("the bar: an urgent glyph or badge always has a mark, attention or one that outranks it", () => {
     const statuses = ["status-attention", "status-errors", "status-updates", "status-idle", "status-running"]
       .map((name) => M.reduceStatus(fixture(name), NOW))

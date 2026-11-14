@@ -21,7 +21,7 @@ const CATALOG = path.join(process.env.OMADDONS_WIDGET_OUT || "", "fixtures", "co
 const DYNAMIC_PREFIXES = [
   "activity.done.", "activity.phase.", "activity.verb.", "backup.kind.", "backup.kind.auto.",
   "backup.kind.short.", "backup.proof.", "backups.page.", "card.", "card.action.", "channel.",
-  "details.outcome.", "errors.confidence.", "errors.first_seen.", "errors.first_seen.reason.",
+  "details.outcome.", "errors.change.action.", "errors.confidence.", "errors.first_seen.", "errors.first_seen.reason.",
   "errors.link.", "errors.tag.", "errors.unknown.",
   "failure.", "history.actor.", "history.change.", "history.change.whole.",
   "history.title.", "installed.sort.", "issues.note.", "issues.severity.", "issues.suggest.",

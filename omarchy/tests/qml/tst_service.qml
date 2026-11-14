@@ -512,6 +512,45 @@ TestCase {
 
   // ---- confirmations (M3-D9, M3-D46, M4-D28)
 
+  // RG-61: an error page's Go back, the envelope's argv as given: its dry run first, the
+  // plan sheet in a rollback's words, then Yes applies that preview's plan.
+  readonly property var rollbackArgv: ["omaddons", "skip", "Foo", "--back", "--tx", "01M8Q2VA00000000000000000A", "-t", "retail"]
+
+  function test_go_back_previews_then_applies_its_plan_through_the_sheet() {
+    ready(0)
+    compare(service.runCliArgv(rollbackArgv, "Go back"), "")
+    var preview = lastRun("skip")
+    verify(preview !== null && preview.command.indexOf("--dry-run") !== -1, "its dry run first: " + launchLog())
+    compare(runs("apply").length, 0, "nothing applied before Yes")
+    answer(preview, planPreview("skip", [planItem({ "from_version": "v2", "to_version": "v1", "release_id": "gh:o/foo@v1" })],
+      { "routine": false, "reasons": ["destructive"] },
+      { "targets": [{ "target": { "id": "retail", "key": "01M8Q2RRRRRRRRRRRRRRRRRRRR" }, "kind": "update",
+        "skips_marked": [{ "addon": "Foo", "version": "v2", "release": { "source": "gh:o/foo", "tag": "v2" } }] }] },
+      { "destructive": true }))
+    compare(sheetLines().slice(0, 2), ["Take Foo back on retail?", "Foo goes back to v1: the files that were installed before; v2 is skipped"])
+    compare(service.confirm.sheet.confirmLabel, "Go back")
+    compare(service.confirmYes(), "")
+    var applied = lastRun("apply")
+    verify(applied !== null, "Yes applies the preview's plan: " + launchLog())
+    compare(words(applied.command), ["apply", planId])
+  }
+
+  // RG-61: a Go back whose addon moved on is `plan_stale` at its preview: the envelope's own
+  // words, the errors read again, and nothing tried again.
+  function test_a_stale_go_back_says_why_reads_the_errors_again_and_is_not_retried() {
+    ready(0)
+    var reads = runs("errors").length
+    compare(service.runCliArgv(rollbackArgv, "Go back"), "")
+    var preview = lastRun("skip")
+    var why = "Foo is at v3, not at v2, the release that update installed"
+    answer(preview, failure("skip", "plan_stale", why, { "changed": ["targets"] }))
+    compare(service.lastError.message, why)
+    compare(service.confirm, null)
+    verify(runs("errors").length > reads, "the errors are read again: " + launchLog())
+    compare(runs("skip").length, 1, "never tried again: " + launchLog())
+    compare(runs("apply").length, 0)
+  }
+
   function test_a_confirmed_removal_runs_its_previews_plan_and_a_stale_one_previews_again() {
     ready(0)
     compare(service.run("remove", { "target": "retail", "addon": "Baz" }, "Remove Baz"), "")

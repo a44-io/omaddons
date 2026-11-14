@@ -1513,6 +1513,106 @@ TestCase {
 
   // Enter opens the addon's error page; `u` updates it from the view or the page; `y`
   // copies a report that holds no raw detail (1n2p.27).
+  // RG-61: errors with links of each grade and state, and each first_seen basis, as the
+  // binary writes them; only a `current` `high` or `medium` link carries commands.
+  function linkedEnvelope() {
+    var rollback = ["omaddons", "skip", "Foo", "--back", "--tx", "01M8Q2VA00000000000000000A", "-t", "retail"]
+    var link = function(confidence, state, commands, unknowns) {
+      return { "tx": "01M8Q2VA00000000000000000A", "run": null, "kind": "update", "at": "2026-11-13T16:02:00Z", "actor": "agent",
+        "relation": "own", "confidence": confidence, "state": state, "algorithm": 1, "judged_at": "2026-11-13T20:14:00Z",
+        "changed": [{ "addon": "Foo", "change": "updated", "from_version": "12.1.21", "to_version": "12.1.22",
+          "from_release": null, "to_release": null, "still_installed": true }],
+        "evidence": { "gap_s": 60, "exact": false, "same_session": false, "clean_sessions": confidence === "medium" ? 3 : 0,
+          "client_update": null, "other_changes": 0, "unknowns": unknowns },
+        "commands": commands }
+    }
+    var seen = function(basis, reason) {
+      return { "at": "2026-11-13T20:14:00Z", "basis": basis, "reason": reason, "observed_at": "2026-11-13T21:00:00Z",
+        "onset_after_at": null, "onset_by_at": "2026-11-13T20:14:00Z", "related_fingerprint": basis === "related" ? "e:Foo/a.lua:1" : null }
+    }
+    var error = function(location, firstSeen, afterChange) {
+      return { "fingerprint": "e:" + location, "database": "db-1", "origin": "local", "message_kind": "lua_runtime",
+        "message": "attempt to call a nil value", "message_chars": null, "location": location,
+        "attribution": { "method": "first_addon_frame", "confidence": "high" }, "type": "error", "count": 7, "sessions": 1,
+        "new": true, "stack": [], "first_seen": firstSeen, "after_change": afterChange, "judgment": null }
+    }
+    var go = [{ "action": "rollback", "command": rollback.join(" "), "argv": rollback, "destructive": true }]
+    return { "ok": true, "schema_version": "1.2", "tool_version": Build.TOOL_VERSION, "command": "errors", "exit_code": 0,
+      "partial": false, "warnings": [], "commands": go,
+      "data": { "targets": [
+        { "target": { "id": "retail" }, "capture": "buggrabber", "coverage": "complete", "files": { "partial": 0 },
+          "databases": [{ "id": "db-1", "state": "complete" }], "summary": { "new": 6, "received": 0 },
+          "dismiss": { "precondition": "pc1:" + "2".repeat(64) },
+          "addons": [
+            { "addon": "Foo", "managed": true, "kind": "addon", "version": "12.1.22", "latest": { "version": "12.1.22", "status": "current" },
+              "count": 42, "new": 6, "after_change": { "tx": "01M8Q2VA00000000000000000A", "kind": "update", "at": "2026-11-13T16:02:00Z",
+                "addon": "Foo", "relation": "own", "confidence": "high" },
+              "errors": [
+                error("Foo/core.lua:1", seen("observed", null), link("high", "current", go, [])),
+                error("Foo/core.lua:2", seen("observed", null), link("medium", "current", go, ["running"])),
+                error("Foo/core.lua:3", seen("observed", null), link("low", "current", [], [])),
+                error("Foo/core.lua:4", seen("observed", null), link("high", "database_replaced", [], [])),
+                error("Foo/core.lua:5", seen("baseline", "first_read"), null),
+                error("Foo/core.lua:6", seen("related", null), null),
+                error("Foo/core.lua:7", seen("unknown", "absence_unproven"), null)
+              ] }
+          ] }
+      ] } }
+  }
+
+  function test_the_error_page_shows_what_changed_before_and_runs_its_way_back_540() { errorPageWayBack(540) }
+  function test_the_error_page_shows_what_changed_before_and_runs_its_way_back_400() { errorPageWayBack(400) }
+
+  function errorPageWayBack(width) {
+    view.width = width
+    issuesReady(false)
+    svc.errors = Model.reduceErrors(linkedEnvelope())
+    keyClick("4")
+    compare(view.view, "errors")
+    verify(texts(content()).indexOf("after update") !== -1, "the row's tag")
+    keyClick(Qt.Key_Return)
+    var page = findChild(view, "page").item
+    var errors = findChild(page, "errors")
+    var section = function(i) { return findChild(errors.itemAt(i), "change") }
+    var buttons = function(i) { return findChild(section(i), "changeButtons") }
+    // high: the change, its word, and Go back.
+    verify(section(0).visible)
+    compare(findChild(section(0), "changeHeading").text, "What changed before this")
+    compare(findChild(section(0), "changeLine").text, "Foo 12.1.21 → 12.1.22")
+    compare(findChild(section(0), "changeWord").text, "likely")
+    compare(buttons(0).count, 1)
+    compare(buttons(0).itemAt(0).text, "Go back")
+    // medium: its word, the unknown, and its button.
+    compare(findChild(section(1), "changeWord").text, "possible")
+    verify(texts(section(1)).indexOf("omaddons couldn't tell whether the game was running during that change") !== -1)
+    compare(buttons(1).count, 1)
+    // low: the word, never a button; a link that no longer stands: a sentence, no button.
+    compare(findChild(section(2), "changeWord").text, "weak")
+    compare(buttons(2).count, 0)
+    verify(findChild(section(3), "changeState").text.indexOf("this file has been replaced since") !== -1)
+    compare(buttons(3).count, 0)
+    // Each basis in words.
+    compare(findChild(errors.itemAt(0), "errorFirstSeen").text.indexOf("Appeared by"), 0)
+    compare(findChild(errors.itemAt(4), "errorFirstSeen").text, "Already there when omaddons first read this file; its age is unknown")
+    compare(findChild(errors.itemAt(5), "errorFirstSeen").text.indexOf("Like an error known since"), 0)
+    compare(findChild(errors.itemAt(6), "errorFirstSeen").text, "This file could not be read completely, so omaddons can't tell when this began")
+    verify(!section(4).visible, "no link, no section")
+    // The section fits the page at this width: every button inside it.
+    for (var b = 0; b < 2; b++) {
+      var button = buttons(b).itemAt(0)
+      var at = button.mapToItem(page, 0, 0)
+      verify(at.x >= 0 && at.x + button.width <= page.width + 0.5, width + " px: button " + b + " inside the page")
+    }
+    // Enter runs the first way back, as the envelope gave it, through the CLI-argv path.
+    keyClick(Qt.Key_Return)
+    compare(svc.cliRuns.length, 1)
+    compare(json(svc.cliRuns[0][0]), json(["omaddons", "skip", "Foo", "--back", "--tx", "01M8Q2VA00000000000000000A", "-t", "retail"]))
+    compare(svc.cliRuns[0][1], "Go back")
+    // The mouse: the same button, clicked.
+    mouseClick(buttons(1).itemAt(0))
+    compare(svc.cliRuns.length, 2)
+  }
+
   function test_enter_opens_the_error_page_and_u_and_y_act_from_view_and_page() {
     errorsReady(false)
     // `u` on Foo (an update waits): the update, with what Addons shows of Foo.

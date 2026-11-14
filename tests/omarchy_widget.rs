@@ -1276,9 +1276,11 @@ mod support {
     /// then stays below WIDGET_OUTPUT_MAX_BYTES (it allows up to about 1,520).
     pub const FINDING_ROW: u64 = 1500;
 
-    /// The paths whose runs always go through a preview (M3-D9).
+    /// The paths whose runs always go through a preview (M3-D9). `skip`, for its rollback
+    /// (`skip --back`, design 7.7): previewed and confirmed like an undo.
     pub const DESTRUCTIVE: &[&str] = &[
         "remove",
+        "skip",
         "undo",
         "doctor undo",
         "doctor gc",
@@ -3942,6 +3944,22 @@ fn error_link_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         first(&related, "core.lua:14")["first_seen"]["basis"],
         "related"
     );
+    // The rollback the page offers, previewed as the widget previews it (RG-61), then the
+    // same argv once Foo moved on: `plan_stale` at the preview.
+    let mut back: Vec<String> = linked["after_change"]["commands"][0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|w| w.as_str().unwrap().to_owned())
+        .collect();
+    back.extend(["--dry-run".to_owned(), "--json".to_owned()]);
+    let preview = write_fixture(dir, "skip-back-preview", &s.home.exec(&back), 0);
+    assert!(preview["data"]["plan_id"].is_string(), "{preview}");
+    s.release("foo", "v3", &[folder("Foo", &[])]);
+    s.ok(&["update", "-t", "retail", "--refresh"]);
+    let stale = write_fixture(dir, "skip-back-stale", &s.home.exec(&back), 1);
+    assert_eq!(stale["error"]["code"], "plan_stale", "{stale}");
 
     // Read whole once first: on a file's first read, what a degraded read meets is a
     // baseline, not unknown.

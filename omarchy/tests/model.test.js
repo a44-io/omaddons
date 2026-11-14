@@ -2872,6 +2872,64 @@ describe("the error page's reads", () => {
   })
 })
 
+// RG-61: the way back, from the page to the plan sheet, and the toast's link.
+describe("the way back from an error", () => {
+  test("the page's section and its Go back come from the envelope, Enter's first", () => {
+    const env = fixture("errors-link")
+    const errors = M.reduceErrors(env)
+    const sections = M.errorSections(errors, [], "", NOW)
+    const row = M.errorRows(sections).find((r) => r.addon === "Foo")
+    expect(row.chips.map((c) => c.text)).toContain("after update")
+    const page = M.errorPage(row, NOW)
+    const linked = page.errors.find((e) => e.location.endsWith("core.lua:12"))
+    expect([linked.change.heading, linked.change.word, linked.change.lines]).toEqual(["What changed before this", "likely", ["Foo v1 → v2"]])
+    expect(linked.change.buttons.map((b) => [b.action, b.label])).toEqual([["rollback", "Go back"]])
+    const first = M.errorPageAction(page)
+    expect(first.run.argv.slice(0, 4)).toEqual(["omaddons", "skip", "Foo", "--back"])
+    const baseline = page.errors.find((e) => e.location.endsWith("boss.lua:3"))
+    expect(baseline.change).toBe(null)
+    // A `low` link carries no button, even were the binary to give one.
+    const low = JSON.parse(JSON.stringify(errors))
+    low.targets[0].addons.forEach((a) => a.errors.forEach((e) => { if (e.afterChange) e.afterChange.confidence = "low" }))
+    const lowPage = M.errorPage(M.errorRows(M.errorSections(low, [], "", NOW)).find((r) => r.addon === "Foo"), NOW)
+    expect(lowPage.errors.every((e) => !e.change || e.change.buttons.length === 0)).toBe(true)
+    expect(M.errorPageAction(lowPage)).toBe(null)
+  })
+
+  test("the classifier admits skip as a destructive, plan-storing path: a rollback previews", () => {
+    const argv = ["omaddons", "skip", "Foo", "--back", "--tx", "01M8Q2VA00000000000000000A", "-t", "retail"]
+    const verdict = M.classifyCliArgv(argv)
+    expect([verdict.ok, verdict.path, verdict.destructive, verdict.mutates]).toEqual([true, "skip", true, true])
+    expect(M.storesPlan("skip")).toBe(true)
+  })
+
+  test("the plan sheet says where a rollback goes and what it skips", () => {
+    const env = fixture("skip-back-preview")
+    const sheet = M.previewDecision({ mode: "match", shown: [], again: false, path: "skip", context: CONTEXT, targets: [] }, env).sheet
+    expect([sheet.title, sheet.confirmLabel]).toEqual(["Take Foo back on retail?", "Go back"])
+    expect(sheet.items.map((i) => i.text)).toEqual(["Foo goes back to v1: the files that were installed before; v2 is skipped"])
+    expect(sheet.destructive).toBe(true)
+  })
+
+  test("a stale rollback's preview is the envelope's own refusal", () => {
+    const env = fixture("skip-back-stale")
+    expect([env.ok, env.error.code]).toEqual([false, "plan_stale"])
+    expect(env.error.message).toContain("is at v3, not at v2")
+  })
+
+  test("the toast names a high link's addon, and only names, ids and counts", () => {
+    const linked = M.errorFacts(M.reduceStatus(fixture("status-errors-link"), NOW).targets)
+    expect(linked.after).toEqual(["Foo"])
+    const argv = M.errorToastArgv(linked, "a44.omaddons-fixture")
+    expect(argv[8]).toBe("Foo " + linked.counts[0] + " · after Foo's update")
+    const plain = M.errorFacts(M.reduceStatus(fixture("status-errors"), NOW).targets)
+    expect(M.errorToastArgv(plain, "a44.omaddons-fixture")[8]).toBe("Foo 2")
+    for (const part of argv.slice(7, 9)) {
+      expect(part.includes("v1") || part.includes("v2") || part.includes("core.lua")).toBe(false)
+    }
+  })
+})
+
 describe("the Backups view and the restore chooser", () => {
   const LISTED = () => M.reduceBackups(fixture("backups"))
   const DETAIL = () => M.reduceBackups(fixture("backups-detail"))
@@ -3238,7 +3296,7 @@ describe("the service's desktop triggers", () => {
     const status = M.reduceStatus(fixture("status-errors"), NOW)
     const facts = M.errorFacts(status.targets)
     const retail = status.targets.find((t) => t.id === "retail").displayName
-    expect(facts).toEqual({ names: ["Foo"], counts: [2], targets: [retail] })
+    expect(facts).toEqual({ names: ["Foo"], counts: [2], targets: [retail], after: [] })
     const argv = M.errorToastArgv(facts, "a44.omaddons-fixture")
     expect(argv.slice(0, 7)).toEqual(["omarchy-notification-send", "--app-name", "omaddons", "-g", "\u{F0297}", "-u", "normal"])
     expect(argv.slice(7, 9)).toEqual(["Lua errors in your last session on " + retail, "Foo 2"])

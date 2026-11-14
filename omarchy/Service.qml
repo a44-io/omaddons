@@ -876,6 +876,9 @@ Item {
     if (outcome !== "ok") {
       failedPreview = r.spec
       lastError = errorOf(env, r.label + ": " + outcome)
+      // A way back whose addon moved on (RG-61): the envelope's own words stand, and the
+      // errors are read again so the stale button goes; nothing is tried again.
+      if (r.cli && Model.classifyCliArgv(r.cli).path === "skip" && env && env.error && env.error.code === "plan_stale") readErrors()
       // A pasted list the CLI refused (1n2p.37): where its mistake is, in the panel's words.
       var pasted = typeof r.stdin === "string" ? Model.pasteFailure(env) : null
       if (pasted) lastError = { "message": pasted, "code": "desired_state_invalid", "fixes": [], "fixText": "", "choices": [], "folder": "" }

@@ -510,8 +510,10 @@ pub(super) fn run(ctx: &Context, args: &SkipArgs) -> Result<SkipOutcome> {
         r#ref: Some(a.r#ref.clone()),
         version: Some(a.version.clone()),
     }];
+    // `skip` is confirmed like a removal (design 7.7), as its stored plan says.
     let flags = ApprovalFlags {
         while_running: ctx.while_running,
+        destructive: true,
         ..ApprovalFlags::default()
     };
     let freshness = if ctx.offline {

@@ -467,7 +467,7 @@ var CLI_PATHS = {
   "update":            { "mutates": true,  "destructive": false, "binds": true },
   "pin":               { "mutates": true,  "destructive": false, "binds": true },
   "unpin":             { "mutates": true,  "destructive": false, "binds": true },
-  "skip":              { "mutates": true,  "destructive": false, "binds": true },
+  "skip":              { "mutates": true,  "destructive": true,  "binds": true },
   "unskip":            { "mutates": true,  "destructive": false, "binds": true },
   "adopt":             { "mutates": true,  "destructive": false, "binds": true },
   "sync":              { "mutates": true,  "destructive": false, "binds": true },
@@ -3903,7 +3903,7 @@ var KEYMAP = [
   { "keys": ["x"], "context": "backups", "action": "remove", "label": "delete this backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
   { "keys": ["Enter", "Space"], "context": "history", "action": "enter", "label": "open the change's page: what it did on each client, and its undo", "hint": "Enter" },
   { "keys": ["/"], "context": "history", "action": "filter", "label": "filter the changes by addon, client, who or reason", "hint": "/", "nothing": "Nothing to filter here" },
-  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "run the page's main action: a problem's fix, on an addon page the client line's repair, update or install (on a release note, show all of it or fold it), on a change's page the cursored addon's page, or on a backup's page the cursored addon's settings back", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "run the page's main action: a problem's fix, on an addon page the client line's repair, update or install (on a release note, show all of it or fold it), on a change's page the cursored addon's page, on an error page the first way back from the change before it (Go back), or on a backup's page the cursored addon's settings back", "hint": "Enter" },
   { "keys": ["u"], "context": "page", "action": "update", "label": "update the addon, when one is waiting (on an addon page, on the client line)", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["i"], "context": "page", "action": "install", "label": "an addon page: install it on the client line's client", "hint": "i", "nothing": "Nothing to install here" },
   { "keys": ["x"], "context": "page", "action": "remove", "label": "remove the addon from the client line's client, or delete a backup's page's backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
@@ -5838,6 +5838,8 @@ function errorSections(errors, statusTargets, filter, nowMs) {
       if (a.lastSeen) meta.push(copy("errors.last_seen", { "age": sinceText(a.lastSeen, nowMs) || dateText(a.lastSeen) }))
       var first = a.errors.length ? a.errors[0] : null
       var chips = a.updateAvailable ? [{ "text": copy("errors.update_chip"), "urgent": false }] : []
+      // The tag of its strongest current link (RG-61): "after update", "after a change".
+      if (a.afterChange) chips.unshift({ "text": copy(a.afterChange.tag), "urgent": false })
       var actions = []
       if (a.updateAvailable) actions.push({ "name": "update", "glyph": String.fromCodePoint(0xF0CE1), "tooltip": withKey(copy("errors.action.update", { "addon": a.addon }), "update", "errors") })
       actions.push({ "name": "copy", "glyph": String.fromCodePoint(0xF018F), "tooltip": withKey(copy("errors.action.copy"), "copy", "errors") })
@@ -5887,10 +5889,60 @@ function errorPage(row, nowMs) {
       if (e.lastSeen) meta.push(copy("errors.last_seen", { "age": sinceText(e.lastSeen, nowMs) || dateText(e.lastSeen) }))
       return {
         "fingerprint": e.fingerprint, "message": errorMessageText(e), "location": str(e.location), "meta": meta.join(" · "),
-        "stack": e.stack.map(function(f) { return { "text": f, "own": ownFrame(f, entry.addon) } })
+        "stack": e.stack.map(function(f) { return { "text": f, "own": ownFrame(f, entry.addon) } }),
+        // When it began, and the change before it (RG-61).
+        "firstSeen": e["new"] ? firstSeenText(e.firstSeen) : "",
+        "change": changeSection(e.afterChange, nowMs)
       }
     })
   }
+}
+
+// When a new error began, in words (RG-61): its basis's or its reason's sentence, with
+// the date it names. Empty when the binary says nothing.
+function firstSeenText(f) {
+  if (!f || !f.words) return ""
+  var date = f.basis === "observed" ? (f.onsetByAt || f.at) : f.at
+  return copy(f.words, { "date": date ? dateText(date) : copy("sheet.date.unknown") })
+}
+
+// The section "What changed before this" of one error (design 5.1, 7.7): one line per
+// addon the change moved, the confidence word (always printed: a grade is never a colour
+// alone), each weakening fact and unknown, and one button per way back the binary gave.
+// A `low` link, or one that no longer stands, is words only: the binary gives it no
+// command, and the page adds none. Null with no link.
+function changeSection(link, nowMs) {
+  if (!link) return null
+  var facts = []
+  if (link.sameSession === true && !link.exact) facts.push(copy("errors.change.same_session"))
+  else if (typeof link.cleanSessions === "number" && link.cleanSessions > 0) facts.push(copy("errors.change.clean", { "n": link.cleanSessions }))
+  if (link.clientUpdate) facts.push(copy("errors.change.game_updated", { "from": link.clientUpdate.from, "to": link.clientUpdate.to }))
+  facts = facts.concat(link.unknownWords.map(function(id) { return copy(id) }))
+  var strong = link.current && (link.confidence === "high" || link.confidence === "medium")
+  return {
+    "heading": copy("errors.change.heading"),
+    "when": copy("errors.change.when", { "kind": link.kind, "when": link.at ? (sinceText(link.at, nowMs) || dateText(link.at)) : "" }),
+    "lines": link.changed.map(function(c) {
+      return copy("errors.change.moved", { "addon": c.addon, "from": c.fromVersion || "?", "to": c.toVersion || "?" })
+    }),
+    "word": link.confidenceWords ? copy(link.confidenceWords) : "",
+    "facts": facts,
+    "state": link.stateWords ? copy(link.stateWords, { "date": link.judgedAt ? dateText(link.judgedAt) : "" }) : "",
+    "buttons": strong ? link.commands.filter(function(c) { return !!c.run && c.run.runnable }).map(function(c) {
+      return { "action": c.action, "label": copy("errors.change.action." + c.action), "run": c.run }
+    }) : []
+  }
+}
+
+// The page's main action (Enter, RG-61): the first way back of its first error that has
+// one, the binary's best first. Null when none.
+function errorPageAction(page) {
+  var errors = page && Array.isArray(page.errors) ? page.errors : []
+  for (var i = 0; i < errors.length; i++) {
+    var change = errors[i].change
+    if (change && change.buttons.length) return change.buttons[0]
+  }
+  return null
 }
 
 // `y`'s report (design doc §6.6): the addon, its version, the client and its version,
@@ -6638,6 +6690,9 @@ function errorFacts(targets) {
   var names = []
   var counts = []
   var where = []
+  // The addons whose new errors came after their own change, by the status brief's
+  // `high` link (RG-61): their names only.
+  var after = []
   var list = Array.isArray(targets) ? targets : []
   for (var i = 0; i < list.length; i++) {
     var errors = list[i].errors
@@ -6647,9 +6702,11 @@ function errorFacts(targets) {
       if (errors.top[j]["new"] <= 0) continue
       names.push(errors.top[j].addon)
       counts.push(errors.top[j]["new"])
+      var link = errors.top[j].afterChange
+      if (link && link.confidence === "high" && after.indexOf(errors.top[j].addon) === -1) after.push(errors.top[j].addon)
     }
   }
-  return { "names": names, "counts": counts, "targets": where }
+  return { "names": names, "counts": counts, "targets": where, "after": after }
 }
 
 // What an update toast may say: how many updates wait, and on which clients, by name.
@@ -6709,8 +6766,12 @@ function errorToastArgv(facts, pluginId) {
   var names = Array.isArray(facts && facts.names) ? facts.names : []
   var counts = Array.isArray(facts && facts.counts) ? facts.counts : []
   var where = Array.isArray(facts && facts.targets) ? facts.targets : []
+  // The addons a `high` link ties to their own update (RG-61), by name: "after DBM's update".
+  var after = Array.isArray(facts && facts.after) ? facts.after.map(String) : []
   var title = where.length ? copy("toast.errors.title.on", { "clients": joinNames(where.map(String)) }) : copy("toast.errors.title")
-  return toastArgv(title, errorParts(names, counts).join(" · "), "normal", pluginId, "errors")
+  var body = errorParts(names, counts).join(" · ")
+  if (after.length) body += " · " + copy("toast.errors.after", { "n": after.length, "addons": joinNames(after) })
+  return toastArgv(title, body, "normal", pluginId, "errors")
 }
 
 // "Addon updates" · "3 updates on Retail and Classic Era"; a click opens Updates.
@@ -7111,6 +7172,14 @@ var COPY = {
   "sheet.item.remove": { "one": "{version} (1 folder)", "other": "{version} ({n} folders)" },
   "sheet.item.edit": "changes its {fields}",
   "sheet.item.skip": "{versions} (skipped)",
+  // A rollback (`skip --back`, RG-61).
+  "sheet.item.rollback": "goes back to {to}: the files that were installed before",
+  "sheet.item.rollback.skipped": "; {versions} is skipped",
+  "sheet.title.rollback.one": "Take {addon} back on {client}?",
+  "sheet.title.rollback.client": "Take {n} addons back on {client}?",
+  "sheet.title.rollback.clients": "Take {n} addons back on {m} clients?",
+  "sheet.confirm.rollback.one": "Go back",
+  "sheet.confirm.rollback.many": "Go back",
   "sheet.item.unskip": "{versions} (offered again)",
 
   "sheet.title.undo": "Undo the {change} on {clients} from {date}?",
@@ -7700,6 +7769,16 @@ var COPY = {
   "errors.unknown.transition": "The versions that change moved are no longer known",
   "errors.link.expired": "Recorded {date}, more than 30 days ago",
   "errors.link.database_replaced": "Recorded {date}; this file has been replaced since",
+  // The error page's section (RG-61, design 5.1).
+  "errors.change.heading": "What changed before this",
+  "errors.change.when": "the {kind} {when}",
+  "errors.change.moved": "{addon} {from} → {to}",
+  "errors.change.same_session": "It may have begun before the change",
+  "errors.change.clean": { "one": "1 session ran without it first", "other": "{n} sessions ran without it first" },
+  "errors.change.game_updated": "The game also updated since ({from} → {to})",
+  "errors.change.action.rollback": "Go back",
+  "errors.change.action.undo": "Undo that change",
+  "errors.change.action.update": "Update",
   "errors.capture.unknown": "Lua errors aren't recorded on {client}, and no BugGrabber build for it is known.",
   "errors.capture.install": "Install BugGrabber",
   "errors.none": "No Lua errors",
@@ -8146,6 +8225,8 @@ var COPY = {
   // Notifications (1n2p.33): names and counts only, never an error's text (M3-D21).
   "toast.errors.title": "Lua errors in your last session",
   "toast.errors.title.on": "Lua errors in your last session on {clients}",
+  // A `high` link's addons, by name (RG-61).
+  "toast.errors.after": { "one": "after {addons}'s update", "other": "after the updates of {addons}" },
   "toast.updates.title": "Addon updates",
   "toast.updates": { "one": "1 update", "other": "{n} updates" },
   "toast.updates.on": { "one": "1 update on {clients}", "other": "{n} updates on {clients}" },
@@ -8286,6 +8367,27 @@ function selectionItem(item, targets, folders) {
   }
   return sheetItem({ "op": op, "addon": it.addon, "client": sheetClient(targets, str(it.target_id), str(it.target_key)),
     "clientKey": str(it.target_key) || str(it.target_id), "from": from, "to": to, "name": it.addon, "detail": detail })
+}
+
+// A rollback's sheet item (RG-61): "Foo goes back to v1: the files that were installed
+// before; v2 is skipped", the skipped versions from its client's `skips_marked`.
+function rollbackItem(item, data) {
+  var targets = data && Array.isArray(data.targets) ? data.targets : []
+  var left = []
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i] && typeof targets[i] === "object" ? targets[i] : {}
+    var target = t.target && typeof t.target === "object" ? t.target : {}
+    if (str(target.key) !== item.clientKey && str(target.id) !== item.clientKey) continue
+    var notes = Array.isArray(t.skips_marked) ? t.skips_marked : []
+    for (var j = 0; j < notes.length; j++) {
+      var note = notes[j] && typeof notes[j] === "object" ? notes[j] : {}
+      if (asciiLower(str(note.addon)) === asciiLower(item.addon) && str(note.version)) left.push(str(note.version))
+    }
+  }
+  var detail = copy("sheet.item.rollback", { "to": item.to || "?" })
+  if (left.length) detail += copy("sheet.item.rollback.skipped", { "versions": joinNames(left) })
+  return sheetItem({ "op": item.op, "addon": item.addon, "client": item.client, "clientKey": item.clientKey, "from": item.from,
+    "to": item.to, "name": item.name, "detail": detail })
 }
 
 // A skip's or an unskip's sheet item (RG-36): the versions of the marks its client's
@@ -8534,9 +8636,14 @@ function selectionSheet(path, env, approval, targets) {
   var kinds = { "update": "update", "install": "install", "remove": "remove", "adopt": "adopt", "pin": "pin", "unpin": "unpin",
     "skip": "skip", "unskip": "unskip" }
   var kind = reinstall ? "reinstall" : (kinds.hasOwnProperty(path) ? kinds[path] : "change")
+  // A rollback (`skip --back`, RG-61): its client's change is an update, back to the
+  // files installed before, and the release it leaves is skipped.
+  var dataTargets = Array.isArray(data.targets) ? data.targets : []
+  if (kind === "skip" && dataTargets.some(function(t) { return !!t && t.kind === "update" })) kind = "rollback"
   // A skip or an unskip moves marks, never the installed release (RG-36): each item names
   // the release it marks or offers again, from the run's own notes.
   if (kind === "skip" || kind === "unskip") items = items.map(function(item) { return skipItem(item, data, kind) })
+  if (kind === "rollback") items = items.map(function(item) { return rollbackItem(item, data) })
   var effects = reasonEffects(approval, items, targets, data)
   // A take-over (1n2p.32): the player's main worry first. Nothing moves; each addon says
   // how sure omaddons is of it, and the folders it leaves say why (omad-kbtn).
@@ -9571,6 +9678,7 @@ if (typeof module !== "undefined") {
     errorSections: errorSections,
     errorRows: errorRows,
     errorPage: errorPage,
+    errorPageAction: errorPageAction,
     errorReport: errorReport,
     errorSourceText: errorSourceText,
     errorMessageText: errorMessageText,

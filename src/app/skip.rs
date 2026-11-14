@@ -572,8 +572,11 @@ fn run(ctx: &Context, mode: Mode<'_>) -> Result<SkipOutcome> {
     let mut data = TargetsData::assemble(&[], &[], &[], ctx.dry_run, run, &[]);
     let mut locks = Vec::new();
     let mut preview = None;
+    // `skip` is confirmed like a removal (design 7.7, its rollback), as its stored plan
+    // says; `unskip` is not.
     let flags = ApprovalFlags {
         while_running: ctx.while_running,
+        destructive: matches!(mode, Mode::Skip(_)),
         ..ApprovalFlags::default()
     };
     let token;

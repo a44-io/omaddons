@@ -790,7 +790,9 @@ function checkNotifications(files) {
     const fn = fns[name]
     if (!fn) continue
     const read = new Set([...fn.body.matchAll(/facts\.(\w+)/g)].map((m) => m[1]))
-    for (const field of read) if (!["names", "counts", "targets"].includes(field)) out.push(violation("Model.js", fn.line, name + " reads facts." + field))
+    // `after` is names too: the addons a `high` link ties to their update (RG-61), taken
+    // from the same status top list as `names`.
+    for (const field of read) if (!["names", "counts", "targets", "after"].includes(field)) out.push(violation("Model.js", fn.line, name + " reads facts." + field))
   }
   for (const c of calls(files, /\bModel\.(errorToastArgv|digestToastArgv|updateToastArgv|resultToastArgv|autoUpdateToastArgv|autoUpdateStoppedToastArgv)\(/, qmlNames(files))) {
     for (const field of ERROR_FIELDS) {

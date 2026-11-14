@@ -804,7 +804,9 @@ impl StoredIntent {
         ("update", false),
         ("pin", false),
         ("unpin", false),
-        ("skip", false),
+        // Its rollback (`skip --back`) moves an addon back: previewed and confirmed like
+        // an undo (design 7.7).
+        ("skip", true),
         ("unskip", false),
         ("adopt", false),
         ("sync", false),
@@ -834,10 +836,16 @@ impl StoredIntent {
         }
     }
 
+    /// Whether its plan is confirmed like a removal. `skip` is, as a path, for its rollback
+    /// (`skip --back`, design 7.7); a plain mark is confirmed the same way.
     pub fn destructive(&self) -> bool {
         matches!(
             self,
-            Self::Remove(_) | Self::Undo(_) | Self::BackupRestore(_) | Self::BackupPrune(_)
+            Self::Remove(_)
+                | Self::Undo(_)
+                | Self::BackupRestore(_)
+                | Self::BackupPrune(_)
+                | Self::Skip(_)
         )
     }
 
@@ -3656,7 +3664,10 @@ mod tests {
             );
             assert_eq!(
                 r.intent.destructive(),
-                matches!(path, "remove" | "undo" | "backup restore" | "backup prune"),
+                matches!(
+                    path,
+                    "remove" | "undo" | "backup restore" | "backup prune" | "skip"
+                ),
                 "{}",
                 r.name
             );

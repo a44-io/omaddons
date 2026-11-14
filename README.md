@@ -2126,7 +2126,7 @@ The keys, as the widget's own key map holds them (`omarchy/Model.js`, `KEYMAP`, 
 | `x` | Backups | delete this backup, after a confirmation |
 | `Enter` `Space` | History | open the change's page: what it did on each client, and its undo |
 | `/` | History | filter the changes by addon, client, who or reason |
-| `Enter` `Space` | A page | run the page's main action: a problem's fix, on an addon page the client line's repair, update or install (on a release note, show all of it or fold it), on a change's page the cursored addon's page, or on a backup's page the cursored addon's settings back |
+| `Enter` `Space` | A page | run the page's main action: a problem's fix, on an addon page the client line's repair, update or install (on a release note, show all of it or fold it), on a change's page the cursored addon's page, on an error page the first way back from the change before it (Go back), or on a backup's page the cursored addon's settings back |
 | `u` | A page | update the addon, when one is waiting (on an addon page, on the client line) |
 | `i` | A page | an addon page: install it on the client line's client |
 | `x` | A page | remove the addon from the client line's client, or delete a backup's page's backup, after a confirmation |
