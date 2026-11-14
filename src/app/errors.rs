@@ -17,7 +17,7 @@ use jiff::tz::TimeZone;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::errors_ledger::{self, ClientLedger, FullClient};
+use super::errors_ledger::{self, ClientLedger, FullClient, Installed};
 use super::history::{local_time, parse_since};
 use super::list::Latest;
 use super::precondition::{DismissPart, check, of_dismiss, preview_argv};
@@ -41,11 +41,11 @@ use crate::errors::observe::{
 use crate::errors::sanitize::{
     MessageKind, family_key, raw_details, strict_frames, strict_message_on,
 };
+use crate::errors::suspect::{Evidence, JudgmentGap, Relation, Unknown, grade};
 use crate::fsx::{FileStamp, GlobalLock, WriteSession, Writer, ensure_dir_all};
 use crate::inventory::{Depth, inventory_shared};
 use crate::limits::{ERRORS_MAX_TOTAL_BYTES, ERRORS_SHOWN_PER_ADDON};
-use crate::model::TxKind;
-use crate::model::{Target, TargetKey};
+use crate::model::{Actor, ReleaseKey, RunId, Target, TargetKey, TransitionChange, TxId, TxKind};
 use crate::output::{Outcome, Style};
 use crate::privacy::WtfPathRedactor;
 use crate::resolve::catalog::Catalog;
@@ -539,6 +539,9 @@ pub struct AddonInfo {
     pub entries: usize,
     pub last_seen: Option<TimeEvidence>,
     pub errors: Vec<ErrorInfo>,
+    /// The strongest `current` `high` or `medium` link among this addon's new errors
+    /// (the higher grade, then the newer change); `null` when none has one.
+    pub after_change: Option<AfterChangeBrief>,
 }
 
 /// One error (entries of one database with one fingerprint).
@@ -568,6 +571,13 @@ pub struct ErrorInfo {
     /// What omaddons knows about when this error began on this client, from the errors
     /// ledger (regression guard, design 7.3.1).
     pub first_seen: FirstSeenInfo,
+    /// The change that most plausibly preceded this error's first appearance; `null`
+    /// for an error omaddons did not watch appear, when no change qualifies, or while
+    /// the judgment is still owed (`judgment`).
+    pub after_change: Option<AfterChange>,
+    /// Where the judgment of an `observed` error stands; `null` unless
+    /// `first_seen.basis` is `observed`.
+    pub judgment: Option<JudgmentInfo>,
 }
 
 /// What omaddons knows about when an error began on its client (design 7.3.1). Only an
@@ -650,6 +660,160 @@ fn first_seen_line(e: &ErrorInfo) -> Option<String> {
     })
 }
 
+/// The lines under a new error (design 7.3.1): when it began, then the change before it
+/// with what weakens the link, or where its judgment stands. Nothing under an error that
+/// is not new.
+fn error_lines(e: &ErrorInfo) -> Vec<String> {
+    let Some(began) = first_seen_line(e) else {
+        return Vec::new();
+    };
+    if let Some(link) = &e.after_change {
+        return link_lines(e, link, began);
+    }
+    let (state, gap) = match e.judgment {
+        Some(j) => (j.state, j.gap),
+        None => return vec![began],
+    };
+    match (state, gap) {
+        (JudgmentStanding::Deferred, _) => vec![
+            began,
+            "omaddons could not read its history just now; it looks for the change before this at the next read".to_owned(),
+        ],
+        (JudgmentStanding::Unsupported, Some(JudgmentGap::ProviderChanged)) => vec![
+            "BugGrabber itself changed in between, so omaddons cannot tell whether this is new"
+                .to_owned(),
+        ],
+        (JudgmentStanding::Unsupported, _) => vec![
+            began,
+            "this file was reset or put back before omaddons could look for the change before this".to_owned(),
+        ],
+        (JudgmentStanding::Pending | JudgmentStanding::Complete, _) => vec![began],
+    }
+}
+
+/// The lines of an error's link (design 5.1, 5.6, 5.7, 5.9 and 7.3.1).
+fn link_lines(e: &ErrorInfo, link: &AfterChange, began: String) -> Vec<String> {
+    let kind = super::history::kind_name(link.kind);
+    let change = format!("{kind} {} ({})", link.tx, local_time(link.at));
+    let evidence = &link.evidence;
+    let mut lines = Vec::new();
+    if evidence.same_session == Some(true) {
+        let last = e
+            .last_seen
+            .and_then(|seen| seen.at)
+            .map(|at| format!("last seen {}, ", local_time(at)))
+            .unwrap_or_default();
+        lines.push(format!(
+            "{last}in the session that was running during {change}"
+        ));
+    } else {
+        let after = match evidence.clean_sessions {
+            Some(0) => "in the first session after".to_owned(),
+            Some(1) => "1 session after".to_owned(),
+            Some(n) => format!("{n} sessions after"),
+            None => "after".to_owned(),
+        };
+        lines.push(format!("{began}, {after} {change}"));
+    }
+    lines.push(format!(
+        "that {kind} {} · {}",
+        what_changed(link),
+        confidence_word(link.confidence)
+    ));
+    if let Some(update) = &evidence.client_update {
+        lines.push(format!(
+            "the game also updated since this file was last seen without the error ({} → {})",
+            update.from_version, update.to_version
+        ));
+    }
+    if evidence.same_session == Some(true) && !evidence.exact {
+        lines.push(format!("it may have begun before the {kind}"));
+    }
+    lines.extend(evidence.unknowns.iter().map(|u| unknown_line(*u, &kind)));
+    match link.state {
+        LinkState::Current => {}
+        LinkState::DatabaseReplaced => lines.push(format!(
+            "recorded {}; this file has been replaced since",
+            local_time(link.judged_at)
+        )),
+        LinkState::Expired => lines.push(format!(
+            "recorded {}, more than 30 days ago",
+            local_time(link.judged_at)
+        )),
+    }
+    lines
+}
+
+/// What a link's change did, and how it connects to the error when not by its own addon.
+fn what_changed(link: &AfterChange) -> String {
+    let version = |v: &Option<String>| v.clone().unwrap_or_else(|| "?".to_owned());
+    let moves: Vec<String> = link
+        .changed
+        .iter()
+        .map(|c| {
+            let (from, to) = (version(&c.from_version), version(&c.to_version));
+            match c.change {
+                TransitionChange::Installed => format!("installed {} {to}", c.addon),
+                TransitionChange::Updated if from == to && c.from_release != c.to_release => {
+                    format!("replaced {} {from} with another build of it", c.addon)
+                }
+                TransitionChange::Updated => format!("replaced {} {from} → {to}", c.addon),
+                TransitionChange::Removed => format!("removed {} {from}", c.addon),
+                TransitionChange::Reverted => format!("put back {} {from} → {to}", c.addon),
+            }
+        })
+        .collect();
+    let moved = if moves.is_empty() {
+        "changed it".to_owned()
+    } else {
+        moves.join(", ")
+    };
+    let how = match link.relation {
+        Relation::Own => "",
+        Relation::InStack => " (its code is in this error's stack)",
+        Relation::Dependency => " (one of them requires the other)",
+        Relation::None => " (only the order in time connects them)",
+    };
+    format!("{moved}{how}")
+}
+
+/// A grade, in the words of the design's section 5.
+fn confidence_word(c: Confidence) -> &'static str {
+    match c {
+        Confidence::High => "likely",
+        Confidence::Medium => "possible",
+        Confidence::Low => "weak",
+    }
+}
+
+/// What one thing the judgment could not establish means for the reader.
+fn unknown_line(unknown: Unknown, kind: &str) -> String {
+    match unknown {
+        Unknown::Mark => format!(
+            "omaddons did not look at this file at that {kind}, so it cannot count the sessions between"
+        ),
+        Unknown::Sessions => {
+            "the session numbers do not fit together, so omaddons cannot count the sessions between"
+                .to_owned()
+        }
+        Unknown::Running => {
+            format!("omaddons could not tell whether the game was running during that {kind}")
+        }
+        Unknown::Accounts => {
+            format!("omaddons could not tell which account was playing during that {kind}")
+        }
+        Unknown::Time => "this error's own time is not one omaddons can trust".to_owned(),
+        Unknown::ClientVersion => {
+            "the game's version at one of the two reads is unknown".to_owned()
+        }
+        Unknown::Dependencies => {
+            "a folder on a dependency changed again since, so omaddons did not count that link"
+                .to_owned()
+        }
+        Unknown::Transition => format!("the versions that {kind} moved are no longer known"),
+    }
+}
+
 /// How an error's beginning is known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -688,6 +852,123 @@ pub enum FirstSeenReason {
     LedgerUnavailable,
     /// `unknown`: the errors ledger is full for this client.
     LedgerFull,
+}
+
+/// Where the judgment of an `observed` error stands (design 7.3.1), so that a `null`
+/// `after_change` can be told apart: nothing qualified, not judged yet, or it cannot be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct JudgmentInfo {
+    pub state: JudgmentStanding,
+    /// Why it is `deferred` or `unsupported`; `null` otherwise.
+    pub gap: Option<JudgmentGap>,
+}
+
+/// The stored judgment's state, or `pending` while none is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgmentStanding {
+    /// No judgment is stored yet: the next `errors` run makes it.
+    Pending,
+    /// Judged: `after_change` names the change, or is `null` when none qualified. Kept
+    /// as made.
+    Complete,
+    /// An input was missing (`gap`); the next `errors` run tries again.
+    Deferred,
+    /// It can never be judged (`gap`).
+    Unsupported,
+}
+
+/// The change that most plausibly preceded an error's first appearance (design 7.3.1):
+/// the stored verdict, plus what is true now. Evidence that the change came first, never
+/// proof that it caused the error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct AfterChange {
+    pub tx: TxId,
+    pub run: Option<RunId>,
+    pub kind: TxKind,
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub at: Timestamp,
+    pub actor: Actor,
+    /// How the change connects to the error: `own` (it replaced the erroring addon),
+    /// `in_stack` (a folder in the error's stack), `dependency` (a folder the erroring
+    /// one requires, or one requiring it), `none` (only the order in time).
+    pub relation: Relation,
+    /// How strongly the evidence links the two: `high`, `medium` or `low`.
+    pub confidence: Confidence,
+    /// Whether this link still stands for attention and action.
+    pub state: LinkState,
+    /// The version of the judging rules that made it.
+    pub algorithm: u32,
+    /// When it was judged: the evidence below is as of then.
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub judged_at: Timestamp,
+    /// What the change did to the addons that make the relation (for `none`, to every
+    /// addon it changed, at most 5), as its history line recorded it.
+    pub changed: Vec<ChangedNow>,
+    pub evidence: Evidence,
+    /// The ways back from this change, best first; always empty for now.
+    pub commands: Vec<CommandHint>,
+}
+
+/// Whether a link still stands for attention and action (design 7.3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkState {
+    /// Eligible for the addon's brief.
+    Current,
+    /// The error has been known for longer than a link stays news (30 days after
+    /// `first_seen.onset_by_at`): shown as history only.
+    Expired,
+    /// The BugGrabber file was reset or put back since: shown as history only.
+    DatabaseReplaced,
+}
+
+/// What a change did to one addon, and whether that is still what is installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ChangedNow {
+    pub addon: String,
+    pub change: TransitionChange,
+    pub from_version: Option<String>,
+    pub to_version: Option<String>,
+    /// The two releases by their key, so that a re-tag, which has one version label on
+    /// both sides, still reads as two releases; `null` where the history line recorded
+    /// none.
+    pub from_release: Option<ReleaseKey>,
+    pub to_release: Option<ReleaseKey>,
+    /// The addon is still at the release that change left it at: the same release key,
+    /// revision included, and the same archive where both sides know its hash.
+    pub still_installed: bool,
+}
+
+/// An addon's strongest current link, for its row (design 7.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct AfterChangeBrief {
+    pub tx: TxId,
+    pub kind: TxKind,
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub at: Timestamp,
+    /// The first addon the change moved, else the addon the error is filed under.
+    pub addon: String,
+    pub relation: Relation,
+    pub confidence: Confidence,
+}
+
+impl AfterChange {
+    /// The brief of a `current` `high` or `medium` link; `None` for any other.
+    fn brief(&self, filed_under: &str) -> Option<AfterChangeBrief> {
+        let strong = matches!(self.confidence, Confidence::High | Confidence::Medium);
+        (self.state == LinkState::Current && strong).then(|| AfterChangeBrief {
+            tx: self.tx,
+            kind: self.kind,
+            at: self.at,
+            addon: self
+                .changed
+                .first()
+                .map_or_else(|| filed_under.to_owned(), |c| c.addon.clone()),
+            relation: self.relation,
+            confidence: self.confidence,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -881,7 +1162,7 @@ fn render_target(w: &mut dyn Write, t: &ErrorsTarget, label: &str) -> std::io::R
                 Some(at) => writeln!(w, "    {at}: {message}")?,
                 None => writeln!(w, "    {message}")?,
             }
-            if let Some(line) = first_seen_line(e) {
+            for line in error_lines(e) {
                 writeln!(w, "      {line}")?;
             }
             for frame in &e.stack {
@@ -993,6 +1274,7 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
             target: s.target,
             filed_as: &s.filed_as,
             observation: &s.observation,
+            installed: &s.installed,
         })
         .collect();
     let ledger = errors_ledger::full_read(&world.paths, &clients, now, "errors");
@@ -1020,7 +1302,7 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
         let latest =
             |addon: &str| latest_of(&remembered, t, s.record.as_ref(), &world.table, addon);
         let names = WtfPathRedactor::for_client(&s.client);
-        let known = ledger.client(&s.filed_as);
+        let known = ledger.client(&s.filed_as, now, s.record.as_ref());
         targets.push(view.target(t, &s.filed_as, &s.observation, &latest, &names, known));
         labels.push(format!("{} ({}, {})", t.id, t.version, t.family));
         if running_scan
@@ -1076,6 +1358,8 @@ struct Seen<'w> {
     client: ClientPaths,
     record: Option<TargetRecord>,
     observation: Observation,
+    /// Its folders and their dependencies, for the judge (design 7.1.7, phase 1).
+    installed: Installed,
 }
 
 /// Every selected client's errors, observed whole (before any view filter), each one's
@@ -1131,6 +1415,7 @@ fn observe<'w>(
             client,
             record,
             observation,
+            installed: Installed::of(&inventory),
         });
     }
     Ok(seen)
@@ -1424,6 +1709,22 @@ impl View<'_> {
             Some((version, latest)) => (Some(version), Some(latest)),
             None => (None, None),
         };
+        // The change before a local error, only through its exact fingerprint (7.1.2).
+        let link_of = |e: &Observed| match e.entry.origin {
+            Origin::Local => known.after_change(
+                &db_key(&observation.databases[e.database].path),
+                &e.fingerprint,
+            ),
+            Origin::Received => (None, None),
+        };
+        // Among all of the addon's new errors, shown or not: the higher grade, then the
+        // newer change.
+        let brief = g
+            .errors
+            .iter()
+            .filter(|e| e.new)
+            .filter_map(|e| link_of(e.shown).0?.brief(&g.name))
+            .max_by_key(|b| (grade(b.confidence), b.at));
         AddonInfo {
             addon: g.name.clone(),
             managed: g.managed,
@@ -1456,6 +1757,7 @@ impl View<'_> {
                         db.shape == DbShape::Legacy,
                         &tainted_here,
                     );
+                    let link = link_of(e.shown);
                     // r152 keeps its frames in the message, after the first line; a
                     // warning embeds them after `Stack:`, as attribution reads them.
                     let own = entry.stack.as_deref().filter(|s| !s.trim().is_empty());
@@ -1509,9 +1811,12 @@ impl View<'_> {
                                 errors_ledger::unknown(FirstSeenReason::AbsenceUnproven)
                             }
                         },
+                        after_change: link.0,
+                        judgment: link.1,
                     }
                 })
                 .collect(),
+            after_change: brief,
         }
     }
 }

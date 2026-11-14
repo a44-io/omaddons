@@ -32,10 +32,12 @@ expression: s.stable(&checked.envelope)
         "addons": [
           {
             "addon": "Foo",
+            "after_change": null,
             "count": 4,
             "entries": 1,
             "errors": [
               {
+                "after_change": null,
                 "attribution": {
                   "confidence": "high",
                   "method": "first_addon_frame"
@@ -52,6 +54,7 @@ expression: s.stable(&checked.envelope)
                   "reason": "first_read",
                   "related_fingerprint": null
                 },
+                "judgment": null,
                 "last_seen": {
                   "at": "<time>",
                   "meaning": "last",

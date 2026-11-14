@@ -81,6 +81,7 @@ mod engine_undo;
 mod engine_witness;
 mod error_details;
 mod errors;
+mod errors_after_change;
 mod errors_decode;
 mod errors_dismiss;
 mod errors_first_seen;

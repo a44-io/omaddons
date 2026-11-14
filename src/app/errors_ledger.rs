@@ -16,34 +16,51 @@
 //! Neither half can fail or delay a change past `LEDGER_LOCK_TIMEOUT`: what goes wrong
 //! is one `-vv` line, and that change has no mark.
 //!
-//! The full read is `errors`' (7.1.7, phases 1 and 2): every database it read, whole,
-//! sighted with [`SightMode::Full`] in one session ([`full_read`]), and each error's
-//! `first_seen` looked up in the ledger that session stored ([`ClientLedger`]).
+//! The full read is `errors`' (7.1.7): every database it read, whole, sighted with
+//! [`SightMode::Full`] in one session; then, outside any lock, each appearance still owed
+//! a judgment judged from history and the client's folders (7.2.1), and the verdicts
+//! attached in a second session ([`full_read`]). Each error's `first_seen`, link and
+//! judgment are looked up in the ledger that stored ([`ClientLedger`]), by its exact
+//! fingerprint only.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use jiff::Timestamp;
 use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 
-use crate::app::errors::{FirstSeenBasis, FirstSeenInfo, FirstSeenReason};
+use crate::app::errors::{
+    AfterChange, ChangedNow, FirstSeenBasis, FirstSeenInfo, FirstSeenReason, JudgmentInfo,
+    JudgmentStanding, LinkState,
+};
+use crate::app::history_items::{Reader, transitions_of};
 use crate::errors::ack::db_key;
-use crate::errors::buggrabber::{Origin, evidence};
+use crate::errors::attribute::{self, FolderSet};
+use crate::errors::buggrabber::{BugEntry, DbShape, Origin, evidence};
+use crate::errors::frames;
 use crate::errors::ledger::{
-    self, BaselineReason, ChangeMark, ClientNow, DbLedger, DbRead, DbSighting, EntrySighting,
-    ErrorsLedger, FamilyFirst, LedgerUnavailable, Restored, SightMode, TargetLedger,
+    self, BaselineReason, ChangeMark, ClientNow, Cluster, DbLedger, DbRead, DbSighting,
+    EntrySighting, ErrorsLedger, FamilyFirst, LedgerUnavailable, Restored, SightMode, TargetLedger,
 };
 use crate::errors::locate::{self, Coverage as WalkCoverage};
 use crate::errors::memo::{self, TargetMemo};
-use crate::errors::observe::{Coverage, Observation, read_stable};
+use crate::errors::observe::{Coverage, Observation, Observed, read_stable};
 use crate::errors::sanitize::{family_key, identities};
-use crate::errors::suspect::onset;
+use crate::errors::suspect::{
+    Appeared, ChangeFact, ChangeOp, JudgeContext, JudgmentGap, JudgmentState, Suspect, Verdict,
+    judge, onset,
+};
 use crate::fsx::{FileStamp, ScopeTable};
-use crate::limits::LEDGER_PRECHANGE_MAX_BYTES;
-use crate::model::{RunId, Target, TargetKey, TxKind};
+use crate::inventory::Inventory;
+use crate::limits::{
+    LEDGER_PRECHANGE_MAX_BYTES, SUSPECT_ALGORITHM, SUSPECT_FRESH_MAX_AGE, SUSPECT_MAX_AGE,
+};
+use crate::model::{InstalledRelease, ReleaseTransition, RunId, Target, TargetKey, TxId, TxKind};
 use crate::output::trace;
-use crate::state::history::{self, FolderOp, HistoryEntry, HistoryFilter, HistoryRead};
+use crate::state::history::{self, FolderOp, HistoryEntry, HistoryFilter, HistoryRead, TxResult};
 use crate::state::history_tail;
 use crate::state::paths::{ClientPaths, Paths};
+use crate::state::records::TargetRecord;
 
 /// The restores committed on `target` at or after `since`: each history line whose ops
 /// put a whole `WTF/` back (`whole`) or one addon's SavedVariables (`providers`, the
@@ -583,6 +600,44 @@ pub struct FullClient<'a> {
     pub filed_as: &'a str,
     /// Everything read on it, before any view filter.
     pub observation: &'a Observation,
+    /// Its folders as `errors` found them, for the judge.
+    pub installed: &'a Installed,
+}
+
+/// What the judge reads of a client's `AddOns/` (design 7.2.1), kept from the inventory
+/// `errors` builds at `Depth::Full`: the folders, to place a stack's frames as
+/// attribution does, and each folder's declared dependencies, required and optional.
+/// Current evidence: what is installed when the error is judged.
+#[derive(Debug, Clone, Default)]
+pub struct Installed {
+    pub folders: FolderSet,
+    /// Each folder's dependencies, by its ASCII-folded name.
+    pub requires: BTreeMap<String, Vec<String>>,
+}
+
+impl Installed {
+    pub fn of(inventory: &Inventory) -> Self {
+        Self {
+            folders: FolderSet::new(inventory.folders.iter().map(|f| f.name.as_str())),
+            requires: inventory
+                .folders
+                .iter()
+                .filter_map(|f| {
+                    let toc = f.toc.as_ref()?;
+                    let deps = toc.dependencies.iter().chain(&toc.optional_deps);
+                    Some((f.key.clone(), deps.cloned().collect()))
+                })
+                .collect(),
+        }
+    }
+
+    /// Whether folder `a` declares folder `b`, ignoring case; false for a folder that is
+    /// not installed.
+    fn depends(&self, a: &str, b: &str) -> bool {
+        self.requires
+            .get(&a.to_ascii_lowercase())
+            .is_some_and(|deps| deps.iter().any(|d| d.eq_ignore_ascii_case(b)))
+    }
 }
 
 /// What `errors` shows `first_seen` from: the ledger its own read stored, or, when that
@@ -595,12 +650,19 @@ pub struct LedgerView {
 }
 
 impl LedgerView {
-    /// The view of one client, filed as `filed_as`.
-    pub fn client(&self, filed_as: &str) -> ClientLedger<'_> {
+    /// The view of one client, filed as `filed_as`, at the run's `now`, with its record.
+    pub fn client<'a>(
+        &'a self,
+        filed_as: &str,
+        now: Timestamp,
+        record: Option<&'a TargetRecord>,
+    ) -> ClientLedger<'a> {
         ClientLedger {
             readable: self.ledger.is_some(),
             ledger: self.ledger.as_ref().and_then(|l| l.targets.get(filed_as)),
             missing: self.missing,
+            now,
+            record,
         }
     }
 }
@@ -613,9 +675,107 @@ pub struct ClientLedger<'a> {
     /// What it holds of this client; `None` when it holds nothing of it.
     pub ledger: Option<&'a TargetLedger>,
     pub missing: Option<FirstSeenReason>,
+    /// The run's one time (common rule 13).
+    pub now: Timestamp,
+    /// The client's record now: what a link's change left installed is compared with it.
+    pub record: Option<&'a TargetRecord>,
 }
 
-impl ClientLedger<'_> {
+impl<'a> ClientLedger<'a> {
+    /// The cluster that has `fingerprint` as a member in the database keyed `database`:
+    /// the exact route of design 7.1.2, the only one a verdict is shown through. Sharing
+    /// a family never suffices.
+    fn member(&self, database: &str, fingerprint: &str) -> Option<&'a Cluster> {
+        self.ledger?
+            .clusters
+            .values()
+            .filter(|c| c.appearance.database == database)
+            .filter(|c| c.fingerprints.iter().any(|f| f == fingerprint))
+            .max_by_key(|c| c.appearance.found.observed_at)
+    }
+
+    /// The link from the local error `fingerprint` in `database` to the change before it
+    /// (design 7.3.1), and where its judgment stands. Both come only through a cluster
+    /// that has the fingerprint as a member, so an error that is not `observed` has
+    /// neither; the link only from a `complete` judgment that named a change.
+    pub fn after_change(
+        &self,
+        database: &str,
+        fingerprint: &str,
+    ) -> (Option<AfterChange>, Option<JudgmentInfo>) {
+        if !self.readable {
+            return (None, None);
+        }
+        let Some(cluster) = self.member(database, fingerprint) else {
+            return (None, None);
+        };
+        let Some(verdict) = &cluster.judgment else {
+            let pending = JudgmentInfo {
+                state: JudgmentStanding::Pending,
+                gap: None,
+            };
+            return (None, Some(pending));
+        };
+        let judgment = JudgmentInfo {
+            state: match verdict.state {
+                JudgmentState::Complete => JudgmentStanding::Complete,
+                JudgmentState::Deferred => JudgmentStanding::Deferred,
+                JudgmentState::Unsupported => JudgmentStanding::Unsupported,
+            },
+            gap: verdict.gap,
+        };
+        let link = match (&verdict.state, &verdict.suspect) {
+            (JudgmentState::Complete, Some(suspect)) => Some(self.link(cluster, verdict, suspect)),
+            _ => None,
+        };
+        (link, Some(judgment))
+    }
+
+    /// A stored suspect, with what is true now: whether the link still stands, and
+    /// whether each addon is still at the release the change left it at.
+    fn link(&self, cluster: &Cluster, verdict: &Verdict, suspect: &Suspect) -> AfterChange {
+        let ledger = self.ledger;
+        let current = ledger
+            .and_then(|l| l.databases.get(&cluster.appearance.database))
+            .is_some_and(|db| db.generation == cluster.appearance.generation);
+        let (bounds, _) = onset(&cluster.appearance);
+        let stale = self.now >= bounds.by
+            && self.now.duration_since(bounds.by).unsigned_abs() >= SUSPECT_FRESH_MAX_AGE;
+        let state = if !current {
+            LinkState::DatabaseReplaced
+        } else if stale {
+            LinkState::Expired
+        } else {
+            LinkState::Current
+        };
+        AfterChange {
+            tx: suspect.tx,
+            run: suspect.run,
+            kind: suspect.kind,
+            at: suspect.at,
+            actor: suspect.actor,
+            relation: suspect.relation,
+            confidence: suspect.confidence,
+            state,
+            algorithm: verdict.algorithm,
+            judged_at: verdict.judged_at,
+            changed: suspect
+                .changed
+                .iter()
+                .map(|t| ChangedNow {
+                    addon: t.addon.clone(),
+                    change: t.change,
+                    from_version: t.from.as_ref().map(|r| r.version.clone()),
+                    to_version: t.to.as_ref().map(|r| r.version.clone()),
+                    from_release: t.from.as_ref().and_then(|r| r.release.clone()),
+                    to_release: t.to.as_ref().and_then(|r| r.release.clone()),
+                    still_installed: still_installed(self.record, t, suspect.tx),
+                })
+                .collect(),
+            evidence: suspect.evidence.clone(),
+            commands: Vec::new(),
+        }
+    }
     /// What the ledger knows of when the local error `fingerprint` (of family `family`)
     /// began, in the database keyed `database`, which this read of it vouched for
     /// (`proved`) or not (design 7.1.2's lookup):
@@ -643,13 +803,7 @@ impl ClientLedger<'_> {
         // A ledger that holds nothing of this client (its first read proved nothing yet).
         let empty = TargetLedger::default();
         let ledger = self.ledger.unwrap_or(&empty);
-        let member = ledger
-            .clusters
-            .values()
-            .filter(|c| c.appearance.database == database)
-            .filter(|c| c.fingerprints.iter().any(|f| f == fingerprint))
-            .max_by_key(|c| c.appearance.found.observed_at);
-        if let Some(cluster) = member {
+        if let Some(cluster) = self.member(database, fingerprint) {
             let (bounds, _) = onset(&cluster.appearance);
             return FirstSeenInfo {
                 at: Some(bounds.by),
@@ -700,6 +854,29 @@ impl ClientLedger<'_> {
             }),
         }
     }
+}
+
+/// Whether `record` still holds the release `transition` left its addon at (design
+/// 7.3.1, by the one release identity of 7.5.1): the same release key, revision
+/// included, and the same bytes where both sides know a hash or a commit
+/// ([`InstalledRelease::same_artifact`]). A release without a key (a local file) must
+/// also still be the one transaction `tx` installed. A removed addon, an unknown
+/// transition, or a known key against an unknown one is not still installed.
+pub fn still_installed(
+    record: Option<&TargetRecord>,
+    transition: &ReleaseTransition,
+    tx: TxId,
+) -> bool {
+    let Some(to) = &transition.to else {
+        return false;
+    };
+    let Some(addon) =
+        record.and_then(|r| r.addons.get(&TargetRecord::addon_key(&transition.addon)))
+    else {
+        return false;
+    };
+    let now = InstalledRelease::of(addon);
+    now.same_artifact(to) && (to.release.is_some() || addon.tx_id == tx)
 }
 
 /// `first_seen` of an error omaddons cannot place, for `reason`.
@@ -766,12 +943,14 @@ pub fn proved(observation: &Observation, index: usize) -> bool {
 /// databases may have met (`None`: the history does not read whole).
 type Prepared<'c, 'a> = (&'c FullClient<'a>, Vec<DbSighting>, Option<Vec<Restored>>);
 
-/// `errors`' full read of `clients` (design 7.1.7, phases 1 and 2): the restores each
-/// client's databases may have met, read before the lock; then one session under the
-/// evidence lock that sights every database each read whole (`SightMode::Full`) and
-/// stores the ledger. Returns the ledger the view reads. What cannot be had is one `-vv`
-/// line, never an error: the view then reads the ledger as it is on disk, and says why
-/// an error it does not know cannot be placed.
+/// `errors`' full read of `clients` (design 7.1.7): the restores each client's databases
+/// may have met, read before the lock; one session under the evidence lock that sights
+/// every database each read whole (`SightMode::Full`) and stores the ledger; then the
+/// judgments that ledger owes, made outside any lock ([`judge_owed`]) and attached in a
+/// second session ([`publish`]). Returns the ledger the view reads. What cannot be had is
+/// one `-vv` line, never an error: the view then reads the ledger as it is on disk (or as
+/// the first session stored it, the judgments waiting for the next run), and says why an
+/// error it does not know cannot be placed.
 pub fn full_read(
     paths: &Paths,
     clients: &[FullClient<'_>],
@@ -853,19 +1032,319 @@ pub fn full_read(
             });
         }
     }
+    // The lock is let go here: judging happens outside any lock (phase 3).
+    let stored = match session.commit() {
+        Ok(accepted) => accepted.ledger.clone(),
+        Err(why) => return unstored(&why, loaded),
+    };
+    let judged = judge_owed(paths, clients, &stored, now);
+    let ledger = if judged.is_empty() {
+        stored
+    } else {
+        publish(paths, &scopes, command, judged).unwrap_or(stored)
+    };
+    LedgerView {
+        ledger: Some(ledger),
+        missing: None,
+    }
+}
+
+/// One judgment a full read made, for its second session to attach.
+struct Judged {
+    filed_as: String,
+    cluster: String,
+    verdict: Verdict,
+    /// The addon (or folder) the error is filed under.
+    addon: String,
+}
+
+/// The clusters of `ledger` a full read of `observation` owes a judgment (design 7.1.7,
+/// phase 2's result), each with the member it is judged by: an appearance in its
+/// database's current generation, not judged yet or deferred, one of whose members this
+/// read holds (the first in the cluster's sorted list).
+fn owed<'c>(
+    ledger: &'c TargetLedger,
+    observation: &'c Observation,
+) -> Vec<(&'c str, &'c Cluster, &'c Observed)> {
+    let key_of: Vec<String> = observation
+        .databases
+        .iter()
+        .map(|db| db_key(&db.path))
+        .collect();
+    ledger
+        .clusters
+        .iter()
+        .filter(|(_, c)| owes(ledger, c))
+        .filter_map(|(id, c)| {
+            let member = c.fingerprints.iter().find_map(|f| {
+                observation.local().find(|o| {
+                    &o.fingerprint == f && key_of.get(o.database) == Some(&c.appearance.database)
+                })
+            })?;
+            Some((id.as_str(), c, member))
+        })
+        .collect()
+}
+
+/// Whether `cluster` is still owed a judgment: its appearance is in its database's current
+/// generation (an ended one is final, `sight` saw to it) and it has none, or a deferred
+/// one. A complete judgment is kept as made.
+fn owes(ledger: &TargetLedger, cluster: &Cluster) -> bool {
+    let current = ledger
+        .databases
+        .get(&cluster.appearance.database)
+        .is_some_and(|db| db.generation == cluster.appearance.generation);
+    let open = cluster
+        .judgment
+        .as_ref()
+        .is_none_or(|v| v.state == JudgmentState::Deferred);
+    current && open
+}
+
+/// Whether a history line ran on the client keyed `key`. A line that moves folders
+/// always names its client: a target-less line moves none through `ops`
+/// (`HistoryEntry::well_formed`).
+fn on_client(entry: &HistoryEntry, key: TargetKey) -> bool {
+    entry.target == Some(key)
+}
+
+/// The folders a line added, replaced or removed: what can put code in place, or take
+/// away what another addon needs. Pins, skips, backups, settings, restores and
+/// `required_by` bookkeeping (`record`, `wtf` and `saved_variables` ops) move none.
+fn moved_folders(entry: &HistoryEntry) -> Vec<ChangeOp> {
+    entry
+        .ops
+        .iter()
+        .filter(|o| matches!(o.op, FolderOp::Add | FolderOp::Replace | FolderOp::Remove))
+        .map(|o| ChangeOp {
+            op: o.op,
+            folder: o.folder.to_string(),
+            addon: o.addon.clone(),
+        })
+        .collect()
+}
+
+/// The changes on the client keyed `key` the judge may weigh (design 7.2.1): its
+/// committed lines from `since` to `until` that moved a folder, oldest first, each with
+/// its transitions: the line's own, else worked out from its snapshots while they last,
+/// else none (`Unavailable`; nothing is made up).
+fn change_facts(
+    all: &[HistoryEntry],
+    reader: &mut Reader<'_>,
+    key: TargetKey,
+    since: Timestamp,
+    until: Timestamp,
+) -> Vec<ChangeFact> {
+    all.iter()
+        .filter(|e| e.result == TxResult::Committed && on_client(e, key))
+        .filter(|e| e.at >= since && e.at <= until)
+        .filter_map(|e| {
+            let ops = moved_folders(e);
+            if ops.is_empty() {
+                return None;
+            }
+            let (transitions, recorded) = transitions_of(e, reader);
+            Some(ChangeFact {
+                tx: e.tx,
+                run: e.run,
+                kind: e.kind,
+                at: e.at,
+                actor: e.actor,
+                ops,
+                transitions,
+                recorded,
+            })
+        })
+        .collect()
+}
+
+/// The folders some committed line on the client keyed `key` moved after `after`: what
+/// the inventory says of them now is not what ran when the error appeared.
+fn changed_since(all: &[HistoryEntry], key: TargetKey, after: Timestamp) -> BTreeSet<String> {
+    all.iter()
+        .filter(|e| e.result == TxResult::Committed && on_client(e, key) && e.at > after)
+        .flat_map(moved_folders)
+        .map(|o| o.folder)
+        .collect()
+}
+
+/// The AddOns folder of each frame of `entry`'s stack, in order, without repeats, placed
+/// as attribution places them (design 7.2.1). Frames with no path, or a path in no
+/// folder, are dropped.
+fn stack_folders(entry: &BugEntry, legacy: bool, folders: &FolderSet) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for frame in frames::frames(&entry.message, entry.stack.as_deref(), legacy) {
+        let Some(folder) = frame
+            .path
+            .and_then(|path| attribute::folder_of(path, folders, legacy))
+        else {
+            continue;
+        };
+        if !out.iter().any(|f| f.eq_ignore_ascii_case(&folder)) {
+            out.push(folder);
+        }
+    }
+    out
+}
+
+/// A judgment that waits for the history: the next full read tries again.
+fn deferred(now: Timestamp) -> Verdict {
+    Verdict {
+        algorithm: SUSPECT_ALGORITHM,
+        state: JudgmentState::Deferred,
+        judged_at: now,
+        suspect: None,
+        gap: Some(JudgmentGap::HistoryUnreadable),
+    }
+}
+
+/// Phase 3 of the full read (design 7.1.7): judges the clusters `stored` owes, outside
+/// any lock. The history is read here once, and only when some cluster is owed; a read
+/// that fails defers every judgment. One `-vv` line says how many were judged.
+fn judge_owed(
+    paths: &Paths,
+    clients: &[FullClient<'_>],
+    stored: &ErrorsLedger,
+    now: Timestamp,
+) -> Vec<Judged> {
+    let owed: Vec<_> = clients
+        .iter()
+        .filter_map(|client| {
+            let ledger = stored.targets.get(client.filed_as)?;
+            let owed = owed(ledger, client.observation);
+            (!owed.is_empty()).then_some((client, ledger, owed))
+        })
+        .collect();
+    let count: usize = owed.iter().map(|(_, _, o)| o.len()).sum();
+    trace::emit(|| format!("errors ledger: judged {count}"));
+    if count == 0 {
+        return Vec::new();
+    }
+    let read = match history::read(paths, &HistoryFilter::default()) {
+        Ok(read) => Some(read),
+        Err(err) => {
+            trace::emit(|| format!("errors ledger: judgments deferred: {}", err.message));
+            None
+        }
+    };
+    let mut reader = read.as_ref().map(|r| Reader::new(paths, &r.entries));
+    let mut judged = Vec::new();
+    for (client, ledger, clusters) in owed {
+        let facts = match (&read, reader.as_mut(), client.target.key) {
+            (Some(read), Some(reader), Some(key)) => {
+                let bounds = clusters.iter().map(|(_, c, _)| onset(&c.appearance).0.by);
+                let until = bounds.clone().max().unwrap_or(now);
+                let window =
+                    SignedDuration::try_from(SUSPECT_MAX_AGE).unwrap_or(SignedDuration::MAX);
+                let since = bounds
+                    .min()
+                    .and_then(|by| by.checked_sub(window).ok())
+                    .unwrap_or(Timestamp::MIN);
+                Some(change_facts(&read.entries, reader, key, since, until))
+            }
+            // An unregistered client: no history line names it.
+            (Some(_), Some(_), None) => Some(Vec::new()),
+            _ => None,
+        };
+        for (id, cluster, member) in clusters {
+            let verdict = match (&facts, &read) {
+                (Some(facts), Some(read)) => {
+                    judge_cluster(client, ledger, id, cluster, member, facts, read, now)
+                }
+                _ => deferred(now),
+            };
+            judged.push(Judged {
+                filed_as: client.filed_as.to_owned(),
+                cluster: id.to_owned(),
+                verdict,
+                addon: member.name.clone(),
+            });
+        }
+    }
+    judged
+}
+
+/// Judges one cluster from its member's attribution and stack, the client's folders and
+/// its changes (design 7.2.1).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the judge's inputs, each from another place"
+)]
+fn judge_cluster(
+    client: &FullClient<'_>,
+    ledger: &TargetLedger,
+    id: &str,
+    cluster: &Cluster,
+    member: &Observed,
+    facts: &[ChangeFact],
+    read: &HistoryRead,
+    now: Timestamp,
+) -> Verdict {
+    let Some(db) = ledger.databases.get(&cluster.appearance.database) else {
+        return deferred(now);
+    };
+    let legacy = client
+        .observation
+        .databases
+        .get(member.database)
+        .is_some_and(|d| d.shape == DbShape::Legacy);
+    let error = Appeared {
+        cluster: id,
+        appearance: &cluster.appearance,
+        addon: &member.name,
+        managed: member.managed,
+        folder: member.folder.as_deref(),
+        attribution: member.attribution.confidence,
+        stack_folders: stack_folders(&member.entry, legacy, &client.installed.folders),
+    };
+    let since = match client.target.key {
+        Some(key) => changed_since(&read.entries, key, cluster.appearance.found.observed_at),
+        None => BTreeSet::new(),
+    };
+    let depends = |a: &str, b: &str| client.installed.depends(a, b);
+    let cx = JudgeContext {
+        now,
+        generation: &db.generation,
+        marks: &db.marks,
+        databases: ledger.databases.len(),
+        depends: &depends,
+        changed_since: &since,
+    };
+    judge(&error, facts, &cx)
+}
+
+/// Phase 4 of the full read (design 7.1.7): a second session attaches each judgment to
+/// its cluster, under the rule of 7.1.6, and stores the ledger. `None` when the session
+/// cannot be had: the judgments wait for the next read.
+fn publish(
+    paths: &Paths,
+    scopes: &ScopeTable,
+    command: &str,
+    judged: Vec<Judged>,
+) -> Option<ErrorsLedger> {
+    let mut session = match ledger::open(paths, scopes, command) {
+        Ok(session) => session,
+        Err(why) => {
+            trace::emit(|| format!("errors ledger: judgments not stored: {why:?}"));
+            return None;
+        }
+    };
+    for j in judged {
+        session.attach(&j.filed_as, &j.cluster, j.verdict, Some(j.addon));
+    }
     match session.commit() {
-        Ok(accepted) => LedgerView {
-            ledger: Some(accepted.ledger.clone()),
-            missing: None,
-        },
-        Err(why) => unstored(&why, loaded),
+        Ok(accepted) => Some(accepted.ledger.clone()),
+        Err(why) => {
+            trace::emit(|| format!("errors ledger: judgments not stored: {why:?}"));
+            None
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Actor, FolderName, TxId, TxKind};
+    use crate::model::{Actor, AddonRecord, FolderName, TransitionSource, TxId, TxKind};
     use crate::state::history::{HistoryOp, TxResult};
 
     const KEY: &str = "01M51EX04HHWM46XE9F2B9JXED";
@@ -1714,11 +2193,15 @@ mod tests {
             readable: true,
             ledger: Some(&ledger),
             missing,
+            now: at(400),
+            record: None,
         };
         let none = |readable, missing| ClientLedger {
             readable,
             ledger: None,
             missing,
+            now: at(400),
+            record: None,
         };
         // (case, view, database, proved, fingerprint, family, basis, reason, at)
         type Case<'a> = (
@@ -1849,6 +2332,8 @@ mod tests {
                     readable: true,
                     ledger: Some(&untracked),
                     missing: None,
+                    now: at(400),
+                    record: None,
                 },
                 "d1",
                 true,
@@ -1937,5 +2422,539 @@ mod tests {
         assert_eq!(restores_horizon(None, at(1_000)), at(1_000));
         assert_eq!(restores_horizon(Some(&ledger), at(1_000)), at(210));
         assert_eq!(restores_horizon(Some(&ledger), at(50)), at(50));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The judge's adapter and the link's view (RG-16).
+
+    #[test]
+    fn the_judge_weighs_the_committed_lines_on_its_client_that_moved_a_folder() {
+        let (_dir, paths) = home();
+        let key: TargetKey = KEY.parse().unwrap();
+        write_history(
+            &paths,
+            &[
+                line(
+                    KEY,
+                    100,
+                    TxKind::Install,
+                    vec![op(FolderOp::Add, "Foo"), op(FolderOp::Record, "Foo")],
+                ),
+                line(KEY, 110, TxKind::Pin, vec![op(FolderOp::Record, "Foo")]),
+                line(KEY, 120, TxKind::Restore, vec![op(FolderOp::Wtf, "WTF")]),
+                line(
+                    OTHER,
+                    130,
+                    TxKind::Update,
+                    vec![op(FolderOp::Replace, "Foo")],
+                ),
+                line(KEY, 140, TxKind::Remove, vec![op(FolderOp::Remove, "Bar")]),
+                line(KEY, 500, TxKind::Update, vec![op(FolderOp::Replace, "Lib")]),
+            ],
+        );
+        let read = history::read(&paths, &HistoryFilter::default()).unwrap();
+        let mut reader = Reader::new(&paths, &read.entries);
+        let facts = change_facts(&read.entries, &mut reader, key, at(0), at(400));
+        let got: Vec<_> = facts
+            .iter()
+            .map(|f| {
+                let ops: Vec<_> = f.ops.iter().map(|o| (o.op, o.folder.as_str())).collect();
+                (f.at, f.kind, ops)
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (at(100), TxKind::Install, vec![(FolderOp::Add, "Foo")]),
+                (at(140), TxKind::Remove, vec![(FolderOp::Remove, "Bar")]),
+            ],
+            "pins, restores, another client's lines and lines past the window are not weighed"
+        );
+        assert_eq!(
+            facts[0].recorded,
+            TransitionSource::Unavailable,
+            "a line from before transitions whose snapshots are gone: nothing made up"
+        );
+        assert!(facts[0].transitions.is_empty());
+        assert_eq!(
+            changed_since(&read.entries, key, at(115)),
+            ["Bar".to_owned(), "Lib".to_owned()].into()
+        );
+    }
+
+    #[test]
+    fn a_cluster_is_owed_a_judgment_until_one_completes_or_its_generation_ends() {
+        let ledger = watched();
+        let (id, cluster) = ledger.clusters.iter().next().unwrap();
+        assert!(owes(&ledger, cluster), "not judged yet");
+        let judged = |state| {
+            let mut judged = ledger.clone();
+            judged.clusters.get_mut(id).unwrap().judgment = Some(Verdict {
+                algorithm: SUSPECT_ALGORITHM,
+                state,
+                judged_at: at(300),
+                suspect: None,
+                gap: None,
+            });
+            judged
+        };
+        for (state, want) in [
+            (JudgmentState::Deferred, true),
+            (JudgmentState::Complete, false),
+            (JudgmentState::Unsupported, false),
+        ] {
+            let judged = judged(state);
+            assert_eq!(owes(&judged, &judged.clusters[id]), want, "{state:?}");
+        }
+        let mut ended = ledger.clone();
+        ended.databases.get_mut("d1").unwrap().generation =
+            crate::errors::ledger::DbGeneration("g:later".to_owned());
+        assert!(!owes(&ended, &ended.clusters[id]), "its generation ended");
+    }
+
+    #[test]
+    fn a_stack_names_each_of_its_folders_once_in_order() {
+        use crate::errors::buggrabber::EntryType;
+        let stack = [
+            "[string \"@Interface/AddOns/GuidePack/guide.lua\"]:12: in function <x>",
+            "[string \"@Interface/AddOns/Guidelime/core.lua\"]:40: in function 'y'",
+            "[C]: in function 'pcall'",
+            "[string \"@Interface/AddOns/guidepack/other.lua\"]:3: in function 'z'",
+            "[string \"@Interface/FrameXML/UIParent.lua\"]:1: in function 'w'",
+        ];
+        let entry = BugEntry {
+            message: "[Interface/AddOns/GuidePack/guide.lua]:12: attempt to index a nil value"
+                .to_owned(),
+            stack: Some(stack.join("\n")),
+            locals: None,
+            session: Some(3),
+            time: None,
+            counter: 1,
+            entry_type: EntryType::Error,
+            origin: Origin::Local,
+        };
+        let folders = FolderSet::new(["!BugGrabber", "GuidePack", "Guidelime"]);
+        assert_eq!(
+            stack_folders(&entry, false, &folders),
+            vec!["GuidePack".to_owned(), "Guidelime".to_owned()]
+        );
+    }
+
+    const TX: &str = "01M9Q00000000000000000000A";
+
+    /// Foo at `version` of `gh:o/foo` (revision `revision`, archive `blob`), installed by
+    /// transaction `tx`.
+    fn foo_at(version: &str, revision: Option<u32>, blob: Option<&str>, tx: &str) -> AddonRecord {
+        AddonRecord {
+            r#ref: "gh:o/foo".parse().unwrap(),
+            name: "Foo".into(),
+            version: version.into(),
+            version_confidence: crate::model::VersionConfidence::Release,
+            release_id: Some(format!("gh:o/foo@{version}")),
+            channel: crate::model::Channel::Stable,
+            pinned: false,
+            reason: crate::model::AddonReason::Explicit,
+            required_by: vec![],
+            folders: vec![FolderName::new("Foo").unwrap()],
+            state: crate::model::AddonState::Ok,
+            installed_at: at(0),
+            tx_id: tx.parse().unwrap(),
+            blob_sha256: blob.map(str::to_owned),
+            revision,
+            left_out: Vec::new(),
+            any_flavor: false,
+            skipped_releases: Vec::new(),
+        }
+    }
+
+    /// Foo installed from a local zip whose content hashes to `content`.
+    fn foo_local(version: &str, content: &str, tx: &str) -> AddonRecord {
+        AddonRecord {
+            r#ref: "file:/x/foo.zip".parse().unwrap(),
+            release_id: Some(format!("file:/x/foo.zip@{content}")),
+            ..foo_at(version, None, None, tx)
+        }
+    }
+
+    fn holding(addons: Vec<AddonRecord>) -> TargetRecord {
+        let mut record = TargetRecord::empty(KEY.parse().unwrap());
+        for a in addons {
+            record.addons.insert(TargetRecord::addon_key(&a.name), a);
+        }
+        record
+    }
+
+    /// The change that took Foo to `to`.
+    fn to(to: Option<&AddonRecord>) -> ReleaseTransition {
+        ReleaseTransition {
+            addon: "Foo".to_owned(),
+            change: crate::model::TransitionChange::Updated,
+            from: None,
+            to: to.map(InstalledRelease::of),
+        }
+    }
+
+    #[test]
+    fn still_installed_is_the_same_artifact_the_change_left() {
+        let tx: TxId = TX.parse().unwrap();
+        let other = "01M9Q00000000000000000000B";
+        let left = foo_at("2", Some(5), Some("bb"), TX);
+        let local = foo_local("2", "c1", TX);
+        // (case, the record now, what the change left, still installed)
+        let cases: Vec<(&str, Option<AddonRecord>, ReleaseTransition, bool)> = vec![
+            (
+                "the same release, revision and archive",
+                Some(left.clone()),
+                to(Some(&left)),
+                true,
+            ),
+            (
+                "a re-tag: the same tag at another revision",
+                Some(foo_at("2", Some(6), Some("bb"), other)),
+                to(Some(&left)),
+                false,
+            ),
+            (
+                "the same tag from an archive with another hash",
+                Some(foo_at("2", Some(5), Some("cc"), other)),
+                to(Some(&left)),
+                false,
+            ),
+            (
+                "an archive hash only one side knows decides nothing",
+                Some(foo_at("2", Some(5), None, TX)),
+                to(Some(&left)),
+                true,
+            ),
+            (
+                "another release since",
+                Some(foo_at("3", Some(5), Some("bb"), other)),
+                to(Some(&left)),
+                false,
+            ),
+            ("the addon removed since", None, to(Some(&left)), false),
+            ("the change removed it", Some(left.clone()), to(None), false),
+            (
+                "a known key against none",
+                Some(local.clone()),
+                to(Some(&left)),
+                false,
+            ),
+            (
+                "a local file the change installed",
+                Some(local.clone()),
+                to(Some(&local)),
+                true,
+            ),
+            (
+                "the same local file, installed again since",
+                Some(foo_local("2", "c1", other)),
+                to(Some(&local)),
+                false,
+            ),
+        ];
+        for (case, now, transition, want) in cases {
+            let record = holding(now.into_iter().collect());
+            assert_eq!(
+                still_installed(Some(&record), &transition, tx),
+                want,
+                "{case}"
+            );
+        }
+        assert!(!still_installed(None, &to(Some(&left)), tx), "no record");
+    }
+
+    /// `watched()` with its one cluster given `verdict`.
+    fn judged(verdict: Option<Verdict>) -> (TargetLedger, String) {
+        let mut ledger = watched();
+        let id = ledger.clusters.keys().next().unwrap().clone();
+        ledger.clusters.get_mut(&id).unwrap().judgment = verdict;
+        (ledger, id)
+    }
+
+    fn verdict(state: JudgmentState, suspect: Option<Suspect>) -> Verdict {
+        Verdict {
+            algorithm: SUSPECT_ALGORITHM,
+            state,
+            judged_at: at(400),
+            suspect,
+            gap: (state == JudgmentState::Deferred).then_some(JudgmentGap::HistoryUnreadable),
+        }
+    }
+
+    /// Foo's update to 2 at 120, `own` and `high`, the first session after it.
+    fn suspect(tx: TxId) -> Suspect {
+        use crate::errors::suspect::{Evidence, Relation};
+        let from = foo_at("1", None, Some("aa"), TX);
+        let left = foo_at("2", None, Some("bb"), TX);
+        Suspect {
+            tx,
+            run: None,
+            kind: TxKind::Update,
+            at: at(120),
+            actor: Actor::Human,
+            relation: Relation::Own,
+            confidence: crate::errors::attribute::Confidence::High,
+            changed: vec![ReleaseTransition {
+                from: Some(InstalledRelease::of(&from)),
+                ..to(Some(&left))
+            }],
+            evidence: Evidence {
+                gap_s: 30,
+                exact: false,
+                same_session: Some(false),
+                clean_sessions: Some(0),
+                client_update: None,
+                other_changes: 0,
+                unknowns: Vec::new(),
+            },
+        }
+    }
+
+    fn view<'a>(
+        ledger: &'a TargetLedger,
+        now: i64,
+        record: Option<&'a TargetRecord>,
+    ) -> ClientLedger<'a> {
+        ClientLedger {
+            readable: true,
+            ledger: Some(ledger),
+            missing: None,
+            now: at(now),
+            record,
+        }
+    }
+
+    #[test]
+    fn a_link_shows_only_through_a_member_with_what_is_true_now() {
+        let tx: TxId = TX.parse().unwrap();
+        let (ledger, _) = judged(Some(verdict(JudgmentState::Complete, Some(suspect(tx)))));
+        let record = holding(vec![foo_at("2", None, Some("bb"), TX)]);
+        let (link, judgment) = view(&ledger, 400, Some(&record)).after_change("d1", "e:b1");
+        let link = link.unwrap();
+        assert_eq!(
+            (link.tx, link.state, link.judged_at, link.algorithm),
+            (tx, LinkState::Current, at(400), SUSPECT_ALGORITHM)
+        );
+        let changed = &link.changed[0];
+        assert_eq!(
+            (
+                changed.from_version.as_deref(),
+                changed.to_version.as_deref(),
+                changed.still_installed
+            ),
+            (Some("1"), Some("2"), true)
+        );
+        assert!(link.commands.is_empty());
+        assert_eq!(
+            judgment,
+            Some(JudgmentInfo {
+                state: JudgmentStanding::Complete,
+                gap: None
+            })
+        );
+        // Only an exact member: another error of the family, or another database, gets
+        // neither the link nor a judgment.
+        assert_eq!(
+            view(&ledger, 400, Some(&record)).after_change("d1", "e:b2"),
+            (None, None)
+        );
+        assert_eq!(
+            view(&ledger, 400, Some(&record)).after_change("d2", "e:b1"),
+            (None, None)
+        );
+        let unreadable = ClientLedger {
+            readable: false,
+            ..view(&ledger, 400, Some(&record))
+        };
+        assert_eq!(unreadable.after_change("d1", "e:b1"), (None, None));
+
+        // What is true now: its release moved on, 30 days passed, the file was replaced.
+        let moved = holding(vec![foo_at("3", None, Some("cc"), TX)]);
+        let state_at = |ledger: &TargetLedger, now: i64| {
+            view(ledger, now, Some(&record))
+                .after_change("d1", "e:b1")
+                .0
+                .unwrap()
+                .state
+        };
+        let link_now = view(&ledger, 400, Some(&moved))
+            .after_change("d1", "e:b1")
+            .0;
+        assert!(!link_now.unwrap().changed[0].still_installed);
+        let thirty_days = 30 * 24 * 60 * 60;
+        // Its onset is bounded by the entry's trusted time, 150.
+        assert_eq!(state_at(&ledger, 150 + thirty_days - 1), LinkState::Current);
+        assert_eq!(state_at(&ledger, 150 + thirty_days), LinkState::Expired);
+        let mut replaced = ledger.clone();
+        replaced.databases.get_mut("d1").unwrap().generation =
+            crate::errors::ledger::DbGeneration("g:later".to_owned());
+        assert_eq!(state_at(&replaced, 400), LinkState::DatabaseReplaced);
+    }
+
+    #[test]
+    fn a_re_tag_reads_as_two_releases_under_one_label() {
+        let tx: TxId = TX.parse().unwrap();
+        let (before, after) = (
+            foo_at("2", Some(5), Some("aa"), TX),
+            foo_at("2", Some(6), Some("bb"), TX),
+        );
+        let mut retag = suspect(tx);
+        retag.changed = vec![ReleaseTransition {
+            from: Some(InstalledRelease::of(&before)),
+            ..to(Some(&after))
+        }];
+        let (ledger, _) = judged(Some(verdict(JudgmentState::Complete, Some(retag))));
+        let now = holding(vec![after.clone()]);
+        let link = view(&ledger, 400, Some(&now))
+            .after_change("d1", "e:b1")
+            .0
+            .unwrap();
+        let changed = &link.changed[0];
+        assert_eq!(
+            changed.from_version, changed.to_version,
+            "one version label"
+        );
+        let revision = |r: &Option<crate::model::ReleaseKey>| r.as_ref().and_then(|k| k.revision);
+        assert_eq!(
+            (
+                revision(&changed.from_release),
+                revision(&changed.to_release)
+            ),
+            (Some(5), Some(6)),
+            "two releases"
+        );
+        assert!(changed.still_installed);
+        let back = holding(vec![before]);
+        let gone = view(&ledger, 400, Some(&back)).after_change("d1", "e:b1").0;
+        assert!(
+            !gone.unwrap().changed[0].still_installed,
+            "the earlier revision of the same tag is not the release the change left"
+        );
+    }
+
+    #[test]
+    fn an_observed_error_says_where_its_judgment_stands() {
+        let standing = |judgment: Option<Verdict>| {
+            let (ledger, _) = judged(judgment);
+            view(&ledger, 400, None).after_change("d1", "e:b1")
+        };
+        let info = |state, gap| Some(JudgmentInfo { state, gap });
+        assert_eq!(
+            standing(None),
+            (None, info(JudgmentStanding::Pending, None))
+        );
+        assert_eq!(
+            standing(Some(verdict(JudgmentState::Deferred, None))),
+            (
+                None,
+                info(
+                    JudgmentStanding::Deferred,
+                    Some(JudgmentGap::HistoryUnreadable)
+                )
+            )
+        );
+        assert_eq!(
+            standing(Some(verdict(JudgmentState::Complete, None))),
+            (None, info(JudgmentStanding::Complete, None)),
+            "judged, and no change qualified"
+        );
+        let mut unsupported = verdict(JudgmentState::Unsupported, None);
+        unsupported.gap = Some(JudgmentGap::ProviderChanged);
+        assert_eq!(
+            standing(Some(unsupported)),
+            (
+                None,
+                info(
+                    JudgmentStanding::Unsupported,
+                    Some(JudgmentGap::ProviderChanged)
+                )
+            )
+        );
+    }
+
+    proptest::proptest! {
+        /// Design 7.1.2's lookup: an error is given a cluster's verdict only when its exact
+        /// fingerprint is one of that cluster's members, in the same database. Sharing a
+        /// family never suffices.
+        #[test]
+        fn a_verdict_is_shown_only_for_an_exact_member(
+            clusters in proptest::collection::vec(
+                (0usize..2, 0usize..3, proptest::collection::btree_set(0usize..6, 1..4), proptest::bool::ANY),
+                0..5,
+            ),
+            entries in proptest::collection::vec((0usize..2, 0usize..6), 1..12),
+        ) {
+            use crate::errors::ledger::{Appearance, ReadMark};
+            let generation = crate::errors::ledger::DbGeneration("g:1".to_owned());
+            let mut ledger = TargetLedger::default();
+            for db in ["d0", "d1"] {
+                ledger.databases.insert(db.to_owned(), DbLedger {
+                    generation: generation.clone(),
+                    started_at: at(0),
+                    max_session: Some(9),
+                    max_written_at: None,
+                    invalidated_at: None,
+                    reads: Vec::new(),
+                    unproved_stamp: None,
+                    marks: Vec::new(),
+                });
+            }
+            let mark = |observed: i64| ReadMark {
+                stamp: format!("s{observed}"),
+                written_at: Some(at(observed - 5)),
+                session: Some(3),
+                observed_at: at(observed),
+                client_version: None,
+            };
+            for (i, (db, family, members, judged)) in clusters.iter().enumerate() {
+                let n = i64::try_from(i).unwrap();
+                let tx = format!("01M9Q{i:021}").parse().unwrap();
+                ledger.clusters.insert(format!("c:{i}"), Cluster {
+                    family: format!("a:{family}"),
+                    appearance: Appearance {
+                        database: format!("d{db}"),
+                        generation: generation.clone(),
+                        provider: "!BugGrabber".to_owned(),
+                        before: mark(100 + n),
+                        found: mark(200 + n),
+                        earliest: None,
+                        entry_session: Some(4),
+                        time: crate::errors::buggrabber::TimeEvidence {
+                            at: None,
+                            meaning: crate::errors::buggrabber::TimeMeaning::Unknown,
+                            tz: crate::errors::buggrabber::TzEvidence::SystemAssumed,
+                        },
+                        counter: 1,
+                    },
+                    fingerprints: members.iter().map(|m| format!("e:{m}")).collect(),
+                    overflowed: false,
+                    judgment: judged.then(|| verdict(JudgmentState::Complete, Some(suspect(tx)))),
+                    addon: None,
+                });
+            }
+            for (db, f) in entries {
+                let (database, fingerprint) = (format!("d{db}"), format!("e:{f}"));
+                let (link, judgment) = view(&ledger, 400, None).after_change(&database, &fingerprint);
+                let members: Vec<&Cluster> = ledger
+                    .clusters
+                    .values()
+                    .filter(|c| c.appearance.database == database)
+                    .filter(|c| c.fingerprints.contains(&fingerprint))
+                    .collect();
+                if members.is_empty() {
+                    proptest::prop_assert_eq!((&link, judgment), (&None, None));
+                }
+                if let Some(link) = link {
+                    let named = members.iter().any(|c| {
+                        c.judgment
+                            .as_ref()
+                            .and_then(|v| v.suspect.as_ref())
+                            .is_some_and(|s| s.tx == link.tx)
+                    });
+                    proptest::prop_assert!(named, "a link no member's verdict names");
+                }
+            }
+        }
     }
 }

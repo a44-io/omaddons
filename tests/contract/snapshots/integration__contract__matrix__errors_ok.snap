@@ -32,10 +32,12 @@ expression: s.stable(&c.envelope)
         "addons": [
           {
             "addon": "Foo",
+            "after_change": null,
             "count": 5,
             "entries": 2,
             "errors": [
               {
+                "after_change": null,
                 "attribution": {
                   "confidence": "high",
                   "method": "first_addon_frame"
@@ -52,6 +54,7 @@ expression: s.stable(&c.envelope)
                   "reason": "first_read",
                   "related_fingerprint": null
                 },
+                "judgment": null,
                 "last_seen": {
                   "at": "<time>",
                   "meaning": "last",
@@ -70,6 +73,7 @@ expression: s.stable(&c.envelope)
                 "type": "error"
               },
               {
+                "after_change": null,
                 "attribution": {
                   "confidence": "high",
                   "method": "first_addon_frame"
@@ -86,6 +90,7 @@ expression: s.stable(&c.envelope)
                   "reason": "first_read",
                   "related_fingerprint": null
                 },
+                "judgment": null,
                 "last_seen": {
                   "at": "<time>",
                   "meaning": "last",
