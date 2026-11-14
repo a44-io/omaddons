@@ -2592,7 +2592,7 @@ Sources:
   wago        off  needs a key (M5)
   wowace      on
 43 error codes · 57 warning codes · 28 actions · 32 failure modes
-  138 limits (0 from config)
+  141 limits (0 from config)
 --json for the full description
 ```
 

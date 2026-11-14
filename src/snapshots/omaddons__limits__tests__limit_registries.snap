@@ -1122,6 +1122,33 @@ expression: "(politeness, REGISTRY)"
       "notes": "The oldest change that may be named as preceding a newly appeared error"
     },
     {
+      "name": "SUSPECT_TIMING_MAX_AGE",
+      "value": {
+        "millis": 86400000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "How close an unrelated change must be for order in time to count"
+    },
+    {
+      "name": "SUSPECT_CLEAN_SESSIONS_MAX",
+      "value": {
+        "count": 10
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Clean sessions that weaken a link; more lower it to its floor"
+    },
+    {
+      "name": "SUSPECT_FRESH_MAX_AGE",
+      "value": {
+        "millis": 2592000000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "How long a link may still raise a tag or offer a way back"
+    },
+    {
       "name": "SUSPECT_ALGORITHM",
       "value": {
         "count": 1

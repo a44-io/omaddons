@@ -297,6 +297,17 @@ pub const LEDGER_LOCK_TIMEOUT: Duration = Duration::from_millis(200);
 /// it, and how long the errors ledger keeps change marks: long enough for an error only
 /// a weekly raid triggers to reach last week's update.
 pub const SUSPECT_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+/// For a change with no relation to a newly appeared error, how close before it the
+/// change must be for the order in time to mean anything.
+pub const SUSPECT_TIMING_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// Sessions that ran a change's code without the error: up to this many weaken a link
+/// to that change; more lower it to its floor (players reload often, so a handful says
+/// little).
+pub const SUSPECT_CLEAN_SESSIONS_MAX: u32 = 10;
+/// How long after a newly appeared error was known to have occurred its link to the
+/// change before it may still raise a status tag or offer a way back: a patch cycle and
+/// four weekly raids. After that an error that keeps happening is not news.
+pub const SUSPECT_FRESH_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// The version of the rules that judge what preceded a newly appeared error, stored on
 /// every verdict. Raised whenever those rules change.
 pub const SUSPECT_ALGORITHM: u32 = 1;
@@ -1132,6 +1143,27 @@ pub const REGISTRY: &[LimitInfo] = &[
         "The oldest change that may be named as preceding a newly appeared error",
     ),
     limit(
+        "SUSPECT_TIMING_MAX_AGE",
+        LimitValue::Millis(ms(SUSPECT_TIMING_MAX_AGE)),
+        LimitUnit::Ms,
+        None,
+        "How close an unrelated change must be for order in time to count",
+    ),
+    limit(
+        "SUSPECT_CLEAN_SESSIONS_MAX",
+        LimitValue::Count(SUSPECT_CLEAN_SESSIONS_MAX as u64),
+        LimitUnit::Count,
+        None,
+        "Clean sessions that weaken a link; more lower it to its floor",
+    ),
+    limit(
+        "SUSPECT_FRESH_MAX_AGE",
+        LimitValue::Millis(ms(SUSPECT_FRESH_MAX_AGE)),
+        LimitUnit::Ms,
+        None,
+        "How long a link may still raise a tag or offer a way back",
+    ),
+    limit(
         "SUSPECT_ALGORITHM",
         LimitValue::Count(SUSPECT_ALGORITHM as u64),
         LimitUnit::Count,
@@ -1534,6 +1566,9 @@ mod tests {
         "LEDGER_PRECHANGE_MAX_BYTES",
         "LEDGER_LOCK_TIMEOUT",
         "SUSPECT_MAX_AGE",
+        "SUSPECT_TIMING_MAX_AGE",
+        "SUSPECT_CLEAN_SESSIONS_MAX",
+        "SUSPECT_FRESH_MAX_AGE",
         "SUSPECT_ALGORITHM",
         "SUSPECT_ALGORITHM_TRUSTED_MIN",
         "WIDGET_READBACK_MAX_BYTES",

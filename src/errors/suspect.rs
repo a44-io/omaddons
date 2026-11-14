@@ -1,9 +1,13 @@
 //! What preceded a newly appeared Lua error (design 7.2): the verdict a watched
 //! appearance is given, and the evidence it rests on. The errors ledger
-//! ([`crate::errors::ledger`]) stores each verdict with the appearance it judged. These
-//! are the judge's types; the judge itself comes later.
+//! ([`crate::errors::ledger`]) stores each verdict with the appearance it judged. Its
+//! first half is here (RG-14): the onset, which changes are candidates, and how each
+//! connects to the error; grading them comes next (RG-15).
 //!
 //! A verdict is evidence, not proof: the wire says `after_change`, never "caused by".
+//! The judge takes domain types only and imports nothing from `src/app/`.
+
+use std::collections::BTreeSet;
 
 use jiff::Timestamp;
 use schemars::JsonSchema;
@@ -11,8 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::attribute::Confidence;
 use crate::errors::buggrabber::{TimeEvidence, TimeMeaning, TzEvidence};
-use crate::errors::ledger::Appearance;
-use crate::model::{Actor, ReleaseTransition, RunId, TxId, TxKind};
+use crate::errors::ledger::{Appearance, ChangeMark, DbGeneration};
+use crate::limits::SUSPECT_MAX_AGE;
+use crate::model::{Actor, ReleaseTransition, RunId, TransitionSource, TxId, TxKind};
+use crate::state::history::FolderOp;
 
 /// When a watched appearance's errors began, as far as the evidence bounds it (design
 /// 7.2.2). BugGrabber keeps when an error last occurred, never when it first did, so
@@ -221,6 +227,170 @@ pub enum Unknown {
     Dependencies,
     /// The history line recorded no transition, and its snapshot is gone.
     Transition,
+}
+
+// ---------------------------------------------------------------------------------------
+// The judge, first half (design 7.2.1 to 7.2.3): its inputs, which changes are
+// candidates, and how each connects to the error. Pure functions over domain types: the
+// app layer feeds them from history and the inventory (RG-16).
+
+impl Relation {
+    /// Its strength: `own` 3, `in_stack` 2, `dependency` 1, `none` 0 (design 7.2.3).
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Own => 3,
+            Self::InStack => 2,
+            Self::Dependency => 1,
+            Self::None => 0,
+        }
+    }
+}
+
+/// A newly appeared cluster, as the full read knows it (design 7.2.1).
+#[derive(Debug, Clone)]
+pub struct Appeared<'a> {
+    pub cluster: &'a str,
+    /// From the ledger.
+    pub appearance: &'a Appearance,
+    /// The group the error is attributed to: the managed addon's name, else the folder.
+    pub addon: &'a str,
+    pub managed: bool,
+    /// The folder attribution named, if any.
+    pub folder: Option<&'a str>,
+    pub attribution: Confidence,
+    /// The AddOns folder of each stack frame, in order, without repeats.
+    pub stack_folders: Vec<String>,
+}
+
+/// One earlier change on the client, from history (design 7.2.1).
+#[derive(Debug, Clone)]
+pub struct ChangeFact {
+    pub tx: TxId,
+    pub run: Option<RunId>,
+    pub kind: TxKind,
+    pub at: Timestamp,
+    pub actor: Actor,
+    /// The folders it added, replaced or removed, each with its addon.
+    pub ops: Vec<ChangeOp>,
+    pub transitions: Vec<ReleaseTransition>,
+    /// Where `transitions` came from.
+    pub recorded: TransitionSource,
+}
+
+/// One folder a change moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeOp {
+    pub op: FolderOp,
+    pub folder: String,
+    pub addon: String,
+}
+
+impl ChangeOp {
+    /// It put code in place: an `add` or a `replace` (a removed folder cannot throw).
+    fn installs(&self) -> bool {
+        matches!(self.op, FolderOp::Add | FolderOp::Replace)
+    }
+}
+
+/// What the judge reads besides the appearance and the changes (design 7.2.1).
+pub struct JudgeContext<'a> {
+    pub now: Timestamp,
+    /// The current generation of the database the error appeared in.
+    pub generation: &'a DbGeneration,
+    /// The marks of that database.
+    pub marks: &'a [ChangeMark],
+    /// How many databases the ledger holds for this client.
+    pub databases: usize,
+    /// Whether folder `a` declares folder `b` in its loaded TOC, as a required or an
+    /// optional dependency, ignoring case; false for a missing folder. Read now.
+    pub depends: &'a dyn Fn(&str, &str) -> bool,
+    /// Folders some transaction added, replaced or removed after the appearance was
+    /// found: what the inventory says of them now is not what ran then.
+    pub changed_since: &'a BTreeSet<String>,
+}
+
+/// Folder and addon names compare ignoring ASCII case, as the game and the records do.
+fn same(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// How `change` connects to `error`: the strongest relation that holds (design 7.2.3),
+/// and whether a `dependency` edge would have held but was not asserted because one of
+/// its folders changed since (`cx.changed_since`): the TOC on disk is then not the one
+/// that was loaded, and the caller records [`Unknown::Dependencies`].
+///
+/// - `own`: the change added or replaced the erroring folder, or (managed) a folder of
+///   the erroring addon. With `Low` attribution, the addon is itself a guess: `in_stack`.
+/// - `in_stack`: it added or replaced a folder of the error's stack.
+/// - `dependency`: the erroring folder depends on a folder it added, replaced or removed,
+///   or a folder it added or replaced depends on the erroring folder.
+/// - `none` otherwise.
+pub fn relation(
+    error: &Appeared<'_>,
+    change: &ChangeFact,
+    cx: &JudgeContext<'_>,
+) -> (Relation, bool) {
+    let installs = || change.ops.iter().filter(|o| o.installs());
+    let own = installs().any(|o| {
+        error.folder.is_some_and(|f| same(&o.folder, f))
+            || (error.managed && same(&o.addon, error.addon))
+    });
+    if own {
+        let relation = if error.attribution == Confidence::Low {
+            Relation::InStack
+        } else {
+            Relation::Own
+        };
+        return (relation, false);
+    }
+    if installs().any(|o| error.stack_folders.iter().any(|s| same(s, &o.folder))) {
+        return (Relation::InStack, false);
+    }
+    let Some(erroring) = error.folder else {
+        return (Relation::None, false);
+    };
+    let changed = |folder: &str| cx.changed_since.iter().any(|c| same(c, folder));
+    let mut unknown = false;
+    for o in &change.ops {
+        let edge = (cx.depends)(erroring, &o.folder)
+            || (o.installs() && (cx.depends)(&o.folder, erroring));
+        if !edge {
+            continue;
+        }
+        if changed(erroring) || changed(&o.folder) {
+            unknown = true;
+            continue;
+        }
+        return (Relation::Dependency, false);
+    }
+    (Relation::None, unknown)
+}
+
+/// The changes that may have preceded an error whose onset is `onset`, in their order:
+/// at or before `onset.by`, and no more than [`SUSPECT_MAX_AGE`] before it (design 7.2.2).
+pub fn candidates<'a>(changes: &'a [ChangeFact], onset: &Onset) -> Vec<&'a ChangeFact> {
+    changes
+        .iter()
+        .filter(|c| {
+            c.at <= onset.by && onset.by.duration_since(c.at).unsigned_abs() <= SUSPECT_MAX_AGE
+        })
+        .collect()
+}
+
+/// Whether BugGrabber itself changed between the read without the error and `onset.by`
+/// (design 7.2.2): a change later than `onset.after` (else the earlier read's look) and
+/// not later than `onset.by` added or replaced `appearance.provider`, the folder of the
+/// BugGrabber that owns the database. A different BugGrabber may write the same error
+/// differently, so no judgment is made across one.
+pub fn provider_changed(appearance: &Appearance, changes: &[ChangeFact], onset: &Onset) -> bool {
+    let lower = onset.after.unwrap_or(appearance.before.observed_at);
+    changes.iter().any(|c| {
+        c.at > lower
+            && c.at <= onset.by
+            && c.ops
+                .iter()
+                .any(|o| o.installs() && same(&o.folder, &appearance.provider))
+    })
 }
 
 #[cfg(test)]
@@ -552,5 +722,349 @@ mod tests {
                 prop_assert_eq!(onset(&without), (got, false));
             }
         }
+    }
+
+    /// A change at `at` that moved `ops`, each `(op, folder, addon)`.
+    fn change(at: Timestamp, ops: &[(FolderOp, &str, &str)]) -> ChangeFact {
+        ChangeFact {
+            tx: "01M9Q00000000000000000000A".parse().unwrap(),
+            run: None,
+            kind: TxKind::Update,
+            at,
+            actor: Actor::Human,
+            ops: ops
+                .iter()
+                .map(|(op, folder, addon)| ChangeOp {
+                    op: *op,
+                    folder: (*folder).to_owned(),
+                    addon: (*addon).to_owned(),
+                })
+                .collect(),
+            transitions: Vec::new(),
+            recorded: TransitionSource::Recorded,
+        }
+    }
+
+    /// An error in `folder`, filed under `addon` (managed or not), with its stack's
+    /// folders and attribution confidence.
+    fn appeared<'a>(
+        appearance: &'a Appearance,
+        addon: &'a str,
+        managed: bool,
+        folder: Option<&'a str>,
+        stack: &[&str],
+        attribution: Confidence,
+    ) -> Appeared<'a> {
+        Appeared {
+            cluster: "c:1",
+            appearance,
+            addon,
+            managed,
+            folder,
+            attribution,
+            stack_folders: stack.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn relation_is_the_strongest_connection_that_holds() {
+        use FolderOp::{Add, Record, Remove, Replace};
+        use Relation::{Dependency, InStack, None as Unrelated, Own};
+        let base = appearance();
+        // The TOCs now: Guidelime_Guide requires Guidelime; Guidelime requires LibStub.
+        let depends = |a: &str, b: &str| {
+            matches!(
+                (
+                    a.to_ascii_lowercase().as_str(),
+                    b.to_ascii_lowercase().as_str()
+                ),
+                ("guidelime_guide", "guidelime") | ("guidelime", "libstub")
+            )
+        };
+        let nothing = BTreeSet::new();
+        let libstub_since: BTreeSet<String> = ["LibStub".to_owned()].into();
+        let generation = DbGeneration("g:1".to_owned());
+        let cx = |changed_since| JudgeContext {
+            now: t(400),
+            generation: &generation,
+            marks: &[],
+            databases: 1,
+            depends: &depends,
+            changed_since,
+        };
+        let error = |managed, folder, stack: &[&str], attribution| {
+            appeared(&base, "Guidelime", managed, folder, stack, attribution)
+        };
+        let high = Confidence::High;
+        // (case, error, change ops, changed since, relation, dependencies unknown)
+        type Case<'a> = (
+            &'a str,
+            Appeared<'a>,
+            Vec<(FolderOp, &'a str, &'a str)>,
+            &'a BTreeSet<String>,
+            Relation,
+            bool,
+        );
+        let cases: Vec<Case<'_>> = vec![
+            (
+                "own: the erroring folder replaced",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Replace, "Guidelime", "Guidelime")],
+                &nothing,
+                Own,
+                false,
+            ),
+            (
+                "own: by folder, ignoring case",
+                error(false, Some("Guidelime"), &[], high),
+                vec![(Add, "GUIDELIME", "Other")],
+                &nothing,
+                Own,
+                false,
+            ),
+            (
+                "own: a folder of the managed addon",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Replace, "Guidelime_Data", "guidelime")],
+                &nothing,
+                Own,
+                false,
+            ),
+            (
+                "own: by folder, though the addon is named otherwise now",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Replace, "Guidelime", "Guidelime Classic")],
+                &nothing,
+                Own,
+                false,
+            ),
+            (
+                "an unmanaged erroring folder matches by folder only",
+                error(false, Some("Guidelime"), &[], high),
+                vec![(Replace, "Guidelime_Data", "Guidelime")],
+                &nothing,
+                Unrelated,
+                false,
+            ),
+            (
+                "own with low attribution is in_stack",
+                error(true, Some("Guidelime"), &[], Confidence::Low),
+                vec![(Replace, "Guidelime", "Guidelime")],
+                &nothing,
+                InStack,
+                false,
+            ),
+            (
+                "a removal of the erroring folder is not own",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Remove, "Guidelime", "Guidelime")],
+                &nothing,
+                Unrelated,
+                false,
+            ),
+            (
+                "in_stack: a folder of the stack replaced",
+                error(
+                    true,
+                    Some("Guidelime"),
+                    &["Guidelime_Guide", "Guidelime"],
+                    high,
+                ),
+                vec![(Replace, "guidelime_guide", "GuidePack")],
+                &nothing,
+                InStack,
+                false,
+            ),
+            (
+                "a removal of a stack folder is not in_stack",
+                error(true, Some("Guidelime"), &["Guidelime_Guide"], high),
+                vec![(Remove, "Guidelime_Guide", "GuidePack")],
+                &nothing,
+                Unrelated,
+                false,
+            ),
+            (
+                "dependency: the erroring folder requires one replaced",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Replace, "LibStub", "LibStub")],
+                &nothing,
+                Dependency,
+                false,
+            ),
+            (
+                "dependency: the erroring folder requires one removed",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Remove, "LibStub", "LibStub")],
+                &nothing,
+                Dependency,
+                false,
+            ),
+            (
+                "dependency: a plugin of the erroring folder replaced",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Replace, "Guidelime_Guide", "GuidePack")],
+                &nothing,
+                Dependency,
+                false,
+            ),
+            (
+                "a plugin removed is no dependency",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Remove, "Guidelime_Guide", "GuidePack")],
+                &nothing,
+                Unrelated,
+                false,
+            ),
+            (
+                "a dependency whose folder changed since is not asserted",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Replace, "LibStub", "LibStub")],
+                &libstub_since,
+                Unrelated,
+                true,
+            ),
+            (
+                "a blocked edge falls to the next that holds",
+                error(true, Some("Guidelime"), &[], high),
+                vec![
+                    (Replace, "LibStub", "LibStub"),
+                    (Replace, "Guidelime_Guide", "GuidePack"),
+                ],
+                &libstub_since,
+                Dependency,
+                false,
+            ),
+            (
+                "none: an unrelated folder",
+                error(true, Some("Guidelime"), &["Guidelime"], high),
+                vec![(Replace, "Bagnon", "Bagnon")],
+                &nothing,
+                Unrelated,
+                false,
+            ),
+            (
+                "none: records only",
+                error(true, Some("Guidelime"), &[], high),
+                vec![(Record, "Guidelime", "Guidelime")],
+                &nothing,
+                Unrelated,
+                false,
+            ),
+            (
+                "none: no erroring folder to depend on",
+                error(false, None, &[], high),
+                vec![(Replace, "LibStub", "LibStub")],
+                &nothing,
+                Unrelated,
+                false,
+            ),
+        ];
+        for (case, error, ops, changed_since, want, unknown) in cases {
+            let got = relation(&error, &change(t(200), &ops), &cx(changed_since));
+            assert_eq!(got, (want, unknown), "{case}");
+        }
+        assert_eq!(
+            [Own, InStack, Dependency, Unrelated].map(Relation::rank),
+            [3, 2, 1, 0]
+        );
+    }
+
+    #[test]
+    fn candidates_are_the_changes_within_the_window_before_the_onset() {
+        use jiff::SignedDuration;
+        let by = t(1_000_000);
+        let onset = Onset {
+            after: None,
+            by,
+            exact: false,
+        };
+        let max = SignedDuration::try_from(SUSPECT_MAX_AGE).unwrap();
+        let second = SignedDuration::from_secs(1);
+        let cases = [
+            ("at the onset itself", by, true),
+            ("a second after it", by + second, false),
+            ("at the window's far edge", by - max, true),
+            ("a second past it", by - max - second, false),
+            ("within it", by - SignedDuration::from_hours(3), true),
+        ];
+        for (case, at, kept) in cases {
+            let changes = [change(at, &[(FolderOp::Replace, "Foo", "Foo")])];
+            assert_eq!(
+                candidates(&changes, &onset).len(),
+                usize::from(kept),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_judgment_across_a_change_to_buggrabber_itself() {
+        // Written at 100 without the error, at 290 with it.
+        let base = appearance();
+        let (bounds, _) = onset(&base);
+        let bug =
+            |at: i64, folder: &str| change(t(at), &[(FolderOp::Replace, folder, "BugGrabber")]);
+        let cases = [
+            (
+                "BugGrabber replaced between the two writes",
+                vec![bug(200, "!BugGrabber")],
+                true,
+            ),
+            (
+                "and named in another case",
+                vec![bug(200, "!buggrabber")],
+                true,
+            ),
+            (
+                "replaced before the write without the error",
+                vec![bug(90, "!BugGrabber")],
+                false,
+            ),
+            (
+                "at that write: not after it",
+                vec![bug(100, "!BugGrabber")],
+                false,
+            ),
+            (
+                "after the error had occurred",
+                vec![bug(295, "!BugGrabber")],
+                false,
+            ),
+            (
+                "another addon replaced in between",
+                vec![bug(200, "Foo")],
+                false,
+            ),
+        ];
+        for (case, changes, want) in cases {
+            assert_eq!(provider_changed(&base, &changes, &bounds), want, "{case}");
+        }
+        // A pack that embeds BugGrabber owns its database: a change to the pack counts.
+        let embedded = Appearance {
+            provider: "bdUI".to_owned(),
+            ..appearance()
+        };
+        assert!(provider_changed(&embedded, &[bug(200, "bdUI")], &bounds));
+        assert!(!provider_changed(
+            &embedded,
+            &[bug(200, "!BugGrabber")],
+            &bounds
+        ));
+        // With the earlier write's time unknown, the lower edge is the earlier look.
+        let unwritten = Appearance {
+            before: mark(t(110), None),
+            ..appearance()
+        };
+        let (open, _) = onset(&unwritten);
+        assert!(!provider_changed(
+            &unwritten,
+            &[bug(105, "!BugGrabber")],
+            &open
+        ));
+        assert!(provider_changed(
+            &unwritten,
+            &[bug(115, "!BugGrabber")],
+            &open
+        ));
     }
 }
