@@ -996,16 +996,15 @@ fn marked(tag: &str) -> Value {
     json!([{"addon": "Foo", "version": tag, "release": {"source": "gh:o/foo", "tag": tag}}])
 }
 
+/// Retail's record file (its files index sits beside it).
+fn record_path(home: &Home) -> std::path::PathBuf {
+    paths(&home.env).target_record(&common::state::key_of(home, "retail"))
+}
+
 /// The client's record file and AddOns folder, byte for byte: what a refused rollback
 /// leaves as it was.
 fn state_of(home: &Home) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
-    let records = home.state().join("targets");
-    let record = fs::read_dir(&records)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .find(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .map(|e| fs::read(e.path()).unwrap())
-        .unwrap();
+    let record = fs::read(record_path(home)).unwrap();
     let addons = home.client("_retail_").join("Interface/AddOns");
     let mut files = Vec::new();
     let mut dirs = vec![addons.clone()];
@@ -1584,4 +1583,28 @@ fn back_along_a_line_with_no_known_transition_is_not_found() {
         );
     }
     log.assert_eq("nothing changed", &state_of(&home), &before);
+}
+
+/// 29. With 256 marks on the addon, the one a rollback adds is one too many: the command
+///     fails before it commits, and nothing is installed or marked.
+#[test]
+fn back_with_a_full_list_of_marks_fails_before_it_commits() {
+    let log = tlog!();
+    let (home, _) = updated(&log);
+    log.step("256 label marks on Foo");
+    let path = record_path(&home);
+    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let tx = record["addons"]["foo"]["tx_id"].clone();
+    let marks: Vec<Value> = (0..omaddons::limits::SKIPS_PER_ADDON_MAX)
+        .map(|n| {
+            json!({"release": null, "version": format!("9.{n}"), "at": "2026-11-01T00:00:00Z",
+                   "origin": "manual", "tx": tx})
+        })
+        .collect();
+    record["addons"]["foo"]["skipped_releases"] = json!(marks);
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let before = state_of(&home);
+    let ran = quiet(&log, &home, &["skip", "foo", "--back", "-t", "retail"]);
+    ran.fails(2, "usage");
+    log.assert_eq("nothing installed or marked", &state_of(&home), &before);
 }
