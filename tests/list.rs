@@ -511,6 +511,17 @@ fn latest_carries_the_release_identity_the_plan_reports() {
         .unwrap_or_default();
     log.assert_eq("first seen, as the memo has it", &first_seen, &seen);
     assert!(first_seen.is_string(), "{first_seen}");
+    // RG-53: first seen just now, an automatic update takes it six hours later.
+    let eligible = latest
+        .as_object_mut()
+        .and_then(|l| l.remove("auto_eligible_at"))
+        .unwrap_or_default();
+    let at = |v: &Value| v.as_str().unwrap().parse::<jiff::Timestamp>().unwrap();
+    log.assert_eq(
+        "an automatic update's time",
+        &at(&eligible),
+        &(at(&first_seen) + jiff::SignedDuration::from_hours(6)),
+    );
     log.assert_eq(
         "Foo's latest",
         &latest,
@@ -606,7 +617,8 @@ fn latest_carries_the_release_identity_the_plan_reports() {
         "Bar's latest",
         &bar,
         &json!({"version": null, "status": "static", "source": null, "release_id": null,
-            "revision": null, "asset": null, "published_at": null, "first_seen_at": null}),
+            "revision": null, "asset": null, "published_at": null, "first_seen_at": null,
+            "auto_eligible_at": null}),
     );
 
     log.step("never checked");
@@ -619,6 +631,7 @@ fn latest_carries_the_release_identity_the_plan_reports() {
         "Foo's latest, never checked",
         &foo_of(listed.data())["latest"],
         &json!({"version": null, "status": "unchecked", "source": null, "release_id": null,
-            "revision": null, "asset": null, "published_at": null, "first_seen_at": null}),
+            "revision": null, "asset": null, "published_at": null, "first_seen_at": null,
+            "auto_eligible_at": null}),
     );
 }

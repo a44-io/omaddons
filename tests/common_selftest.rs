@@ -2490,3 +2490,14 @@ fn plant_credential_file_mode_sets_0644() {
         format!("{}\n", plant::MODE_TOKEN)
     );
 }
+
+/// `memo::clock_times` (RG-53): both of a human `outdated` line's automatic-update times
+/// become `<time>`, a time of day or a dated one, and every other line is kept.
+#[test]
+fn clock_times_hides_both_automatic_update_times_whatever_their_form() {
+    let text = "retail\n  Foo  v1  → v2  gh:o/foo · first seen 18:52 · automatic updates take it after 00:52\n  Bar  v1  → v2  first seen 2026-11-13 08:00 · automatic updates take it after 2026-11-15 08:00\n  Baz  v1  current\n";
+    assert_eq!(
+        common::memo::clock_times(text),
+        "retail\n  Foo  v1  → v2  gh:o/foo · first seen <time> · automatic updates take it after <time>\n  Bar  v1  → v2  first seen <time> · automatic updates take it after <time>\n  Baz  v1  current\n"
+    );
+}

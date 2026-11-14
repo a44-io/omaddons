@@ -1467,15 +1467,13 @@ fn held_words(i: &ItemResult) -> String {
     format!("left at {from} · {why}")
 }
 
-/// `00:52` when `at` falls on `now`'s day in `tz`, else `2026-11-15 00:52`.
-fn time_of_day(at: Timestamp, now: Timestamp, tz: &jiff::tz::TimeZone) -> String {
-    let (local, today) = (at.to_zoned(tz.clone()), now.to_zoned(tz.clone()));
-    let format = if local.date() == today.date() {
-        "%H:%M"
-    } else {
-        "%Y-%m-%d %H:%M"
-    };
-    local.strftime(format).to_string()
+/// An automatic update's times as design 5.5 writes them (`first seen 18:52 ·
+/// automatic updates take it after 00:52`): `00:52` within a day of `now` either way,
+/// else `2026-11-15 00:52`, in `tz`.
+pub(crate) fn time_of_day(at: Timestamp, now: Timestamp, tz: &jiff::tz::TimeZone) -> String {
+    let near = at.duration_since(now).abs() < jiff::SignedDuration::from_hours(24);
+    let format = if near { "%H:%M" } else { "%Y-%m-%d %H:%M" };
+    at.to_zoned(tz.clone()).strftime(format).to_string()
 }
 
 pub(crate) fn item_detail(i: &ItemResult, dry_run: bool) -> String {

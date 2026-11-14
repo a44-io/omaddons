@@ -139,12 +139,13 @@ mod support {
         stable
     }
 
-    /// Every release's `first_seen_at` (RG-50), the clock's when this machine saw it.
+    /// Every release's `first_seen_at` (RG-50), the clock's when this machine saw it, and
+    /// each update's `auto_eligible_at` (RG-53), six hours after.
     fn first_seen(value: &mut Value) {
         match value {
             Value::Object(map) => {
                 for (key, v) in map.iter_mut() {
-                    if key == "first_seen_at" && v.is_string() {
+                    if (key == "first_seen_at" || key == "auto_eligible_at") && v.is_string() {
                         *v = Value::from("<time>");
                     } else {
                         first_seen(v);
@@ -349,7 +350,10 @@ fn outdated_attaches_one_changelog_per_ref_to_updates_only() {
 
     let human = home.exec(&["outdated".into(), "--changelog".into()]);
     assert_eq!(human.code, 0, "{}", human.context());
-    insta::assert_snapshot!("outdated_changelog_human", human.stdout);
+    insta::assert_snapshot!(
+        "outdated_changelog_human",
+        common::memo::clock_times(&human.stdout)
+    );
 }
 
 #[test]

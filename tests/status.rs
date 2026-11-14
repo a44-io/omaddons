@@ -1010,6 +1010,16 @@ mod updates {
                 .is_some_and(|t| t.parse::<jiff::Timestamp>().is_ok()),
             "{first_seen}"
         );
+        // RG-53: first seen just now, an automatic update takes it six hours later.
+        let eligible = latest
+            .as_object_mut()
+            .and_then(|l| l.remove("auto_eligible_at"))
+            .unwrap_or_default();
+        let at = |v: &Value| v.as_str().unwrap().parse::<jiff::Timestamp>().unwrap();
+        assert_eq!(
+            at(&eligible),
+            at(&first_seen) + jiff::SignedDuration::from_hours(6)
+        );
         assert_eq!(
             latest,
             json!({

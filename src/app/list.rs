@@ -22,7 +22,7 @@ use crate::model::{
     VersionConfidence,
 };
 use crate::output::{Outcome, Style, table};
-use crate::resolve::updates::{StatusKind, StatusRow, UpdateStatus};
+use crate::resolve::updates::{AutoClock, StatusKind, UpdateStatus};
 use crate::rules::{ClientVersion, Family, RulesTable};
 use crate::sources::SourceId;
 use crate::state::records::load_record;
@@ -149,14 +149,20 @@ pub struct Latest {
     /// (design 7.6.1); `null` when the release memo has no sight of it.
     #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub first_seen_at: Option<jiff::Timestamp>,
+    /// When `update --auto` would take this update, as `outdated` says (design 7.6.5);
+    /// `null` when it would take it now, or the status is no update.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub auto_eligible_at: Option<jiff::Timestamp>,
 }
 
 /// `list`'s update entry for an addon of `r#ref` whose status is `status` (`None`: no
 /// status row, so `unchecked`): the release identity is the one the status names, as
-/// `update`'s approval reports it, or `null` throughout when it names none.
-pub(super) fn latest_of(status: Option<&UpdateStatus>, r#ref: &Ref) -> Latest {
+/// `update`'s approval reports it, or `null` throughout when it names none; the wait of
+/// an automatic update judged by `clock`.
+pub(super) fn latest_of(status: Option<&UpdateStatus>, r#ref: &Ref, clock: &AutoClock) -> Latest {
     let release = status.and_then(UpdateStatus::latest);
     Latest {
+        auto_eligible_at: status.and_then(|s| clock.eligible_at(s)),
         version: release.map(|l| l.version.clone()),
         status: status.map_or(StatusKind::Unchecked, UpdateStatus::kind),
         source: release.map(|_| SourceId::of(r#ref)),
@@ -269,6 +275,10 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
     };
     let mut warnings = world.warnings.clone();
     let remembered = Remembered::load(&world);
+    let clock = AutoClock {
+        now: jiff::Timestamp::now(),
+        min_age: world.config.update_min_age(),
+    };
     let mut targets = Vec::new();
     for d in world.select_many(ctx)? {
         let record = match d.target.key {
@@ -287,13 +297,20 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
             .as_ref()
             .map(|r| remembered.statuses(&d.target, r, &world.table))
             .unwrap_or_default();
+        let latest = |a: &AddonRecord| {
+            let status = rows
+                .iter()
+                .find(|r| r.addon.eq_ignore_ascii_case(&a.name))
+                .map(|r| &r.status);
+            latest_of(status, &a.r#ref, &clock)
+        };
         let mut listed = list_target(
             d,
             record
                 .as_ref()
                 .map(|r| r.addons.values().collect())
                 .unwrap_or_default(),
-            &rows,
+            &latest,
             &inv,
             args,
             verbose,
@@ -327,7 +344,7 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
 fn list_target(
     d: &DiscoveredTarget,
     addons: Vec<&AddonRecord>,
-    rows: &[StatusRow],
+    latest: &dyn Fn(&AddonRecord) -> Latest,
     inv: &Inventory,
     args: ListArgs,
     verbose: bool,
@@ -335,13 +352,6 @@ fn list_target(
 ) -> ListTarget {
     let t = &d.target;
     let info = |e: &FolderEntry| folder_info(e, t.family, table);
-    let latest = |a: &AddonRecord| {
-        let status = rows
-            .iter()
-            .find(|r| r.addon.eq_ignore_ascii_case(&a.name))
-            .map(|r| &r.status);
-        latest_of(status, &a.r#ref)
-    };
     let mut listed: Vec<ListAddon> = addons
         .into_iter()
         .map(|a| {
@@ -626,6 +636,7 @@ mod tests {
                 asset: Some("Foo.zip".to_owned()),
                 published_at: None,
                 first_seen_at: None,
+                auto_eligible_at: None,
             };
             assert_eq!(latest_cell(&latest), cell, "{status:?}");
         }
@@ -656,6 +667,7 @@ mod tests {
             asset: Some("Foo.zip".into()),
             published_at: None,
             first_seen_at: None,
+            auto_eligible_at: None,
         };
         let unnamed = |status| Latest {
             version: None,
@@ -666,6 +678,12 @@ mod tests {
             asset: None,
             published_at: None,
             first_seen_at: None,
+            auto_eligible_at: None,
+        };
+        // No wait: nothing is too new, so the table speaks of the release alone.
+        let clock = AutoClock {
+            now: jiff::Timestamp::now(),
+            min_age: std::time::Duration::ZERO,
         };
         let failed = Error::new(ErrorCode::NotFound, "gone", Suggestion::text("x"));
         let cases: Vec<(&str, Option<UpdateStatus>, &str, Latest)> = vec![
@@ -748,7 +766,7 @@ mod tests {
         ];
         for (case, status, r, want) in cases {
             let parsed: Ref = r.parse().unwrap();
-            let got = latest_of(status.as_ref(), &parsed);
+            let got = latest_of(status.as_ref(), &parsed, &clock);
             assert_eq!(got, want, "{case}: {status:?} on {r}");
         }
         // The release's date, when its source gave one (the widget's release age).
@@ -761,7 +779,7 @@ mod tests {
             confidence: Confidence::Declared,
         };
         assert_eq!(
-            latest_of(Some(&dated), &gh.parse().unwrap()).published_at,
+            latest_of(Some(&dated), &gh.parse().unwrap(), &clock).published_at,
             Some(at)
         );
         // A WowAce re-tag names its revision (the widget's exact `--revision`).
@@ -774,10 +792,34 @@ mod tests {
             },
             confidence: Confidence::Declared,
         };
-        let got = latest_of(Some(&retag), &wowace.parse().unwrap());
+        let got = latest_of(Some(&retag), &wowace.parse().unwrap(), &clock);
         assert_eq!(
             (got.release_id.as_deref(), got.revision),
             (Some("wowace:bug-grabber@v2"), Some(1402))
         );
+        // RG-53: with the default wait, an update first seen an hour ago says when an
+        // automatic update takes it, as `outdated` does; a pinned one never does.
+        let seen: jiff::Timestamp = "2026-11-14T18:52:00Z".parse().unwrap();
+        let waiting = AutoClock {
+            now: seen + jiff::SignedDuration::from_hours(1),
+            min_age: crate::limits::DEFAULT_UPDATE_MIN_AGE,
+        };
+        let young = ReleaseBrief {
+            first_seen_at: Some(seen),
+            ..brief(gh)
+        };
+        let update = UpdateStatus::UpdateAvailable {
+            latest: young.clone(),
+            confidence: Confidence::Declared,
+        };
+        assert_eq!(
+            latest_of(Some(&update), &gh.parse().unwrap(), &waiting).auto_eligible_at,
+            Some(seen + jiff::SignedDuration::from_hours(6))
+        );
+        let pinned = UpdateStatus::Pinned {
+            latest: Some(young),
+        };
+        let got = latest_of(Some(&pinned), &gh.parse().unwrap(), &waiting);
+        assert_eq!(got.auto_eligible_at, None);
     }
 }

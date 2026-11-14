@@ -23,7 +23,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::engine::Engine;
-use super::outcome::TargetRef;
+use super::outcome::{TargetRef, time_of_day};
 use super::status::modes_or_family;
 use super::world::World;
 use crate::cli::Context;
@@ -39,8 +39,8 @@ use crate::output::{Outcome, Phase, Style, Subject};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::{Fetched, Freshness, Origin, ReleaseCache};
 use crate::resolve::updates::{
-    BlockedReason, Confidence, ReleaseBrief, StatusKind, StatusRow, UncheckedReason, UpdateStatus,
-    installed_primary_interface, is_static, statuses, update_floor,
+    AutoClock, BlockedReason, Confidence, ReleaseBrief, StatusKind, StatusRow, UncheckedReason,
+    UpdateStatus, installed_primary_interface, is_static, statuses, update_floor,
 };
 use crate::sources::changelog::{
     Changelog, ChangelogUnavailable, Installed as ChangelogInstalled, Notes, changelog_for,
@@ -144,6 +144,11 @@ pub struct OutdatedItem {
     pub status: StatusKind,
     /// `update_available` only.
     pub confidence: Option<Confidence>,
+    /// When `update --auto` would take this update: its release was first seen less than
+    /// `update_min_age_hours` ago (design 7.6.5). `null` when it would take it now, or
+    /// the item is no update.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub auto_eligible_at: Option<Timestamp>,
     pub blocked_reason: Option<BlockedReason>,
     pub unchecked_reason: Option<UncheckedReason>,
     pub error: Option<ErrorBody>,
@@ -387,10 +392,35 @@ fn describe(i: &OutdatedItem, latest_width: usize, r: Option<&str>, now: Timesta
                 Some(Confidence::Unlikely) => " (may not load here)",
                 _ => "",
             };
-            format!(
-                "→ {latest:<latest_width$}  {}{doubt}",
-                r.unwrap_or_default()
-            )
+            // Design 5.5: `first seen 18:52 · automatic updates take it after 00:52`.
+            let note = i.auto_eligible_at.map(|at| {
+                let tz = jiff::tz::TimeZone::system();
+                let seen = i
+                    .latest
+                    .as_ref()
+                    .and_then(|l| l.release.first_seen_at)
+                    .map(|seen| format!("first seen {} · ", time_of_day(seen, now, &tz)))
+                    .unwrap_or_default();
+                format!(
+                    "{seen}automatic updates take it after {}",
+                    time_of_day(at, now, &tz)
+                )
+            });
+            match (r, note) {
+                (None, Some(note)) if doubt.is_empty() => {
+                    format!("→ {latest:<latest_width$}  {note}")
+                }
+                (r, Some(note)) => {
+                    format!(
+                        "→ {latest:<latest_width$}  {}{doubt} · {note}",
+                        r.unwrap_or_default()
+                    )
+                }
+                (r, None) => format!(
+                    "→ {latest:<latest_width$}  {}{doubt}",
+                    r.unwrap_or_default()
+                ),
+            }
         }
         StatusKind::Pinned => format!("pinned (latest {latest})"),
         // `skipped 12.1.22 (went back today 20:31)`: the mark and where it came from.
@@ -581,6 +611,12 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
     warnings.extend(remembered.warnings);
     notes.extend(remembered.notes);
 
+    // One instant for the items, taken after the fetch: a release first seen by it waits
+    // from that sight, as a later run says too.
+    let clock = AutoClock {
+        now: Timestamp::now(),
+        min_age: world.config.update_min_age(),
+    };
     let mut summary = Summary::default();
     let mut listed: BTreeMap<String, Vec<OutdatedItem>> = BTreeMap::new();
     for row in rows {
@@ -601,7 +637,7 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
             listed
                 .entry(row.target)
                 .or_default()
-                .push(item(record, status, remembered));
+                .push(item(record, status, remembered, &clock));
         }
     }
     if args.changelog {
@@ -663,7 +699,7 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
         check: args.check,
         headings,
         age: checked_at.map(age),
-        now: Timestamp::now(),
+        now: clock.now,
         notes,
     })
 }
@@ -857,7 +893,9 @@ fn item(
     record: &crate::model::AddonRecord,
     status: UpdateStatus,
     stale_answer: Option<Stale>,
+    clock: &AutoClock,
 ) -> OutdatedItem {
+    let auto_eligible_at = clock.eligible_at(&status);
     let latest = status.latest().cloned().map(|release| LatestRelease {
         release,
         changelog: None,
@@ -894,6 +932,7 @@ fn item(
         latest,
         status: kind,
         confidence,
+        auto_eligible_at,
         blocked_reason,
         unchecked_reason,
         error,

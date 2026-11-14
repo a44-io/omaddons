@@ -8587,6 +8587,7 @@ output errors data.targets[].addons[].last_seen.meaning string!
 output errors data.targets[].addons[].last_seen.tz string!
 output errors data.targets[].addons[].latest object?!
 output errors data.targets[].addons[].latest.asset string?!
+output errors data.targets[].addons[].latest.auto_eligible_at string?!
 output errors data.targets[].addons[].latest.first_seen_at string?!
 output errors data.targets[].addons[].latest.published_at string?!
 output errors data.targets[].addons[].latest.release_id string?!
@@ -9156,6 +9157,7 @@ output list data.targets[].addons[].folders array|integer!
 output list data.targets[].addons[].installed_at string!
 output list data.targets[].addons[].latest object!
 output list data.targets[].addons[].latest.asset string?!
+output list data.targets[].addons[].latest.auto_eligible_at string?!
 output list data.targets[].addons[].latest.first_seen_at string?!
 output list data.targets[].addons[].latest.published_at string?!
 output list data.targets[].addons[].latest.release_id string?!
@@ -9372,6 +9374,7 @@ output outdated data.targets array!
 output outdated data.targets[] object
 output outdated data.targets[].items array!
 output outdated data.targets[].items[] object
+output outdated data.targets[].items[].auto_eligible_at string?!
 output outdated data.targets[].items[].blocked_reason string?!
 output outdated data.targets[].items[].channel string!
 output outdated data.targets[].items[].confidence string?!
@@ -9953,6 +9956,7 @@ output status data.summary.running[] string
 output status data.summary.state string!
 output status data.summary.targets integer! minimum=0
 output status data.summary.updates object!
+output status data.summary.updates.auto_ready integer! minimum=0
 output status data.summary.updates.available integer! minimum=0
 output status data.summary.updates.targets array!
 output status data.summary.updates.targets[] string
@@ -10086,6 +10090,7 @@ output status data.targets[].updates.failed integer! minimum=0
 output status data.targets[].updates.pinned integer! minimum=0
 output status data.targets[].updates.skipped integer! minimum=0
 output status data.targets[].updates.stale boolean!
+output status data.targets[].updates.too_new integer! minimum=0
 output status data.targets[].updates.unchecked integer! minimum=0
 output status data.targets[].version string!
 output status data.widget object?!

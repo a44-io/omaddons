@@ -50,7 +50,7 @@ use crate::model::{Actor, ReleaseKey, RunId, Target, TargetKey, TransitionChange
 use crate::output::{Outcome, Style, trace};
 use crate::privacy::WtfPathRedactor;
 use crate::resolve::catalog::Catalog;
-use crate::resolve::updates::StatusKind;
+use crate::resolve::updates::{AutoClock, StatusKind};
 use crate::state::history::{self, Dismissed, SettingEntry};
 use crate::state::paths::ClientPaths;
 use crate::state::records::{TargetRecord, load_record};
@@ -1405,10 +1405,14 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
     let mut targets = Vec::new();
     let mut labels = Vec::new();
     let mut running = Vec::new();
+    let clock = AutoClock {
+        now,
+        min_age: world.config.update_min_age(),
+    };
     for s in &seen {
         let t = s.target;
-        let latest =
-            |addon: &str| latest_of(&remembered, t, s.record.as_ref(), &world.table, addon);
+        let record = s.record.as_ref();
+        let latest = |addon: &str| latest_of(&remembered, t, record, &world.table, addon, &clock);
         let names = WtfPathRedactor::for_client(&s.client);
         let known = ledger.client(&s.filed_as, now, s.record.as_ref());
         let remedies = Remedies::new(&world.paths, &t.client_dir, &t.id, s.record.as_ref());
@@ -1557,6 +1561,7 @@ fn latest_of(
     record: Option<&TargetRecord>,
     table: &crate::rules::RulesTable,
     addon: &str,
+    clock: &AutoClock,
 ) -> Option<(String, Latest)> {
     let record = record?;
     let a = record.addons.get(&TargetRecord::addon_key(addon))?;
@@ -1565,7 +1570,10 @@ fn latest_of(
         .iter()
         .find(|r| r.addon.eq_ignore_ascii_case(addon))
         .map(|r| &r.status);
-    Some((a.version.clone(), super::list::latest_of(status, &a.r#ref)))
+    Some((
+        a.version.clone(),
+        super::list::latest_of(status, &a.r#ref, clock),
+    ))
 }
 
 /// The view's filters, and what it accumulates across targets.

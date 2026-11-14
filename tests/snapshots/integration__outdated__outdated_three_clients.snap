@@ -38,6 +38,7 @@ expression: stable(&envelope)
       {
         "items": [
           {
+            "auto_eligible_at": "<time>",
             "blocked_reason": null,
             "channel": "stable",
             "confidence": "declared",
@@ -62,6 +63,7 @@ expression: stable(&envelope)
             "unchecked_reason": null
           },
           {
+            "auto_eligible_at": "<time>",
             "blocked_reason": null,
             "channel": "stable",
             "confidence": "declared",
@@ -94,6 +96,7 @@ expression: stable(&envelope)
       {
         "items": [
           {
+            "auto_eligible_at": "<time>",
             "blocked_reason": null,
             "channel": "stable",
             "confidence": "declared",
@@ -118,6 +121,7 @@ expression: stable(&envelope)
             "unchecked_reason": null
           },
           {
+            "auto_eligible_at": "<time>",
             "blocked_reason": null,
             "channel": "stable",
             "confidence": "declared",
@@ -150,6 +154,7 @@ expression: stable(&envelope)
       {
         "items": [
           {
+            "auto_eligible_at": "<time>",
             "blocked_reason": null,
             "channel": "stable",
             "confidence": "declared",
@@ -174,6 +179,7 @@ expression: stable(&envelope)
             "unchecked_reason": null
           },
           {
+            "auto_eligible_at": "<time>",
             "blocked_reason": null,
             "channel": "stable",
             "confidence": "declared",
@@ -198,6 +204,7 @@ expression: stable(&envelope)
             "unchecked_reason": null
           },
           {
+            "auto_eligible_at": null,
             "blocked_reason": null,
             "channel": "stable",
             "confidence": null,

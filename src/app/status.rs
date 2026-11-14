@@ -68,7 +68,7 @@ use crate::resolve::adopt::{
     AdoptLookups, CandidateFolder, NoCatalog, Tier as AdoptTier, identify,
 };
 use crate::resolve::catalog::{Catalog, FolderRefs};
-use crate::resolve::updates::{StatusKind, UncheckedReason, UpdateStatus};
+use crate::resolve::updates::{AutoClock, StatusKind, UncheckedReason, UpdateStatus};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
 use crate::sources::github_token::{GithubToken, TokenSource};
 use crate::state::history::{self, HistoryEntry, HistoryFilter, HistoryRead, Reach};
@@ -165,6 +165,11 @@ pub struct Summary {
 #[derive(Debug, Clone, Default, Serialize, JsonSchema)]
 pub struct SummaryUpdates {
     pub available: usize,
+    /// How many of `available` `update --auto` is expected to take now, all clients:
+    /// those not `too_new` (design 7.6.5). What `status` expects from the memo alone;
+    /// `update --auto --dry-run` decides, and may hold more (a look-back's choice, a new
+    /// dependency), never fewer.
+    pub auto_ready: usize,
     /// The ids of the targets with updates.
     pub targets: Vec<String>,
 }
@@ -321,6 +326,10 @@ pub struct AddonCounts {
 pub struct UpdateCounts {
     /// Updates `update` would install; a skipped release is never counted here.
     pub available: usize,
+    /// Of `available`, those `update --auto` waits on: the release was first seen less
+    /// than `update_min_age_hours` ago (design 7.6.5). A prediction from the memo; the
+    /// dry run decides.
+    pub too_new: usize,
     pub pinned: usize,
     /// Addons whose newest release is skipped on this client (a skip mark): `update`
     /// passes over them.
@@ -477,6 +486,12 @@ impl Outcome for StatusOutcome {
                     let n = t.updates.available;
                     let s = if n == 1 { "" } else { "s" };
                     counts.push_str(&format!(" · {n} update{s}"));
+                    // Design 7.6.5: `2 updates (1 waits to settle)`.
+                    match t.updates.too_new {
+                        0 => {}
+                        1 => counts.push_str(" (1 waits to settle)"),
+                        waiting => counts.push_str(&format!(" ({waiting} wait to settle)")),
+                    }
                 }
                 // A skip mark is never out of sight (design 5.3).
                 if t.updates.skipped > 0 {
@@ -910,7 +925,15 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         let (updates, due) = record
             .as_ref()
             .map_or((UpdateCounts::default(), false), |l| {
-                update_counts(&remembered, t, &l.value, &world.table, now, interval)
+                update_counts(
+                    &remembered,
+                    t,
+                    &l.value,
+                    &world.table,
+                    now,
+                    interval,
+                    world.config.update_min_age(),
+                )
             });
         check_due |= due;
         let adoptable = if inv.counts.unmanaged > 0 {
@@ -1253,13 +1276,18 @@ fn update_counts(
     table: &RulesTable,
     now: Timestamp,
     interval: Duration,
+    min_age: Duration,
 ) -> (UpdateCounts, bool) {
     let mut counts = UpdateCounts::default();
     let (mut checkable, mut never) = (false, false);
     let mut oldest: Option<Timestamp> = None;
+    let clock = AutoClock { now, min_age };
     for row in remembered.statuses(target, record, table) {
         match row.status.kind() {
-            StatusKind::UpdateAvailable => counts.available += 1,
+            StatusKind::UpdateAvailable => {
+                counts.available += 1;
+                counts.too_new += usize::from(clock.eligible_at(&row.status).is_some());
+            }
             StatusKind::Pinned => counts.pinned += 1,
             // Never `available`: a skipped release is the person's decision, so it keeps
             // no badge lit (design 7.5.2).
@@ -1418,6 +1446,10 @@ fn summary(
         targets.iter().filter(|t| t.updates.available > 0).collect();
     let updates = SummaryUpdates {
         available: with_updates.iter().map(|t| t.updates.available).sum(),
+        auto_ready: with_updates
+            .iter()
+            .map(|t| t.updates.available.saturating_sub(t.updates.too_new))
+            .sum(),
         targets: with_updates.iter().map(|t| t.id.clone()).collect(),
     };
     let with_errors: Vec<&StatusTarget> = targets.iter().filter(|t| t.errors.new > 0).collect();

@@ -247,6 +247,109 @@ fn a_release_seen_an_hour_ago_waits_and_one_seen_seven_hours_ago_installs() {
     assert_eq!(version(&home, "Foo").as_deref(), Some("v2"));
 }
 
+/// RG-53: the read commands show what waits. One settled and one too-new update, and a
+/// skipped release: `outdated` and `list` give the too-new one `auto_eligible_at` and the
+/// others `null`; `status` counts `available: 2`, `too_new: 1`, `auto_ready: 1` (the
+/// skipped release in none of them), `--cached` the same with no request; with no wait,
+/// nothing is too new. The human lines are design 5.5's.
+#[test]
+fn the_read_commands_show_what_waits_and_status_predicts_what_is_ready() {
+    let home = behind(
+        &[
+            ("Foo", "foo", &[]),
+            ("Bar", "bar", &[]),
+            ("Baz", "baz", &[]),
+        ],
+        &[],
+    );
+    let epoch = Epoch::ago(hours(7));
+    epoch.seen(&home, "gh:o/foo", "v2", hours(6));
+    epoch.seen(&home, "gh:o/bar", "v2", SignedDuration::ZERO);
+    epoch.seen(&home, "gh:o/baz", "v2", SignedDuration::ZERO);
+    home.run(&["skip", "baz", "-t", "retail"]).expect(0);
+    let eligible = epoch.at(hours(12));
+
+    let outdated = home.run(&["outdated", "-v"]).expect(0);
+    let wait_of = |envelope: &Value, name: &str| -> Value {
+        envelope["data"]["targets"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == name)
+            .map(|i| i["auto_eligible_at"].clone())
+            .unwrap()
+    };
+    let at: Timestamp = wait_of(&outdated, "Foo").as_str().unwrap().parse().unwrap();
+    assert_eq!(at, eligible, "first sight plus six hours");
+    assert_eq!(wait_of(&outdated, "Bar"), Value::Null, "settled");
+    assert_eq!(wait_of(&outdated, "Baz"), Value::Null, "skipped");
+
+    let list = home.run(&["list", "-v"]).expect(0);
+    let latest = |name: &str| -> Value {
+        list["data"]["targets"][0]["addons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .map(|a| a["latest"]["auto_eligible_at"].clone())
+            .unwrap()
+    };
+    assert_eq!(latest("Foo"), wait_of(&outdated, "Foo"));
+    assert_eq!((latest("Bar"), latest("Baz")), (Value::Null, Value::Null));
+
+    let counts = |envelope: &Value| {
+        let t = &envelope["data"]["targets"][0]["updates"];
+        let s = &envelope["data"]["summary"]["updates"];
+        (
+            t["available"].clone(),
+            t["too_new"].clone(),
+            t["skipped"].clone(),
+            s["available"].clone(),
+            s["auto_ready"].clone(),
+        )
+    };
+    let status = home.run(&["status"]).expect(0);
+    assert_eq!(
+        counts(&status),
+        (json!(2), json!(1), json!(1), json!(2), json!(1))
+    );
+    let requests = net_log(&home).entries.len();
+    let cached = home.run(&["status", "--cached"]).expect(0);
+    assert_eq!(counts(&cached), counts(&status));
+    assert_eq!(
+        net_log(&home).entries.len(),
+        requests,
+        "--cached asks nothing"
+    );
+
+    let text = human(&home, &["outdated"]);
+    let foo = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("Foo"))
+        .unwrap();
+    assert!(
+        foo.contains("· first seen ") && foo.contains(" · automatic updates take it after "),
+        "{text}"
+    );
+    let bar = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("Bar"))
+        .unwrap();
+    assert!(!bar.contains("automatic"), "{text}");
+    let text = human(&home, &["status"]);
+    assert!(text.contains("2 updates (1 waits to settle)"), "{text}");
+
+    home.run(&["config", "set", "update_min_age_hours", "0"])
+        .expect(0);
+    let status = home.run(&["status"]).expect(0);
+    assert_eq!(
+        counts(&status),
+        (json!(2), json!(0), json!(1), json!(2), json!(2))
+    );
+    let outdated = home.run(&["outdated"]).expect(0);
+    assert_eq!(wait_of(&outdated, "Foo"), Value::Null, "no wait");
+}
+
 /// Without `--auto` a release first seen an hour ago installs at once.
 #[test]
 fn without_auto_a_release_seen_an_hour_ago_installs_at_once() {

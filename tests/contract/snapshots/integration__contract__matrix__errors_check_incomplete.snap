@@ -105,6 +105,7 @@ expression: s.stable(&c.envelope)
             },
             "latest": {
               "asset": null,
+              "auto_eligible_at": null,
               "first_seen_at": null,
               "published_at": null,
               "release_id": null,

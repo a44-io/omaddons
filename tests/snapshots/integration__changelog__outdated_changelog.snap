@@ -38,6 +38,7 @@ expression: stable(&envelope)
       {
         "items": [
           {
+            "auto_eligible_at": "<time>",
             "blocked_reason": null,
             "channel": "stable",
             "confidence": "declared",
@@ -82,6 +83,7 @@ expression: stable(&envelope)
       {
         "items": [
           {
+            "auto_eligible_at": "<time>",
             "blocked_reason": null,
             "channel": "stable",
             "confidence": "declared",

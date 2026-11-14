@@ -123,3 +123,32 @@ pub fn age(home: &Home, hours: i64) {
 pub fn ago(minutes: i64) -> Timestamp {
     Timestamp::now() - jiff::SignedDuration::from_mins(minutes)
 }
+
+/// Human `outdated` text with its automatic-update times (RG-53, design 5.5:
+/// `first seen 18:52 · automatic updates take it after 00:52`) as `<time>`: they are
+/// when the run's own fetch first saw a release.
+pub fn clock_times(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        let mut line = line.to_owned();
+        for marker in ["first seen ", "automatic updates take it after "] {
+            if let Some(at) = line.find(marker) {
+                let start = at + marker.len();
+                let end = line[start..]
+                    .find([' ', '\n'])
+                    .map_or(line.len(), |i| start + i);
+                // `2026-11-15 00:52` is two words: a date, then the time.
+                let end = if line[start..end].contains('-') {
+                    line[end + 1..]
+                        .find([' ', '\n'])
+                        .map_or(line.len(), |i| end + 1 + i)
+                } else {
+                    end
+                };
+                line.replace_range(start..end, "<time>");
+            }
+        }
+        out.push_str(&line);
+    }
+    out
+}

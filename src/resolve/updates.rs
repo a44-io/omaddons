@@ -712,6 +712,31 @@ pub fn auto_gate(now: Timestamp, min_age: Duration, first_seen_at: Option<Timest
     }
 }
 
+/// One run's view of the automatic update's wait: the instant it judges at and the
+/// configured wait (design 7.6.5). `outdated`, `list`, `status` and `update --auto`'s
+/// prediction each build one, so they report one gate over what the memo holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoClock {
+    pub now: Timestamp,
+    pub min_age: Duration,
+}
+
+impl AutoClock {
+    /// When `update --auto` would take `status`'s update: `None` when it would take it
+    /// now, or `status` is no update (a pinned, skipped or blocked release never is).
+    /// A prediction from the offered release's first sight: the planner may still hold
+    /// a look-back's choice or a new dependency.
+    pub fn eligible_at(&self, status: &UpdateStatus) -> Option<Timestamp> {
+        let UpdateStatus::UpdateAvailable { latest, .. } = status else {
+            return None;
+        };
+        match auto_gate(self.now, self.min_age, latest.first_seen_at) {
+            AutoGate::TooNew { eligible_at } => Some(eligible_at),
+            AutoGate::Take => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;

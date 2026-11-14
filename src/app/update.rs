@@ -39,8 +39,8 @@ use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::Freshness;
 use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::{
-    AutoGate, UncheckedReason, UpdateStatus, auto_gate, installed_primary_interface, is_static,
-    statuses, update_floor,
+    AutoClock, UncheckedReason, UpdateStatus, installed_primary_interface, is_static, statuses,
+    update_floor,
 };
 use crate::rules::TargetKind;
 use crate::sources::{SourceId, Wanted};
@@ -348,13 +348,11 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             // before planning, as `status` would report it; the planner judges every
             // release it settles on, this one included (design 7.6).
             let too_new = match (&status, policy) {
-                (
-                    Some(UpdateStatus::UpdateAvailable { latest, .. }),
-                    UpdatePolicy::Unattended { min_age, now },
-                ) => match auto_gate(now, min_age, latest.first_seen_at) {
-                    AutoGate::TooNew { eligible_at } => Some((latest.version.clone(), eligible_at)),
-                    AutoGate::Take => None,
-                },
+                (Some(status), UpdatePolicy::Unattended { min_age, now }) => {
+                    let at = AutoClock { now, min_age }.eligible_at(status);
+                    at.zip(status.latest())
+                        .map(|(at, l)| (l.version.clone(), at))
+                }
                 _ => None,
             };
             match status {

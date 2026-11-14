@@ -65,6 +65,7 @@ expression: s.stable(&checked.envelope)
             "installed_at": "<time>",
             "latest": {
               "asset": "bigwigs.zip",
+              "auto_eligible_at": null,
               "first_seen_at": "<time>",
               "published_at": null,
               "release_id": "gh:o/bigwigs@v1",
@@ -124,6 +125,7 @@ expression: s.stable(&checked.envelope)
             "installed_at": "<time>",
             "latest": {
               "asset": null,
+              "auto_eligible_at": null,
               "first_seen_at": null,
               "published_at": null,
               "release_id": null,
@@ -181,6 +183,7 @@ expression: s.stable(&checked.envelope)
             "installed_at": "<time>",
             "latest": {
               "asset": "littlewigs.zip",
+              "auto_eligible_at": null,
               "first_seen_at": "<time>",
               "published_at": null,
               "release_id": "gh:o/littlewigs@v1",
@@ -238,6 +241,7 @@ expression: s.stable(&checked.envelope)
             "installed_at": "<time>",
             "latest": {
               "asset": "WeakAuras.zip",
+              "auto_eligible_at": null,
               "first_seen_at": "<time>",
               "published_at": null,
               "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",

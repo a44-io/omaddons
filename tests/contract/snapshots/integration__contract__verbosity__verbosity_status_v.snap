@@ -86,6 +86,7 @@ expression: s.stable(&checked.envelope)
       "state": "errors",
       "targets": 2,
       "updates": {
+        "auto_ready": 0,
         "available": 0,
         "targets": []
       },
@@ -174,6 +175,7 @@ expression: s.stable(&checked.envelope)
           "pinned": 0,
           "skipped": 0,
           "stale": false,
+          "too_new": 0,
           "unchecked": 0
         },
         "version": "5.5.4.63854"
@@ -268,6 +270,7 @@ expression: s.stable(&checked.envelope)
           "pinned": 0,
           "skipped": 0,
           "stale": false,
+          "too_new": 0,
           "unchecked": 0
         },
         "version": "12.1.5.70391"
