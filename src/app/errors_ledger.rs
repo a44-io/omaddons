@@ -396,9 +396,14 @@ pub fn capture(
             let ledger = known.targets.get(&filed_as);
             let (files, discovered) = database_files(target, memos.targets.get(&filed_as));
             let looked_at = crate::clock::now();
+            // The change registers an unregistered client, and its sightings are filed
+            // under the key it is given ([`registered`]), where no state of its files is
+            // known yet: each is parsed, so that this light read is the first read there
+            // and its mark has a proved read to name.
+            let compared = ledger.filter(|_| target.key.is_some());
             let dbs = files
                 .into_iter()
-                .filter_map(|file| look(file, ledger, looked_at, &mut budget, &tz))
+                .filter_map(|file| look(file, compared, looked_at, &mut budget, &tz))
                 .collect();
             let since = restores_horizon(ledger, loaded_at);
             CapturedClient {

@@ -85,6 +85,7 @@ mod errors_after_change;
 mod errors_decode;
 mod errors_dismiss;
 mod errors_first_seen;
+mod errors_ledger;
 mod errors_ledger_procs;
 mod errors_light_read;
 mod errors_privacy;

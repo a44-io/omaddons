@@ -237,8 +237,25 @@ impl BugDb {
 
     /// The account-wide file under `FAKEACCT`.
     pub fn file(&self) -> SvFile {
-        SvFile::account("FAKEACCT", FILE, self.render())
+        self.file_of("FAKEACCT")
     }
+
+    /// The account-wide file under `account`.
+    pub fn file_of(&self, account: &str) -> SvFile {
+        SvFile::account(account, FILE, self.render())
+    }
+}
+
+/// A complete `!BugGrabber.lua` that holds another global and no `BugGrabberDB`: what
+/// a BugGrabber that never saved, or another addon's file of that name, leaves.
+pub fn without_global(writer: Writer) -> Vec<u8> {
+    lua::render(
+        writer,
+        &[(
+            "BugGrabberSettingsDB",
+            Value::Table(Table::default().with("enabled", Value::Bool(true))),
+        )],
+    )
 }
 
 /// One SavedVariables file, by its path relative to `WTF/`.
