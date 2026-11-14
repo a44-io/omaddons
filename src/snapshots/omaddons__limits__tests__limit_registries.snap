@@ -546,6 +546,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Other releases a memo entry remembers beside the newest"
     },
     {
+      "name": "MEMO_SEEN_RELEASES",
+      "value": {
+        "count": 8
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "First sightings of releases a memo entry keeps; a dropped one only makes that release wait"
+    },
+    {
       "name": "SKIPS_PER_ADDON_MAX",
       "value": {
         "count": 256

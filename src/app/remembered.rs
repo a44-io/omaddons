@@ -49,7 +49,7 @@ impl Remembered {
             &self.facts,
             &self.enabled,
             &|t, a| installed_primary_interface(t, a, table),
-            &|r, c, family, newest| self.memo.look_back(r, c, family, newest),
+            &|r, c, family, newest| self.memo.look_back_seen(r, c, family, newest),
         )
     }
 

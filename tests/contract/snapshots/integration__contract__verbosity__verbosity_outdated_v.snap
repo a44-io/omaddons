@@ -45,6 +45,7 @@ expression: s.stable(&checked.envelope)
             },
             "latest": {
               "channel": "stable",
+              "first_seen_at": "<time>",
               "published_at": null,
               "release_id": "gh:o/bigwigs@v1",
               "version": "v1"
@@ -86,6 +87,7 @@ expression: s.stable(&checked.envelope)
             },
             "latest": {
               "channel": "stable",
+              "first_seen_at": "<time>",
               "published_at": null,
               "release_id": "gh:o/littlewigs@v1",
               "version": "v1"
@@ -109,6 +111,7 @@ expression: s.stable(&checked.envelope)
             },
             "latest": {
               "channel": "stable",
+              "first_seen_at": "<time>",
               "published_at": null,
               "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
               "version": "5.19.2"

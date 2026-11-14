@@ -135,7 +135,25 @@ mod support {
         }
         stable["meta"] = Value::from("<meta>");
         stable["tool_version"] = Value::from("<version>");
+        first_seen(&mut stable);
         stable
+    }
+
+    /// Every release's `first_seen_at` (RG-50), the clock's when this machine saw it.
+    fn first_seen(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for (key, v) in map.iter_mut() {
+                    if key == "first_seen_at" && v.is_string() {
+                        *v = Value::from("<time>");
+                    } else {
+                        first_seen(v);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(first_seen),
+            _ => {}
+        }
     }
 
     /// The new `net.log` lines with `purpose`.

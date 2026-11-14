@@ -495,7 +495,22 @@ fn latest_carries_the_release_identity_the_plan_reports() {
     log.step("list");
     let listed = run(&home, &["list", "-t", "retail"]);
     let entry = foo_of(listed.data());
-    let latest = entry["latest"].clone();
+    let mut latest = entry["latest"].clone();
+    // RG-50: when this machine first saw v2, which the release memo keeps.
+    let first_seen = latest
+        .as_object_mut()
+        .and_then(|l| l.remove("first_seen_at"))
+        .unwrap_or_default();
+    let memo: Value = serde_json::from_slice(&fs::read(home.memo()).unwrap()).unwrap();
+    let seen = memo["entries"]["gh:o/foo|stable"]["seen_releases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["release"]["tag"] == "v2")
+        .map(|s| s["first_seen_at"].clone())
+        .unwrap_or_default();
+    log.assert_eq("first seen, as the memo has it", &first_seen, &seen);
+    assert!(first_seen.is_string(), "{first_seen}");
     log.assert_eq(
         "Foo's latest",
         &latest,
@@ -525,6 +540,11 @@ fn latest_carries_the_release_identity_the_plan_reports() {
         "no asset on outdated's wire",
         &release.get("asset").is_some(),
         &false,
+    );
+    log.assert_eq(
+        "outdated names the same first sight",
+        &release["first_seen_at"],
+        &first_seen,
     );
 
     log.step("preview");
@@ -586,7 +606,7 @@ fn latest_carries_the_release_identity_the_plan_reports() {
         "Bar's latest",
         &bar,
         &json!({"version": null, "status": "static", "source": null, "release_id": null,
-            "revision": null, "asset": null, "published_at": null}),
+            "revision": null, "asset": null, "published_at": null, "first_seen_at": null}),
     );
 
     log.step("never checked");
@@ -599,6 +619,6 @@ fn latest_carries_the_release_identity_the_plan_reports() {
         "Foo's latest, never checked",
         &foo_of(listed.data())["latest"],
         &json!({"version": null, "status": "unchecked", "source": null, "release_id": null,
-            "revision": null, "asset": null, "published_at": null}),
+            "revision": null, "asset": null, "published_at": null, "first_seen_at": null}),
     );
 }

@@ -445,15 +445,26 @@ impl<'a> ReleaseCache<'a> {
             });
             let mut learned = lock(&self.learned);
             for (w, set) in results {
+                let key = memo::key(&w.r#ref, w.channel);
                 let entry = self
                     .memoized(&w)
                     .then(|| MemoEntry::of(&w.r#ref, w.channel, &set, fetched_at))
-                    .flatten();
+                    .flatten()
+                    .map(|mut entry| {
+                        // The sightings this run or the memo already holds: a fetch never
+                        // restarts a release's age (design 7.6.1).
+                        if let Some(previous) = learned
+                            .entries
+                            .get(&key)
+                            .or_else(|| self.memo.entries.get(&key))
+                        {
+                            memo::carry_seen(&mut entry, previous);
+                        }
+                        entry
+                    });
                 trace::emit(|| fetch_line(&w, &set, entry.is_some()));
                 if let Some(entry) = entry {
-                    learned
-                        .entries
-                        .insert(memo::key(&w.r#ref, w.channel), entry);
+                    learned.entries.insert(key, entry);
                 }
                 let answer = Fetched {
                     set,
@@ -507,6 +518,9 @@ impl<'a> ReleaseCache<'a> {
                             "release probe {key}: token unchanged, kept the remembered set ({took} ms)"
                         )
                     });
+                    // An entry from before 1.2 records its newest release as seen since
+                    // the time that is about to move.
+                    entry.seed_seen();
                     entry.fetched_at = now;
                     let answer = Fetched {
                         set: entry.result(),
@@ -524,8 +538,9 @@ impl<'a> ReleaseCache<'a> {
                         )
                     });
                     let set = Err(error);
-                    if let Some(entry) = MemoEntry::of(&w.r#ref, w.channel, &set, now) {
-                        learned.entries.insert(key, entry);
+                    if let Some(mut failed) = MemoEntry::of(&w.r#ref, w.channel, &set, now) {
+                        memo::carry_seen(&mut failed, &entry);
+                        learned.entries.insert(key, failed);
                     }
                     let answer = Fetched {
                         set,
@@ -618,7 +633,7 @@ impl<'a> ReleaseCache<'a> {
         family: crate::rules::Family,
         names_client: &(dyn Fn(&crate::model::AssetFlavor) -> bool + Sync),
     ) -> Option<Result<crate::sources::LookBack>> {
-        if let Some(remembered) =
+        if let Some((remembered, _)) =
             self.remembered_look_back(&wanted.r#ref, wanted.channel, family, newest)
         {
             return Some(Ok(remembered));
@@ -641,18 +656,19 @@ impl<'a> ReleaseCache<'a> {
         Some(found)
     }
 
-    /// The look-back remembered for `family`'s clients, made against `newest`: what
-    /// update statuses read, with no request.
+    /// The look-back remembered for `family`'s clients, made against `newest`, with when
+    /// it was made (its release's first sight): what update statuses read, with no
+    /// request.
     pub fn remembered_look_back(
         &self,
         r: &Ref,
         channel: Channel,
         family: crate::rules::Family,
         newest: &str,
-    ) -> Option<crate::sources::LookBack> {
+    ) -> Option<(crate::sources::LookBack, Timestamp)> {
         lock(&self.learned)
-            .look_back(r, channel, family, newest)
-            .or_else(|| self.memo.look_back(r, channel, family, newest))
+            .look_back_seen(r, channel, family, newest)
+            .or_else(|| self.memo.look_back_seen(r, channel, family, newest))
     }
 
     pub fn entry(&self, r: &Ref, channel: Channel) -> Option<MemoEntry> {
@@ -668,7 +684,54 @@ impl<'a> ReleaseCache<'a> {
     /// what a plan its binding refused downloaded (M4-D20), so the next run finds those
     /// archives in the cache by their hashes instead of downloading them again.
     pub fn learn(&self, facts: &[CandidateFact]) {
-        lock(&self.learned).candidates.extend(facts.iter().cloned());
+        let mut learned = lock(&self.learned);
+        self.saw_archives(&mut learned, facts, Timestamp::now());
+        learned.candidates.extend(facts.iter().cloned());
+    }
+
+    /// The archives a plan downloaded (`facts`), against the first sightings of their
+    /// releases (design 7.6.1): a sighting records the archive's hash, and restarts at
+    /// `now` when that archive's bytes are not the ones the memo knew (content replaced
+    /// under one tag). Each entry changed goes into `learned`, from the memo when the run
+    /// has not touched it, so the run itself and the memo written after it agree.
+    fn saw_archives(&self, learned: &mut ReleaseMemo, facts: &[CandidateFact], now: Timestamp) {
+        for fact in facts {
+            let Some(release) = crate::model::ReleaseKey::parse(&fact.release_id, None) else {
+                continue;
+            };
+            let previous = self
+                .facts
+                .hash(&fact.release_id, &fact.asset)
+                .map(|(sha256, _)| sha256.to_owned());
+            // Only the entries that saw this release (by source and tag: a fact names no
+            // revision), the run's own first.
+            let saw = |entry: &MemoEntry| {
+                entry
+                    .seen_releases
+                    .iter()
+                    .any(|s| s.release.source == release.source && s.release.tag == release.tag)
+            };
+            let keys: BTreeSet<String> = learned
+                .entries
+                .iter()
+                .chain(&self.memo.entries)
+                .filter(|(_, entry)| saw(entry))
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in keys {
+                let Some(mut entry) = learned
+                    .entries
+                    .get(&key)
+                    .or_else(|| self.memo.entries.get(&key))
+                    .cloned()
+                else {
+                    continue;
+                };
+                if entry.saw_archive(&fact.release_id, &fact.sha256, previous.as_deref(), now) {
+                    learned.entries.insert(key, entry);
+                }
+            }
+        }
     }
 
     /// Writes what this run learned (and `facts`) to the memo, once per command, ringing
@@ -676,6 +739,10 @@ impl<'a> ReleaseCache<'a> {
     /// `stale_check` when an answer came from the memo whatever its age. The notes are
     /// for `-v`: a memo ignored or not written.
     pub fn remember(self, facts: &[CandidateFact]) -> Remembered {
+        // What this run learned, the downloaded archives held against their releases'
+        // first sightings, before anything is moved out of the cache.
+        let mut learned = lock(&self.learned).clone();
+        self.saw_archives(&mut learned, facts, Timestamp::now());
         let mut remembered = Remembered {
             warnings: Vec::new(),
             notes: self.notes,
@@ -700,10 +767,6 @@ impl<'a> ReleaseCache<'a> {
         let Some(file) = self.file else {
             return remembered;
         };
-        let mut learned = self
-            .learned
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner);
         learned.candidates.extend(facts.iter().cloned());
         // A list decoded in this command replaces the memo's.
         learned.tukui_list = self
@@ -1720,5 +1783,177 @@ mod tests {
                 "{name}: memo candidates {ids:?}, want {want:?}"
             );
         }
+    }
+
+    // ---- First sightings (RG-50, design 7.6.1)
+
+    /// `foo`'s release 1, as `Counting` answers it.
+    fn one() -> Result<ReleaseSet> {
+        Ok(ReleaseSet {
+            r#ref: foo().r#ref,
+            releases: vec![crate::model::Release {
+                release_id: "gh:o/foo@1".into(),
+                version: "1".into(),
+                channel: Channel::Stable,
+                published_at: None,
+                assets: Vec::new(),
+                changelog_url: None,
+                notes: None,
+                name_hint: None,
+                revision: None,
+            }],
+        })
+    }
+
+    fn release_one() -> crate::model::ReleaseKey {
+        crate::model::ReleaseKey::parse("gh:o/foo@1", None).unwrap()
+    }
+
+    fn foo_key() -> String {
+        memo::key(&foo().r#ref, Channel::Stable)
+    }
+
+    /// The memo holds `foo`'s release 1 fetched `hours` ago and first seen then; with
+    /// `before_1_2`, an entry written before sightings existed; with `fact`, the hash a
+    /// plan learned for its archive `Foo.zip`. Returns the time.
+    fn remembered(scene: &Scene, hours: i64, before_1_2: bool, fact: Option<&str>) -> Timestamp {
+        let when = Timestamp::now() - jiff::SignedDuration::from_hours(hours);
+        let mut entry = MemoEntry::of(&foo().r#ref, Channel::Stable, &one(), when).unwrap();
+        if before_1_2 {
+            entry.seen_releases.clear();
+        }
+        let mut memo = ReleaseMemo::default();
+        memo.entries.insert(foo_key(), entry);
+        memo.candidates.extend(fact.map(archive));
+        assert_eq!(
+            memo::write(&scene.paths, memo, 100, "outdated", Actor::Human),
+            None
+        );
+        when
+    }
+
+    fn archive(sha256: &str) -> CandidateFact {
+        CandidateFact {
+            release_id: "gh:o/foo@1".into(),
+            asset: "Foo.zip".into(),
+            sha256: sha256.to_owned(),
+            size: 3,
+            verdicts: Vec::new(),
+            unverified: false,
+        }
+    }
+
+    fn on_disk(scene: &Scene) -> MemoEntry {
+        memo::load(&scene.paths).0.entries[&foo_key()].clone()
+    }
+
+    /// A fetch that reports the release again, an hour or seven after it was first seen:
+    /// in that same run the entry answers the first sight, and so does the file after.
+    #[test]
+    fn a_fetch_never_restarts_a_sight_in_the_run_or_on_disk() {
+        for hours in [1, 7] {
+            let scene = Scene::new(None);
+            let first = remembered(&scene, hours, false, None);
+            let cache = scene.cache(WINDOW);
+            let answer = cache.get(&[foo()]).remove(&foo()).unwrap();
+            assert_eq!(
+                answer.origin,
+                Origin::Fetched,
+                "{hours} h: stale, so fetched"
+            );
+            let entry = cache.entry(&foo().r#ref, Channel::Stable).unwrap();
+            assert!(entry.fetched_at > first, "{hours} h: a new fetch");
+            assert_eq!(
+                memo::first_seen(&entry, &release_one()),
+                Some(first),
+                "{hours} h: in the run"
+            );
+            cache.remember(&[]);
+            let entry = on_disk(&scene);
+            assert_eq!(entry.seen_releases.len(), 1, "{hours} h");
+            assert_eq!(
+                memo::first_seen(&entry, &release_one()),
+                Some(first),
+                "{hours} h: on disk"
+            );
+        }
+    }
+
+    /// An entry from before 1.2: a confirming probe records its newest release as seen at
+    /// the entry's earlier `fetched_at`, and a second probe moves nothing. A failed probe
+    /// replaces the set with the failure and keeps the sightings.
+    #[test]
+    fn a_probe_seeds_an_old_entry_once_and_a_failed_probe_keeps_the_sightings() {
+        let scene = Scene::with(None, Probe::Tag("1"));
+        let first = remembered(&scene, 2, true, None);
+        assert_eq!(scene.once(WINDOW, &foo()).origin, Origin::Probed);
+        let entry = on_disk(&scene);
+        assert!(entry.fetched_at > first, "the probe moved fetched_at");
+        assert_eq!(memo::first_seen(&entry, &release_one()), Some(first));
+        assert_eq!(scene.later(20, WINDOW, &foo()).origin, Origin::Probed);
+        assert_eq!(scene.probes(), 2);
+        assert_eq!(
+            on_disk(&scene).seen_releases,
+            entry.seen_releases,
+            "not moved"
+        );
+
+        let scene = Scene::with(None, Probe::Fail(ErrorCode::NotFound));
+        let first = remembered(&scene, 2, false, None);
+        assert!(scene.once(WINDOW, &foo()).set.is_err());
+        let entry = on_disk(&scene);
+        assert!(
+            entry.set.is_none() && entry.failure.is_some(),
+            "the failure is remembered"
+        );
+        assert_eq!(
+            memo::first_seen(&entry, &release_one()),
+            Some(first),
+            "its sightings kept"
+        );
+    }
+
+    /// The archives a plan downloaded: the first records its hash and keeps the sight;
+    /// the same bytes again change nothing; other bytes for that archive (content
+    /// replaced under the tag) restart the sight now; another archive of the release
+    /// changes nothing.
+    #[test]
+    fn a_downloaded_archive_records_its_hash_and_replaced_bytes_restart_the_sight() {
+        let scene = Scene::new(None);
+        let (h1, h2, h3) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let first = remembered(&scene, 5, false, Some(&h1));
+        let sight = |scene: &Scene| {
+            let entry = on_disk(scene);
+            let seen = entry.seen_releases[0].clone();
+            (seen.first_seen_at, seen.blob_sha256)
+        };
+        scene.cache(WINDOW).remember(&[archive(&h1)]);
+        assert_eq!(sight(&scene), (first, Some(h1.clone())), "recorded");
+        scene.cache(WINDOW).remember(&[archive(&h1)]);
+        assert_eq!(sight(&scene), (first, Some(h1.clone())), "the same bytes");
+        let before = Timestamp::now();
+        scene.cache(WINDOW).remember(&[archive(&h2)]);
+        let (restarted, hash) = sight(&scene);
+        assert!(restarted >= before, "replaced bytes restart the sight");
+        assert_eq!(hash, Some(h2.clone()));
+        let other = CandidateFact {
+            asset: "Foo-classic.zip".into(),
+            ..archive(&h3)
+        };
+        scene.cache(WINDOW).remember(&[other]);
+        assert_eq!(
+            sight(&scene),
+            (restarted, Some(h2)),
+            "another archive of the release"
+        );
+        // In the run: what a plan the binding refused downloaded counts as well.
+        let cache = scene.cache(WINDOW);
+        cache.learn(&[archive(&h3)]);
+        let entry = cache.entry(&foo().r#ref, Channel::Stable).unwrap();
+        assert!(memo::first_seen(&entry, &release_one()).is_some_and(|t| t >= restarted));
+        assert_eq!(
+            entry.seen_releases[0].blob_sha256.as_deref(),
+            Some(h3.as_str())
+        );
     }
 }

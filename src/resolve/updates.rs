@@ -28,7 +28,7 @@ use crate::model::{
 use crate::resolve::select::select;
 use crate::rules::{Family, RulesTable};
 use crate::sources::{LookBack, SourceId};
-use crate::state::memo::{FactIndex, MemoEntry};
+use crate::state::memo::{self, FactIndex, MemoEntry};
 use crate::state::records::TargetRecord;
 use crate::toc::{DiskFolder, loaded_toc, primary_interface};
 
@@ -105,6 +105,10 @@ pub enum UncheckedReason {
     NoEligibleRelease,
 }
 
+/// A remembered look-back and when it was made: the first sight of the release it found
+/// (design 7.6.1).
+pub type SeenLookBack = (LookBack, Timestamp);
+
 /// A release, as statuses name it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ReleaseBrief {
@@ -112,6 +116,10 @@ pub struct ReleaseBrief {
     pub release_id: String,
     #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub published_at: Option<Timestamp>,
+    /// When this machine first saw the release, the clock of an automatic update's wait
+    /// (design 7.6.1); `null` when the release memo has no sight of it.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub first_seen_at: Option<Timestamp>,
     pub channel: Channel,
     /// The release's source revision, when its source has one (WowAce). Omitted
     /// otherwise.
@@ -203,7 +211,7 @@ pub fn evaluate(
     target: &Target,
     installed_primary_interface: Option<u32>,
     source_enabled: bool,
-    look_back: &dyn Fn(&str) -> Option<LookBack>,
+    look_back: &dyn Fn(&str) -> Option<SeenLookBack>,
 ) -> UpdateStatus {
     // 1. Nothing to check: a local or URL install, or one from a given archive.
     if is_static(record) {
@@ -256,7 +264,7 @@ pub fn evaluate(
         .releases
         .iter()
         .find(|r| r.release_id == best.release_id);
-    let mut latest = brief(best, newest);
+    let mut latest = brief(best, newest, Some(entry));
     // 4. Installed already, unless its tag moved since: the same release id at another
     // revision (WowAce) is a re-tag, an update. A commit elsewhere moves neither.
     if record
@@ -291,8 +299,8 @@ pub fn evaluate(
     if !record.any_flavor && verdicts.iter().all(|v| v.is_some_and(|v| !v.loads)) {
         // A repository with one release per client: the look-back remembered against
         // this newest release says which is this client's latest.
-        if let Some(status) =
-            look_back(&best.release_id).and_then(|found| looked_back_status(record, target, &found))
+        if let Some(status) = look_back(&best.release_id)
+            .and_then(|(found, at)| looked_back_status(record, target, &found, at))
         {
             return held(record, status);
         }
@@ -368,10 +376,13 @@ fn held(record: &AddonRecord, status: UpdateStatus) -> UpdateStatus {
 /// The status of `record` against a look-back's answer for its client: `current` when it
 /// is the release found, or newer, or out of the feed's reach (a look-back never
 /// downgrades), else an update to it, which its `release.json` declares for the client.
+/// The release found was first seen when the look-back was made (`at`): it is not the
+/// entry's newest, so it has no sighting of its own (design 7.6.1).
 fn looked_back_status(
     record: &AddonRecord,
     target: &Target,
     found: &LookBack,
+    at: Timestamp,
 ) -> Option<UpdateStatus> {
     let set = found.found.as_ref()?;
     let release = set.releases.first()?;
@@ -379,7 +390,10 @@ fn looked_back_status(
         .candidates
         .into_iter()
         .next()?;
-    let latest = brief(&best, Some(release));
+    let latest = ReleaseBrief {
+        first_seen_at: Some(at),
+        ..brief(&best, Some(release), None)
+    };
     let tag = |id: &str| id.rsplit_once('@').map(|(_, tag)| tag.to_owned());
     let older = record
         .release_id
@@ -412,11 +426,15 @@ fn unchecked(reason: UncheckedReason) -> UpdateStatus {
     UpdateStatus::Unchecked { reason }
 }
 
-fn brief(best: &Candidate, release: Option<&Release>) -> ReleaseBrief {
+/// `best` as statuses name it, first seen as `entry` remembers it.
+fn brief(best: &Candidate, release: Option<&Release>, entry: Option<&MemoEntry>) -> ReleaseBrief {
     ReleaseBrief {
         version: best.version.clone(),
         release_id: best.release_id.clone(),
         published_at: release.and_then(|r| r.published_at),
+        first_seen_at: entry
+            .zip(ReleaseKey::of_candidate(best))
+            .and_then(|(entry, key)| memo::first_seen(entry, &key)),
         channel: best.channel,
         revision: best.revision,
         retagged: false,
@@ -590,7 +608,7 @@ pub fn statuses(
     facts: &FactIndex,
     enabled: &BTreeSet<SourceId>,
     read_primary_interface: &dyn Fn(&Target, &AddonRecord) -> Option<u32>,
-    look_back: &dyn Fn(&Ref, Channel, Family, &str) -> Option<LookBack>,
+    look_back: &dyn Fn(&Ref, Channel, Family, &str) -> Option<SeenLookBack>,
 ) -> Vec<StatusRow> {
     let mut rows = Vec::new();
     for (target, record) in targets {
@@ -769,6 +787,7 @@ mod tests {
             }),
             known,
             failure: None,
+            seen_releases: Vec::new(),
         }
     }
 
@@ -1070,7 +1089,9 @@ mod tests {
                 true,
                 &|newest| {
                     seen.replace(Some(newest.to_owned()));
-                    look_back.cloned()
+                    look_back
+                        .cloned()
+                        .map(|found| (found, at("2026-10-14T00:00:00Z")))
                 },
             );
             (status, seen.into_inner())
@@ -1165,7 +1186,7 @@ mod tests {
             &retail(),
             Some(120_105),
             true,
-            &|_| Some(found.clone()),
+            &|_| Some((found.clone(), at("2026-10-14T00:00:00Z"))),
         );
         assert_eq!(
             (
@@ -1178,7 +1199,7 @@ mod tests {
     }
 
     /// The asset is for `list`'s update entry only: a brief serializes the keys it
-    /// always had, so `outdated`'s and `info`'s wire is unchanged.
+    /// always had, and `first_seen_at` (RG-50, `null` when unknown).
     #[test]
     fn release_brief_serializes_without_its_asset() {
         for (case, revision, retagged, want) in [
@@ -1186,7 +1207,13 @@ mod tests {
                 "plain",
                 None,
                 false,
-                vec!["channel", "published_at", "release_id", "version"],
+                vec![
+                    "channel",
+                    "first_seen_at",
+                    "published_at",
+                    "release_id",
+                    "version",
+                ],
             ),
             (
                 "re-tagged",
@@ -1194,6 +1221,7 @@ mod tests {
                 true,
                 vec![
                     "channel",
+                    "first_seen_at",
                     "published_at",
                     "release_id",
                     "retagged",
@@ -1206,6 +1234,7 @@ mod tests {
                 version: "2.0.0".into(),
                 release_id: format!("{FOO}@2.0.0"),
                 published_at: None,
+                first_seen_at: None,
                 channel: Channel::Stable,
                 revision,
                 retagged,
@@ -1390,6 +1419,7 @@ mod tests {
             version: "2.0.0".into(),
             release_id: format!("{FOO}@2.0.0"),
             published_at: Some(at("2026-10-01T00:00:00Z")),
+            first_seen_at: Some(at("2026-10-02T00:00:00Z")),
             channel: Channel::Stable,
             revision: None,
             retagged: false,
@@ -1686,7 +1716,11 @@ mod tests {
                 &retail(),
                 Some(120_105),
                 true,
-                &|_| look_back.cloned(),
+                &|_| {
+                    look_back
+                        .cloned()
+                        .map(|found| (found, at("2026-10-14T00:00:00Z")))
+                },
             );
             assert_eq!(
                 (

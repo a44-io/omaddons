@@ -701,6 +701,32 @@ fn only_a_re_tag_of_the_installed_tag_is_an_update() {
         ),
         "{item}"
     );
+    // RG-50: the re-tag is a release of its own, first seen now, and the revision installed
+    // keeps its earlier sight; `latest.first_seen_at` is the re-tag's.
+    let (memo, _) = omaddons::state::memo::load(&common::http::paths(&home.env));
+    let entry = memo
+        .entries
+        .values()
+        .find(|e| e.wanted.r#ref.to_string() == "wowace:bug-grabber")
+        .unwrap();
+    let sights: Vec<(Option<u32>, jiff::Timestamp)> = entry
+        .seen_releases
+        .iter()
+        .filter(|s| s.release.tag == "v12.1.1")
+        .map(|s| (s.release.revision, s.first_seen_at))
+        .collect();
+    assert_eq!(sights.len(), 2, "{sights:?}");
+    let (old, new) = (sights[0], sights[1]);
+    assert!(old.0 != Some(404) && new.0 == Some(404), "{sights:?}");
+    assert!(
+        old.1 < new.1,
+        "the installed revision keeps its earlier sight: {sights:?}"
+    );
+    assert_eq!(
+        item["latest"]["first_seen_at"],
+        json!(new.1.to_string()),
+        "{item}"
+    );
     let human = home.exec(&["outdated".to_owned(), "-t".to_owned(), "retail".to_owned()]);
     assert!(
         human.stdout.contains("v12.1.1 (re-tagged upstream)"),

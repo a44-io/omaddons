@@ -998,8 +998,20 @@ mod updates {
             .find(|a| a["name"] == "Foo")
             .unwrap()
             .clone();
+        // RG-50: when this machine first saw v2, from the memo `outdated` wrote.
+        let mut latest = foo["latest"].clone();
+        let first_seen = latest
+            .as_object_mut()
+            .and_then(|l| l.remove("first_seen_at"))
+            .unwrap_or_default();
+        assert!(
+            first_seen
+                .as_str()
+                .is_some_and(|t| t.parse::<jiff::Timestamp>().is_ok()),
+            "{first_seen}"
+        );
         assert_eq!(
-            foo["latest"],
+            latest,
             json!({
                 "version": "v2",
                 "status": "update_available",

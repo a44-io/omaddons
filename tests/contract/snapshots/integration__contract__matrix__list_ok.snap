@@ -35,6 +35,7 @@ expression: s.stable(&c.envelope)
             "installed_at": "<time>",
             "latest": {
               "asset": null,
+              "first_seen_at": null,
               "published_at": null,
               "release_id": null,
               "revision": null,

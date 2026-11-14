@@ -106,8 +106,13 @@ fn info_inside_the_window_makes_no_request_and_refresh_does() {
     r.expect(0);
     assert_eq!(requests(&home), 2 * once, "--refresh fetches again");
     let memo: Value = serde_json::from_slice(&fs::read(home.memo()).unwrap()).unwrap();
-    assert_eq!(memo["schema_version"], "1.1");
+    assert_eq!(memo["schema_version"], "1.2");
     assert!(memo["entries"]["gh:o/foo|stable"].is_object(), "{memo}");
+    // RG-50: the newest release's first sight, by its key.
+    assert_eq!(
+        memo["entries"]["gh:o/foo|stable"]["seen_releases"][0]["release"]["source"], "gh:o/foo",
+        "{memo}"
+    );
 }
 
 #[test]

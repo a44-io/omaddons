@@ -120,6 +120,10 @@ pub const RELEASE_MEMO_MAX_ENTRIES: usize = 4_096;
 /// Most other releases a memo entry remembers beside the newest, for telling an
 /// installed release that is ahead of the source's newest.
 pub const MEMO_KNOWN_RELEASES: usize = 10;
+/// Most first sightings a memo entry keeps (`seen_releases`, design 7.6.1), dropping the
+/// oldest. Dropping one only drops an age: that release, seen again, counts as new and
+/// waits.
+pub const MEMO_SEEN_RELEASES: usize = 8;
 /// Most skip marks one addon's record keeps. A guard on the record's size, not a working
 /// limit: a change that would add one more fails before it commits, and no mark is
 /// ever dropped to make room (marks are decisions).
@@ -702,6 +706,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitUnit::Count,
         None,
         "Other releases a memo entry remembers beside the newest",
+    ),
+    limit(
+        "MEMO_SEEN_RELEASES",
+        LimitValue::Count(MEMO_SEEN_RELEASES as u64),
+        LimitUnit::Count,
+        None,
+        "First sightings of releases a memo entry keeps; a dropped one only makes that release wait",
     ),
     limit(
         "SKIPS_PER_ADDON_MAX",
@@ -1541,7 +1552,7 @@ mod tests {
         "DOCTOR_DETECTOR_DEADLINE", "RUN_ID_RETRY",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "CREDENTIAL_OUTPUT_MAX_BYTES",
         "CREDENTIAL_KILL_GRACE", "RELEASE_MEMO_MAX_ENTRIES",
-        "MEMO_KNOWN_RELEASES", "SKIPS_PER_ADDON_MAX", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
+        "MEMO_KNOWN_RELEASES", "MEMO_SEEN_RELEASES", "SKIPS_PER_ADDON_MAX", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
         "CHANGELOG_MAX_ENTRIES", "API_RESPONSE_MAX_BYTES",
         "WOWACE_TREE_MAX_FILES",
         "WOWACE_TREE_MAX_DIRS",

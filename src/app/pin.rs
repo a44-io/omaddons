@@ -475,7 +475,7 @@ fn unpin_hints(
         let name = &a.name;
         let look_back = |newest: &str| {
             let tag = newest.rsplit_once('@').map(|(_, tag)| tag)?;
-            memo.look_back(&a.r#ref, a.channel, d.target.family, tag)
+            memo.look_back_seen(&a.r#ref, a.channel, d.target.family, tag)
         };
         hints.push(
             match evaluate(&record, entry, &facts, &d.target, floor, true, &look_back) {

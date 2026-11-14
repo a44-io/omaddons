@@ -20,8 +20,8 @@ use super::paths::Paths;
 use super::store::{self, SchemaVersion, VersionStatus, Versioned};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{Content, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
-use crate::limits::MEMO_KNOWN_RELEASES;
-use crate::model::{Actor, Channel, Ref, Release, ReleaseSet, Target};
+use crate::limits::{MEMO_KNOWN_RELEASES, MEMO_SEEN_RELEASES};
+use crate::model::{Actor, Channel, Ref, Release, ReleaseKey, ReleaseSet, Target};
 use crate::resolve::select::newest;
 
 /// The memo.
@@ -67,10 +67,24 @@ impl ReleaseMemo {
         family: crate::rules::Family,
         newest: &str,
     ) -> Option<crate::sources::LookBack> {
+        self.look_back_seen(r, channel, family, newest)
+            .map(|(look_back, _)| look_back)
+    }
+
+    /// [`ReleaseMemo::look_back`], with when it was made: the first sight of the release
+    /// it found, which is not the entry's newest and so has no sighting of its own (design
+    /// 7.6.1). It stays put while the newest tag is unchanged.
+    pub fn look_back_seen(
+        &self,
+        r: &Ref,
+        channel: Channel,
+        family: crate::rules::Family,
+        newest: &str,
+    ) -> Option<(crate::sources::LookBack, Timestamp)> {
         self.look_backs
             .get(&look_back_key(r, channel, family))
             .filter(|m| m.newest == newest)
-            .map(|m| m.look_back.clone())
+            .map(|m| (m.look_back.clone(), m.at))
     }
 }
 
@@ -78,7 +92,9 @@ impl Versioned for ReleaseMemo {
     const KIND: &'static str = "release_memo";
     /// 1.1: each verdict records the judge it was made under (`judge`), and GitHub
     /// look-backs are remembered (`look_backs`). A 1.0 reader ignores both.
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
+    /// 1.2: each entry remembers when this machine first saw its newest releases
+    /// (`seen_releases`). A 1.1 reader ignores it.
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 2);
 }
 
 /// What one fetch of one ref on one channel learned.
@@ -99,6 +115,27 @@ pub struct MemoEntry {
     /// A failure retrying does not change (`not_found`, `ref_invalid`).
     #[serde(default)]
     pub failure: Option<MemoFailure>,
+    /// When this machine first saw each of the entry's newest releases (design 7.6.1),
+    /// newest sight last, at most `MEMO_SEEN_RELEASES`. Carried over whenever an entry
+    /// replaces another for the same key ([`carry_seen`]), so a fetch never restarts a
+    /// release's age. Absent from an entry written before 1.2.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seen_releases: Vec<SeenRelease>,
+}
+
+/// When this machine first saw one release: the clock of an automatic update's wait,
+/// since most sources give no publication date (design 7.6.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SeenRelease {
+    /// Which release, its revision included: a WowAce tag published again at a new
+    /// revision is another release, with its own first sight.
+    pub release: ReleaseKey,
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub first_seen_at: Timestamp,
+    /// The SHA-256 of the archive a plan first downloaded for it, lowercase hex. A later
+    /// download of that archive with other bytes is new content: its sight restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_sha256: Option<String>,
 }
 
 /// The ref and channel an entry answers.
@@ -240,6 +277,18 @@ impl MemoEntry {
                         published_at: release.published_at,
                     })
                     .collect();
+                // A fresh entry: its newest release first seen now. Wherever it replaces
+                // another, the earlier sights are carried in ([`carry_seen`]).
+                let seen_releases = top
+                    .as_ref()
+                    .and_then(ReleaseKey::of_release)
+                    .map(|release| SeenRelease {
+                        release,
+                        first_seen_at: at,
+                        blob_sha256: None,
+                    })
+                    .into_iter()
+                    .collect();
                 Some(Self {
                     wanted,
                     fetched_at: at,
@@ -250,6 +299,7 @@ impl MemoEntry {
                     }),
                     known,
                     failure: None,
+                    seen_releases,
                 })
             }
             Err(error) if remembered(error.code) => Some(Self {
@@ -263,6 +313,7 @@ impl MemoEntry {
                     message: error.message.clone(),
                     at,
                 }),
+                seen_releases: Vec::new(),
             }),
             Err(_) => None,
         }
@@ -295,6 +346,126 @@ impl MemoEntry {
     pub fn fresh(&self, now: Timestamp, window: Duration) -> bool {
         fresh(self.fetched_at, now, window)
     }
+
+    /// The key of the newest release the entry holds.
+    pub fn newest_key(&self) -> Option<ReleaseKey> {
+        self.set
+            .as_ref()?
+            .releases
+            .first()
+            .and_then(ReleaseKey::of_release)
+    }
+
+    /// Before a confirming probe moves `fetched_at`: an entry written before 1.2 holds no
+    /// sight of its newest release, so it is recorded at the entry's `fetched_at` as it
+    /// stands (the release was known since). Without this, every check would move the
+    /// only time there is, and a waiting release would never age.
+    pub fn seed_seen(&mut self) {
+        let Some(release) = self.newest_key() else {
+            return;
+        };
+        if self.seen_releases.iter().any(|s| s.release == release) {
+            return;
+        }
+        self.seen_releases.push(SeenRelease {
+            release,
+            first_seen_at: self.fetched_at,
+            blob_sha256: None,
+        });
+        trim_seen(&mut self.seen_releases);
+    }
+
+    /// A plan downloaded `sha256` for an archive of release `release_id`; `previous` is
+    /// the hash the memo knew for that same archive. Its sight records the hash when it
+    /// has none; when that archive's bytes changed under the same tag (`previous` is
+    /// another hash), the content is new and its sight restarts at `now`. Another archive
+    /// of the release (one per client) changes nothing. Whether the entry changed.
+    pub fn saw_archive(
+        &mut self,
+        release_id: &str,
+        sha256: &str,
+        previous: Option<&str>,
+        now: Timestamp,
+    ) -> bool {
+        let Some(key) = ReleaseKey::parse(release_id, None) else {
+            return false;
+        };
+        // A fact names no revision: the newest sight of that tag is the one downloaded.
+        let Some(seen) = self
+            .seen_releases
+            .iter_mut()
+            .rev()
+            .find(|s| s.release.source == key.source && s.release.tag == key.tag)
+        else {
+            return false;
+        };
+        if seen.blob_sha256.as_deref() == Some(sha256) {
+            return false;
+        }
+        if previous.is_some_and(|previous| previous != sha256) {
+            seen.first_seen_at = now;
+            seen.blob_sha256 = Some(sha256.to_owned());
+            return true;
+        }
+        if seen.blob_sha256.is_none() {
+            seen.blob_sha256 = Some(sha256.to_owned());
+            return true;
+        }
+        false
+    }
+}
+
+/// Carries `replaced`'s first sightings into `kept`, which takes its key's place (design
+/// 7.6.1): a union by release, keeping for each the sighting that tells its age. Of two
+/// sightings of one release, one with an archive hash the other lacks wins (it was
+/// recorded later, of the same release or of its new content); two with different hashes
+/// are content replaced under one tag, whose later sighting wins; otherwise the earlier
+/// time stays. Cut to the newest `MEMO_SEEN_RELEASES`. A dropped or later sighting can
+/// only make a release wait longer.
+pub fn carry_seen(kept: &mut MemoEntry, replaced: &MemoEntry) {
+    for theirs in &replaced.seen_releases {
+        match kept
+            .seen_releases
+            .iter_mut()
+            .find(|ours| ours.release == theirs.release)
+        {
+            None => kept.seen_releases.push(theirs.clone()),
+            Some(ours) => {
+                let take_theirs = match (&ours.blob_sha256, &theirs.blob_sha256) {
+                    (None, Some(_)) => true,
+                    (Some(_), None) => false,
+                    (Some(a), Some(b)) if a != b => theirs.first_seen_at > ours.first_seen_at,
+                    _ => theirs.first_seen_at < ours.first_seen_at,
+                };
+                if take_theirs {
+                    *ours = theirs.clone();
+                }
+            }
+        }
+    }
+    trim_seen(&mut kept.seen_releases);
+}
+
+/// Oldest sight first, at most `MEMO_SEEN_RELEASES`.
+fn trim_seen(seen: &mut Vec<SeenRelease>) {
+    seen.sort_by_key(|s| s.first_seen_at);
+    let excess = seen.len().saturating_sub(MEMO_SEEN_RELEASES);
+    seen.drain(..excess);
+}
+
+/// When this machine first saw release `key` of `entry`'s ref and channel: its sighting;
+/// else the entry's `fetched_at` when `key` is its newest release (an entry written
+/// before 1.2, until a probe or fetch records it); else `None`, which a caller takes as
+/// first seen now. A look-back's release uses its own memo's time
+/// ([`ReleaseMemo::look_back_seen`]).
+pub fn first_seen(entry: &MemoEntry, key: &ReleaseKey) -> Option<Timestamp> {
+    entry
+        .seen_releases
+        .iter()
+        .rev()
+        .find(|s| &s.release == key)
+        .map(|s| s.first_seen_at)
+        .or_else(|| (entry.newest_key().as_ref() == Some(key)).then_some(entry.fetched_at))
 }
 
 impl TukuiList {
@@ -439,10 +610,15 @@ impl ReleaseMemo {
     /// release and asset, the later verdict winning per rules row and interface; the
     /// Tukui list fetched later wins.
     pub fn merge(&mut self, newer: Self) {
-        for (key, entry) in newer.entries {
-            match self.entries.get(&key) {
-                Some(kept) if kept.fetched_at > entry.fetched_at => {}
-                _ => {
+        for (key, mut entry) in newer.entries {
+            match self.entries.get_mut(&key) {
+                // Whichever wins, the first sightings of both are kept.
+                Some(kept) if kept.fetched_at > entry.fetched_at => carry_seen(kept, &entry),
+                Some(kept) => {
+                    carry_seen(&mut entry, kept);
+                    *kept = entry;
+                }
+                None => {
                     self.entries.insert(key, entry);
                 }
             }
@@ -1117,6 +1293,191 @@ mod tests {
             std::fs::read_to_string(paths.release_memo()).unwrap(),
             reshaped,
             "a newer memo this build cannot decode is never overwritten either"
+        );
+    }
+
+    // ---- First sightings (RG-50, design 7.6.1)
+
+    fn foo_key(tag: &str, revision: Option<u32>) -> ReleaseKey {
+        ReleaseKey::parse(&format!("gh:o/foo@{tag}"), revision).unwrap()
+    }
+
+    /// `gh:o/foo` with its newest release `tag` (at `revision`), fetched at `when`.
+    fn fetched(tag: &str, revision: Option<u32>, when: &str) -> MemoEntry {
+        let r: Ref = "gh:o/foo".parse().unwrap();
+        let mut newest = release(tag, Channel::Stable, None);
+        newest.revision = revision;
+        MemoEntry::of(&r, Channel::Stable, &Ok(set(vec![newest])), at(when)).unwrap()
+    }
+
+    fn sights(entry: &MemoEntry) -> Vec<(String, Option<u32>, Timestamp)> {
+        entry
+            .seen_releases
+            .iter()
+            .map(|s| (s.release.tag.clone(), s.release.revision, s.first_seen_at))
+            .collect()
+    }
+
+    /// Two processes fetch the same newest release an hour apart and each writes the
+    /// memo, in either order: the file keeps one sighting, at the earlier time.
+    #[test]
+    fn two_writes_of_one_release_keep_its_earlier_sight_in_either_order() {
+        let key = key(&"gh:o/foo".parse().unwrap(), Channel::Stable);
+        let (early, late) = ("2026-10-15T12:00:00Z", "2026-10-15T13:00:00Z");
+        for order in [[early, late], [late, early]] {
+            let (_dir, paths) = paths();
+            for when in order {
+                let mut memo = ReleaseMemo::default();
+                memo.entries.insert(key.clone(), fetched("1", None, when));
+                assert_eq!(write(&paths, memo, 10, "outdated", Actor::Human), None);
+            }
+            let entry = load(&paths).0.entries[&key].clone();
+            assert_eq!(
+                sights(&entry),
+                [("1".to_owned(), None, at(early))],
+                "{order:?}"
+            );
+            assert_eq!(entry.fetched_at, at(late), "the later fetch still wins");
+        }
+    }
+
+    /// A new newest release adds a sighting; nine keep the newest eight. A re-tag (the
+    /// same WowAce tag at a new revision) is a release of its own, first seen when it
+    /// appears, and the earlier revision keeps its time.
+    #[test]
+    fn new_releases_and_retags_add_sightings_and_nine_keep_eight() {
+        let mut entry = fetched("1", None, "2026-10-15T01:00:00Z");
+        for n in 2..=9 {
+            let mut next = fetched(&n.to_string(), None, &format!("2026-10-15T{n:02}:00:00Z"));
+            carry_seen(&mut next, &entry);
+            entry = next;
+        }
+        let tags: Vec<String> = sights(&entry).into_iter().map(|(t, _, _)| t).collect();
+        assert_eq!(
+            tags,
+            ["2", "3", "4", "5", "6", "7", "8", "9"],
+            "the oldest dropped"
+        );
+        assert_eq!(MEMO_SEEN_RELEASES, 8);
+
+        let old = fetched("v1", Some(1390), "2026-10-15T01:00:00Z");
+        let mut retag = fetched("v1", Some(1402), "2026-10-15T05:00:00Z");
+        carry_seen(&mut retag, &old);
+        assert_eq!(
+            sights(&retag),
+            [
+                ("v1".to_owned(), Some(1390), at("2026-10-15T01:00:00Z")),
+                ("v1".to_owned(), Some(1402), at("2026-10-15T05:00:00Z")),
+            ]
+        );
+        assert_eq!(
+            first_seen(&retag, &foo_key("v1", Some(1402))),
+            Some(at("2026-10-15T05:00:00Z"))
+        );
+    }
+
+    /// A download records the archive's hash; the same bytes again change nothing; other
+    /// bytes for that archive restart the sight; another archive of the release (one per
+    /// client) changes nothing. A merge keeps the restarted sight.
+    #[test]
+    fn replaced_content_restarts_its_sight_and_the_same_hash_leaves_it() {
+        let seen = at("2026-10-15T01:00:00Z");
+        let mut entry = fetched("1", None, "2026-10-15T01:00:00Z");
+        let id = "gh:o/foo@1";
+        let (h1, h2, h3) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let later = |hour: u32| at(&format!("2026-10-15T{hour:02}:00:00Z"));
+        assert!(
+            entry.saw_archive(id, &h1, None, later(2)),
+            "first download: recorded"
+        );
+        assert_eq!(
+            (
+                entry.seen_releases[0].first_seen_at,
+                entry.seen_releases[0].blob_sha256.as_deref()
+            ),
+            (seen, Some(h1.as_str()))
+        );
+        let before = entry.clone();
+        assert!(
+            !entry.saw_archive(id, &h1, Some(&h1), later(3)),
+            "same bytes"
+        );
+        assert_eq!(entry, before);
+        assert!(
+            entry.saw_archive(id, &h2, Some(&h1), later(4)),
+            "replaced bytes"
+        );
+        assert_eq!(
+            (
+                entry.seen_releases[0].first_seen_at,
+                entry.seen_releases[0].blob_sha256.as_deref()
+            ),
+            (later(4), Some(h2.as_str()))
+        );
+        assert!(
+            !entry.saw_archive(id, &h3, None, later(5)),
+            "another archive of it"
+        );
+        assert!(
+            !entry.saw_archive("gh:o/foo@2", &h3, None, later(5)),
+            "a release it never saw"
+        );
+
+        // Carried either way into an entry holding the old bytes, the restarted sight
+        // wins; one with a hash wins over one without.
+        let mut old = before.clone();
+        carry_seen(&mut old, &entry);
+        assert_eq!(sights(&old)[0].2, later(4));
+        let mut restarted = entry.clone();
+        carry_seen(&mut restarted, &before);
+        assert_eq!(sights(&restarted)[0].2, later(4));
+        let mut bare = fetched("1", None, "2026-10-15T00:00:00Z");
+        carry_seen(&mut bare, &entry);
+        assert_eq!(
+            bare.seen_releases[0].blob_sha256.as_deref(),
+            Some(h2.as_str())
+        );
+    }
+
+    /// An entry written before 1.2 has no sighting: `first_seen` takes its `fetched_at`
+    /// for its newest release, the seeding records that time once, a second seeding
+    /// moves nothing, and a release it does not know has none.
+    #[test]
+    fn an_entry_from_before_1_2_is_seeded_once_and_an_unknown_release_has_no_sight() {
+        let r: Ref = "gh:o/foo".parse().unwrap();
+        let mut entry = fetched("1", None, "2026-10-15T01:00:00Z");
+        entry.seen_releases.clear();
+        let mut memo = ReleaseMemo::default();
+        memo.entries.insert(key(&r, Channel::Stable), entry.clone());
+        let text = serde_json::to_string(&memo).unwrap();
+        assert!(!text.contains("seen_releases"), "a 1.1 entry: {text}");
+        let read: ReleaseMemo = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            read.entries[&key(&r, Channel::Stable)],
+            entry,
+            "a 1.1 entry reads"
+        );
+
+        assert_eq!(
+            first_seen(&entry, &foo_key("1", None)),
+            Some(at("2026-10-15T01:00:00Z"))
+        );
+        entry.seed_seen();
+        entry.fetched_at = at("2026-10-15T05:00:00Z");
+        entry.seed_seen();
+        assert_eq!(
+            sights(&entry),
+            [("1".to_owned(), None, at("2026-10-15T01:00:00Z"))]
+        );
+        assert_eq!(
+            first_seen(&entry, &foo_key("1", None)),
+            Some(at("2026-10-15T01:00:00Z"))
+        );
+        assert_eq!(first_seen(&entry, &foo_key("2", None)), None);
+        assert_eq!(
+            first_seen(&entry, &foo_key("1", Some(7))),
+            None,
+            "another revision"
         );
     }
 

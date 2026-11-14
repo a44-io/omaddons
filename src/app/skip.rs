@@ -1137,6 +1137,7 @@ mod tests {
             version: "v3".into(),
             release_id: "gh:o/foo@v3".into(),
             published_at: None,
+            first_seen_at: None,
             channel: crate::model::Channel::Stable,
             revision: None,
             retagged: false,

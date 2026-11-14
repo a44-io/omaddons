@@ -3395,7 +3395,7 @@ file registry targets[].product string?!
 file registry targets[].qualifier string!
 file registry targets[].registered_at string!
 file release_memo . object
-file release_memo 1.1
+file release_memo 1.2
 file release_memo candidates array!
 file release_memo candidates[] object
 file release_memo candidates[].asset string!
@@ -3424,6 +3424,14 @@ file release_memo entries{}.known[] object
 file release_memo entries{}.known[].published_at string?!
 file release_memo entries{}.known[].release_id string!
 file release_memo entries{}.probe string?!
+file release_memo entries{}.seen_releases array
+file release_memo entries{}.seen_releases[] object
+file release_memo entries{}.seen_releases[].blob_sha256 string?
+file release_memo entries{}.seen_releases[].first_seen_at string!
+file release_memo entries{}.seen_releases[].release object!
+file release_memo entries{}.seen_releases[].release.revision integer? minimum=0
+file release_memo entries{}.seen_releases[].release.source string!
+file release_memo entries{}.seen_releases[].release.tag string!
 file release_memo entries{}.set object?!
 file release_memo entries{}.set.ref string!
 file release_memo entries{}.set.releases array!
@@ -8567,6 +8575,7 @@ output errors data.targets[].addons[].last_seen.meaning string!
 output errors data.targets[].addons[].last_seen.tz string!
 output errors data.targets[].addons[].latest object?!
 output errors data.targets[].addons[].latest.asset string?!
+output errors data.targets[].addons[].latest.first_seen_at string?!
 output errors data.targets[].addons[].latest.published_at string?!
 output errors data.targets[].addons[].latest.release_id string?!
 output errors data.targets[].addons[].latest.revision integer?! minimum=0
@@ -9135,6 +9144,7 @@ output list data.targets[].addons[].folders array|integer!
 output list data.targets[].addons[].installed_at string!
 output list data.targets[].addons[].latest object!
 output list data.targets[].addons[].latest.asset string?!
+output list data.targets[].addons[].latest.first_seen_at string?!
 output list data.targets[].addons[].latest.published_at string?!
 output list data.targets[].addons[].latest.release_id string?!
 output list data.targets[].addons[].latest.revision integer?! minimum=0
@@ -9369,6 +9379,7 @@ output outdated data.targets[].items[].latest.changelog.source string!
 output outdated data.targets[].items[].latest.changelog.truncated boolean!
 output outdated data.targets[].items[].latest.changelog_unavailable string?
 output outdated data.targets[].items[].latest.channel string!
+output outdated data.targets[].items[].latest.first_seen_at string?!
 output outdated data.targets[].items[].latest.published_at string?!
 output outdated data.targets[].items[].latest.release_id string!
 output outdated data.targets[].items[].latest.retagged boolean

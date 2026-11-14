@@ -57,6 +57,7 @@ expression: s.stable(&c.envelope)
             },
             "latest": {
               "channel": "stable",
+              "first_seen_at": "<time>",
               "published_at": null,
               "release_id": "gh:WeakAuras/WeakAuras2@5.20.0",
               "version": "5.20.0"

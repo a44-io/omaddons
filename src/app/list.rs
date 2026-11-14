@@ -145,6 +145,10 @@ pub struct Latest {
     /// widget's "2 days old" is read from (1n2p.21).
     #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub published_at: Option<jiff::Timestamp>,
+    /// When this machine first saw that release, the clock of an automatic update's wait
+    /// (design 7.6.1); `null` when the release memo has no sight of it.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub first_seen_at: Option<jiff::Timestamp>,
 }
 
 /// `list`'s update entry for an addon of `r#ref` whose status is `status` (`None`: no
@@ -160,6 +164,7 @@ pub(super) fn latest_of(status: Option<&UpdateStatus>, r#ref: &Ref) -> Latest {
         revision: release.and_then(|l| l.revision),
         asset: release.and_then(|l| l.asset.clone()),
         published_at: release.and_then(|l| l.published_at),
+        first_seen_at: release.and_then(|l| l.first_seen_at),
     }
 }
 
@@ -620,6 +625,7 @@ mod tests {
                 revision: None,
                 asset: Some("Foo.zip".to_owned()),
                 published_at: None,
+                first_seen_at: None,
             };
             assert_eq!(latest_cell(&latest), cell, "{status:?}");
         }
@@ -634,6 +640,7 @@ mod tests {
             version: "v2".into(),
             release_id: format!("{r}@v2"),
             published_at: None,
+            first_seen_at: None,
             channel: Channel::Stable,
             revision: None,
             retagged: false,
@@ -648,6 +655,7 @@ mod tests {
             revision: None,
             asset: Some("Foo.zip".into()),
             published_at: None,
+            first_seen_at: None,
         };
         let unnamed = |status| Latest {
             version: None,
@@ -657,6 +665,7 @@ mod tests {
             revision: None,
             asset: None,
             published_at: None,
+            first_seen_at: None,
         };
         let failed = Error::new(ErrorCode::NotFound, "gone", Suggestion::text("x"));
         let cases: Vec<(&str, Option<UpdateStatus>, &str, Latest)> = vec![
