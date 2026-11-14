@@ -1,8 +1,9 @@
 //! What preceded a newly appeared Lua error (design 7.2): the verdict a watched
 //! appearance is given, and the evidence it rests on. The errors ledger
-//! ([`crate::errors::ledger`]) stores each verdict with the appearance it judged. Its
-//! first half is here (RG-14): the onset, which changes are candidates, and how each
-//! connects to the error; grading them comes next (RG-15).
+//! ([`crate::errors::ledger`]) stores each verdict with the appearance it judged. The
+//! judge is here, in two halves: the onset, which changes are candidates and how each
+//! connects to the error (RG-14); then whether the change's code was running, the grade
+//! and the choice among candidates, in [`judge`] (RG-15).
 //!
 //! A verdict is evidence, not proof: the wire says `after_change`, never "caused by".
 //! The judge takes domain types only and imports nothing from `src/app/`.
@@ -16,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::errors::attribute::Confidence;
 use crate::errors::buggrabber::{TimeEvidence, TimeMeaning, TzEvidence};
 use crate::errors::ledger::{Appearance, ChangeMark, DbGeneration};
-use crate::limits::SUSPECT_MAX_AGE;
+use crate::limits::{
+    SUSPECT_ALGORITHM, SUSPECT_CLEAN_SESSIONS_MAX, SUSPECT_MAX_AGE, SUSPECT_TIMING_MAX_AGE,
+};
 use crate::model::{Actor, ReleaseTransition, RunId, TransitionSource, TxId, TxKind};
 use crate::state::history::FolderOp;
 
@@ -330,27 +333,43 @@ pub fn relation(
     change: &ChangeFact,
     cx: &JudgeContext<'_>,
 ) -> (Relation, bool) {
+    let (relation, blocked, _) = connect(error, change, cx);
+    (relation, blocked)
+}
+
+/// [`relation`], with the ops that make it: the addons a verdict's `changed` names.
+fn connect<'c>(
+    error: &Appeared<'_>,
+    change: &'c ChangeFact,
+    cx: &JudgeContext<'_>,
+) -> (Relation, bool, Vec<&'c ChangeOp>) {
     let installs = || change.ops.iter().filter(|o| o.installs());
-    let own = installs().any(|o| {
-        error.folder.is_some_and(|f| same(&o.folder, f))
-            || (error.managed && same(&o.addon, error.addon))
-    });
-    if own {
+    let own: Vec<_> = installs()
+        .filter(|o| {
+            error.folder.is_some_and(|f| same(&o.folder, f))
+                || (error.managed && same(&o.addon, error.addon))
+        })
+        .collect();
+    if !own.is_empty() {
         let relation = if error.attribution == Confidence::Low {
             Relation::InStack
         } else {
             Relation::Own
         };
-        return (relation, false);
+        return (relation, false, own);
     }
-    if installs().any(|o| error.stack_folders.iter().any(|s| same(s, &o.folder))) {
-        return (Relation::InStack, false);
+    let in_stack: Vec<_> = installs()
+        .filter(|o| error.stack_folders.iter().any(|s| same(s, &o.folder)))
+        .collect();
+    if !in_stack.is_empty() {
+        return (Relation::InStack, false, in_stack);
     }
     let Some(erroring) = error.folder else {
-        return (Relation::None, false);
+        return (Relation::None, false, change.ops.iter().collect());
     };
     let changed = |folder: &str| cx.changed_since.iter().any(|c| same(c, folder));
-    let mut unknown = false;
+    let mut blocked = false;
+    let mut edges = Vec::new();
     for o in &change.ops {
         let edge = (cx.depends)(erroring, &o.folder)
             || (o.installs() && (cx.depends)(&o.folder, erroring));
@@ -358,12 +377,16 @@ pub fn relation(
             continue;
         }
         if changed(erroring) || changed(&o.folder) {
-            unknown = true;
+            blocked = true;
             continue;
         }
-        return (Relation::Dependency, false);
+        edges.push(o);
     }
-    (Relation::None, unknown)
+    if edges.is_empty() {
+        (Relation::None, blocked, change.ops.iter().collect())
+    } else {
+        (Relation::Dependency, false, edges)
+    }
 }
 
 /// The changes that may have preceded an error whose onset is `onset`, in their order:
@@ -392,6 +415,496 @@ pub fn provider_changed(appearance: &Appearance, changes: &[ChangeFact], onset: 
                 .any(|o| o.installs() && same(&o.folder, &appearance.provider))
     })
 }
+
+// ---------------------------------------------------------------------------------------
+// The judge, second half (design 7.2.4 to 7.2.6): whether the change's code was running
+// when the error began, the grade, and the choice among candidates. Principle 1 is
+// enforced here: uncertainty may lose a link, it never creates one above `low`, and
+// taking a fact away never raises a grade. Grades are compared only through [`grade`].
+
+/// A grade's strength: `high` 3, `medium` 2, `low` 1. Never a derived ordering:
+/// [`Confidence`] declares `High` first.
+pub fn grade(c: Confidence) -> u8 {
+    match c {
+        Confidence::High => 3,
+        Confidence::Medium => 2,
+        Confidence::Low => 1,
+    }
+}
+
+/// A link's strength, no link being 0.
+fn strength(link: Option<Confidence>) -> u8 {
+    link.map_or(0, grade)
+}
+
+/// One grade lower, never below `low` (and never to no link).
+pub fn lower(c: Confidence) -> Confidence {
+    match c {
+        Confidence::High => Confidence::Medium,
+        Confidence::Medium | Confidence::Low => Confidence::Low,
+    }
+}
+
+/// The weaker of two links, no link the weakest.
+fn weaker(a: Option<Confidence>, b: Option<Confidence>) -> Option<Confidence> {
+    if strength(a) <= strength(b) { a } else { b }
+}
+
+/// At most `cap`.
+fn capped(link: Option<Confidence>, cap: Confidence) -> Option<Confidence> {
+    link.map(|c| if grade(c) > grade(cap) { cap } else { c })
+}
+
+/// The mark of a change (design 7.2.4): the newest mark of its run in the appearance's
+/// generation. An unsettled newest mark is returned as it is, never passed over for an
+/// older settled one; of two taken at the same moment, the unsettled one.
+fn mark_of<'a>(
+    marks: &'a [ChangeMark],
+    run: Option<RunId>,
+    generation: &DbGeneration,
+) -> Option<&'a ChangeMark> {
+    let run = run?;
+    marks
+        .iter()
+        .filter(|m| m.run == run && &m.generation == generation)
+        .max_by_key(|m| (m.at, !m.settled))
+}
+
+/// The first session that loads a change's code cleanly, as far as its mark tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Boundaries {
+    /// The arithmetic cannot run: no settled mark of this generation (`Mark`), or one
+    /// without a session or whose next sessions overflow (`Sessions`).
+    Unknown(Unknown),
+    /// `s`, the last session saved before the change, and `loaded`.
+    One { s: u32, loaded: u32 },
+    /// Whether this database's game was running is not known: `s + 1` if it was not,
+    /// `s + 2` if it was (the mixed session `s + 1` loaded the old code).
+    Both { s: u32, stopped: u32, running: u32 },
+}
+
+/// The load boundaries of a change from its mark (design 7.2.4), and what the mark could
+/// not tell: `running` when neither look could say whether the client ran, `accounts`
+/// when it ran or may have and the client has several databases, any of whose accounts
+/// may have been the one playing. Every addition is checked: an overflow is unknown
+/// evidence, never a wrapped or saturated session.
+fn boundaries(mark: Option<&ChangeMark>, databases: usize) -> (Boundaries, Vec<Unknown>) {
+    let Some(mark) = mark.filter(|m| m.settled) else {
+        return (Boundaries::Unknown(Unknown::Mark), Vec::new());
+    };
+    let may_have_run = mark.running != Some(false);
+    let several = databases > 1 && may_have_run;
+    let mut unknowns = Vec::new();
+    if mark.running.is_none() {
+        unknowns.push(Unknown::Running);
+    }
+    if several {
+        unknowns.push(Unknown::Accounts);
+    }
+    let Some(s) = mark.session else {
+        return (Boundaries::Unknown(Unknown::Sessions), unknowns);
+    };
+    let (stopped, running) = (s.checked_add(1), s.checked_add(2));
+    let boundaries = match (mark.running, several) {
+        (Some(false), _) => stopped.map(|loaded| Boundaries::One { s, loaded }),
+        (Some(true), false) => running.map(|loaded| Boundaries::One { s, loaded }),
+        _ => stopped
+            .zip(running)
+            .map(|(stopped, running)| Boundaries::Both {
+                s,
+                stopped,
+                running,
+            }),
+    };
+    (
+        boundaries.unwrap_or(Boundaries::Unknown(Unknown::Sessions)),
+        unknowns,
+    )
+}
+
+/// What the session numbers say of one change under one load boundary (design 7.2.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sessions {
+    /// The error last occurred in a session saved before the change.
+    NotCandidate,
+    /// The numbers are missing or do not fit together.
+    Unknown,
+    /// Every possible first occurrence is in the mixed session.
+    SameSession,
+    /// Sessions that ran the new code cleanly before the first occurrence: `clean` when
+    /// the first occurrence is pinned, else the range it lies in.
+    Clean {
+        clean: Option<u32>,
+        clean_min: u32,
+        clean_max: u32,
+    },
+}
+
+/// The session the error last occurred in, as the appearance knows it: the lowest among
+/// the members when found, or an earlier read's when that is lower.
+fn entry_session(appearance: &Appearance) -> Option<u32> {
+    let found = appearance.entry_session?;
+    let earliest = appearance.earliest.as_ref().and_then(|e| e.entry_session);
+    Some(earliest.map_or(found, |earliest| earliest.min(found)))
+}
+
+/// The session arithmetic under one boundary (design 7.2.4): with `e` the session the
+/// error last occurred in and `p` the last session known free of it, the first
+/// occurrence lies in `max(p, s) + 1 ..= e`, pinned to `e` for a single occurrence.
+///
+/// An unknown `p` is unknown sessions (decided in RG-15, lowering the design's "counts
+/// as `s`"): a known `p` that does not fit is unknown sessions, so a missing one cannot
+/// be graded higher.
+fn sessions(appearance: &Appearance, s: u32, loaded: u32) -> Sessions {
+    let Some(e) = entry_session(appearance) else {
+        return Sessions::Unknown;
+    };
+    if e <= s {
+        return Sessions::NotCandidate;
+    }
+    let Some(p) = appearance.before.session else {
+        return Sessions::Unknown;
+    };
+    let Some(mut lo) = p.max(s).checked_add(1) else {
+        return Sessions::Unknown;
+    };
+    let hi = e;
+    if lo > hi {
+        return Sessions::Unknown;
+    }
+    if appearance.counter == 1 {
+        lo = hi;
+    }
+    if hi < loaded {
+        return Sessions::SameSession;
+    }
+    let Some(clean_max) = hi.checked_sub(loaded) else {
+        return Sessions::Unknown;
+    };
+    // `lo < loaded <= hi`: it may have begun in the mixed session, so as few as none
+    // ran clean. A count, not a session number.
+    let clean_min = lo.saturating_sub(loaded);
+    let clean = (lo >= loaded && lo == hi).then_some(clean_min);
+    Sessions::Clean {
+        clean,
+        clean_min,
+        clean_max,
+    }
+}
+
+/// The table of design 7.2.5 for one boundary, with the `same_session` rule. `exact_after`:
+/// one occurrence whose trusted time is after the change. `written_after`: the game saved
+/// the file without the error after the change. A `none` link here still needs the gate
+/// that [`judge`] applies (the newest candidate, close in time, the same game version).
+fn cell(
+    relation: Relation,
+    sessions: Sessions,
+    exact_after: bool,
+    written_after: bool,
+) -> Option<Confidence> {
+    use Confidence::{High, Low, Medium};
+    let max = SUSPECT_CLEAN_SESSIONS_MAX;
+    let related = matches!(relation, Relation::InStack | Relation::Dependency);
+    match sessions {
+        Sessions::NotCandidate => None,
+        Sessions::Unknown => (relation != Relation::None || !written_after).then_some(Low),
+        Sessions::SameSession if exact_after => {
+            let pinned = Sessions::Clean {
+                clean: Some(0),
+                clean_min: 0,
+                clean_max: 0,
+            };
+            cell(relation, pinned, false, written_after).map(lower)
+        }
+        Sessions::SameSession => Some(Low),
+        Sessions::Clean { clean: Some(n), .. } => match relation {
+            Relation::Own if n == 0 => Some(High),
+            Relation::Own if n <= max => Some(Medium),
+            Relation::Own => Some(Low),
+            _ if related && n == 0 => Some(Medium),
+            _ if related && n <= max => Some(Low),
+            Relation::None if n == 0 => Some(Low),
+            _ => None,
+        },
+        Sessions::Clean {
+            clean: None,
+            clean_min,
+            clean_max,
+        } => match relation {
+            Relation::Own if clean_max > max => Some(Low),
+            Relation::Own => Some(Medium),
+            Relation::None => (clean_min == 0).then_some(Low),
+            _ if clean_max > max => None,
+            _ => Some(Low),
+        },
+    }
+}
+
+/// The strongest a candidate's link could be were everything it could not establish
+/// known: the cell's best for its relation (`dependency` for a blocked edge).
+fn best_case(relation: Relation, blocked: bool) -> u8 {
+    match relation {
+        Relation::Own => grade(Confidence::High),
+        Relation::InStack | Relation::Dependency => grade(Confidence::Medium),
+        Relation::None if blocked => grade(Confidence::Medium),
+        Relation::None => grade(Confidence::Low),
+    }
+}
+
+/// One candidate, graded.
+#[derive(Debug, Clone)]
+struct Graded<'c> {
+    change: &'c ChangeFact,
+    relation: Relation,
+    /// A `dependency` edge was not asserted (see [`relation`]).
+    blocked: bool,
+    addons: Vec<&'c str>,
+    link: Option<Confidence>,
+    same_session: Option<bool>,
+    clean: Option<u32>,
+    unknowns: BTreeSet<Unknown>,
+}
+
+/// What the whole appearance leaves unknown, for every candidate.
+struct Shared<'a> {
+    onset: Onset,
+    /// The game's version at both reads, when both are known.
+    versions: Option<(&'a str, &'a str)>,
+    unknowns: BTreeSet<Unknown>,
+    written_at: Option<Timestamp>,
+}
+
+/// Grades one candidate under its one or two boundaries, before the `none` gate and the
+/// game-update adjustment; `None` when the session numbers show it came after the error.
+fn grade_candidate<'c>(
+    error: &Appeared<'_>,
+    change: &'c ChangeFact,
+    cx: &JudgeContext<'_>,
+    shared: &Shared<'_>,
+) -> Option<Graded<'c>> {
+    let appearance = error.appearance;
+    let (relation, blocked, ops) = connect(error, change, cx);
+    let mark = mark_of(cx.marks, change.run, &appearance.generation);
+    let (bounds, from_mark) = boundaries(mark, cx.databases);
+    let mut unknowns: BTreeSet<Unknown> = from_mark.into_iter().collect();
+    unknowns.extend(shared.unknowns.iter().copied());
+    if blocked {
+        unknowns.insert(Unknown::Dependencies);
+    }
+    if change.recorded == TransitionSource::Unavailable {
+        unknowns.insert(Unknown::Transition);
+    }
+    let loads: Vec<u32> = match bounds {
+        Boundaries::Unknown(why) => {
+            unknowns.insert(why);
+            Vec::new()
+        }
+        Boundaries::One { loaded, .. } => vec![loaded],
+        Boundaries::Both {
+            stopped, running, ..
+        } => vec![stopped, running],
+    };
+    let s = match bounds {
+        Boundaries::One { s, .. } | Boundaries::Both { s, .. } => Some(s),
+        Boundaries::Unknown(_) => None,
+    };
+    let per: Vec<Sessions> = match s {
+        Some(s) => loads.iter().map(|&l| sessions(appearance, s, l)).collect(),
+        None => vec![Sessions::Unknown],
+    };
+    if per.contains(&Sessions::NotCandidate) {
+        return None;
+    }
+    if per.contains(&Sessions::Unknown) && s.is_some() {
+        unknowns.insert(Unknown::Sessions);
+    }
+    let exact_after = shared.onset.exact && shared.onset.by > change.at;
+    let written_after = shared.written_at.is_some_and(|w| w > change.at);
+    let mut link = per
+        .iter()
+        .map(|&x| cell(relation, x, exact_after, written_after))
+        .reduce(weaker)
+        .flatten();
+    if per.len() > 1 {
+        link = capped(link, Confidence::Medium);
+    }
+    let all = |want: fn(&Sessions) -> bool| per.iter().all(want);
+    let same_session = if all(|x| *x == Sessions::SameSession) {
+        Some(true)
+    } else if all(|x| matches!(x, Sessions::Clean { .. })) {
+        Some(false)
+    } else {
+        None
+    };
+    let cleans: BTreeSet<Option<u32>> = per
+        .iter()
+        .map(|x| match x {
+            Sessions::Clean { clean, .. } => *clean,
+            _ => None,
+        })
+        .collect();
+    let clean = match cleans.into_iter().collect::<Vec<_>>().as_slice() {
+        [only] => *only,
+        _ => None,
+    };
+    let mut addons: Vec<&str> = ops.iter().map(|o| o.addon.as_str()).collect();
+    addons.dedup_by(|a, b| same(a, b));
+    Some(Graded {
+        change,
+        relation,
+        blocked,
+        addons,
+        link,
+        same_session,
+        clean,
+        unknowns,
+    })
+}
+
+/// Fewer clean sessions first, `None` last.
+fn clean_key(clean: Option<u32>) -> (bool, u32) {
+    (clean.is_none(), clean.unwrap_or(0))
+}
+
+/// What a verdict's `changed` names: the transitions of the addons that make the
+/// relation (for `none`, every addon the change moved), at most 5 for `none`.
+fn changed_of(graded: &Graded<'_>) -> Vec<ReleaseTransition> {
+    let named = graded
+        .change
+        .transitions
+        .iter()
+        .filter(|t| graded.addons.iter().any(|a| same(a, &t.addon)));
+    if graded.relation == Relation::None {
+        named.take(5).cloned().collect()
+    } else {
+        named.cloned().collect()
+    }
+}
+
+/// Judges one newly appeared cluster (design 7.2.2 to 7.2.6): no judgment when its
+/// database's generation ended or BugGrabber itself changed in between (`Unsupported`);
+/// otherwise the strongest link among the candidates, `None` when none qualifies.
+///
+/// - Each candidate is graded by [`cell`] under each load boundary its mark allows, the
+///   weaker kept and capped at `medium` when there were two.
+/// - A `none` link needs the newest live candidate, within [`SUSPECT_TIMING_MAX_AGE`] of
+///   `onset.by`, and the game's version known at both reads and the same.
+/// - The game updated, or its version is not known at one read: one grade lower, never
+///   below `low` (decided in RG-15: an unknown version is graded as the update it may
+///   have been, so taking a version away cannot raise a grade).
+/// - The choice: the higher grade, then fewer clean sessions, then the stronger
+///   relation, then the newer change, then the higher transaction id.
+/// - `unknowns`: the suspect's, and those of every candidate that might have outranked
+///   it had they been known (its best case is at least the suspect's grade).
+///
+/// `Deferred` (history unreadable) is the caller's. Deterministic in the changes' order.
+pub fn judge(error: &Appeared<'_>, changes: &[ChangeFact], cx: &JudgeContext<'_>) -> Verdict {
+    let appearance = error.appearance;
+    let verdict = |state, suspect, gap| Verdict {
+        algorithm: SUSPECT_ALGORITHM,
+        state,
+        judged_at: cx.now,
+        suspect,
+        gap,
+    };
+    if &appearance.generation != cx.generation {
+        let gap = Some(JudgmentGap::GenerationEnded);
+        return verdict(JudgmentState::Unsupported, None, gap);
+    }
+    let (onset, contradicted) = onset(appearance);
+    if provider_changed(appearance, changes, &onset) {
+        let gap = Some(JudgmentGap::ProviderChanged);
+        return verdict(JudgmentState::Unsupported, None, gap);
+    }
+    let mut shared = Shared {
+        onset,
+        versions: None,
+        unknowns: BTreeSet::new(),
+        written_at: appearance.before.written_at,
+    };
+    if contradicted || trusted_time(&appearance.time).is_none() {
+        shared.unknowns.insert(Unknown::Time);
+    }
+    match (
+        appearance.before.client_version.as_deref(),
+        appearance.found.client_version.as_deref(),
+    ) {
+        (Some(from), Some(to)) => shared.versions = Some((from, to)),
+        _ => {
+            shared.unknowns.insert(Unknown::ClientVersion);
+        }
+    }
+    let mut graded: Vec<Graded<'_>> = candidates(changes, &onset)
+        .into_iter()
+        .filter_map(|c| grade_candidate(error, c, cx, &shared))
+        .collect();
+    graded.sort_by_key(|g| std::cmp::Reverse((g.change.at, g.change.tx)));
+    let same_game = shared.versions.is_some_and(|(from, to)| from == to);
+    let timing = SUSPECT_TIMING_MAX_AGE;
+    for (i, g) in graded.iter_mut().enumerate() {
+        if g.relation == Relation::None {
+            let close = onset.by.duration_since(g.change.at).unsigned_abs() <= timing;
+            if i > 0 || !close || !same_game {
+                g.link = None;
+            }
+        } else if !same_game {
+            g.link = g.link.map(lower);
+        }
+    }
+    let mut linked: Vec<&Graded<'_>> = graded.iter().filter(|g| g.link.is_some()).collect();
+    linked.sort_by(|a, b| {
+        strength(b.link)
+            .cmp(&strength(a.link))
+            .then(clean_key(a.clean).cmp(&clean_key(b.clean)))
+            .then(b.relation.rank().cmp(&a.relation.rank()))
+            .then((b.change.at, b.change.tx).cmp(&(a.change.at, a.change.tx)))
+    });
+    let Some((best, rest)) = linked.split_first() else {
+        return verdict(JudgmentState::Complete, None, None);
+    };
+    let Some(confidence) = best.link else {
+        return verdict(JudgmentState::Complete, None, None);
+    };
+    let bar = grade(confidence);
+    let mut unknowns = best.unknowns.clone();
+    for g in &graded {
+        if !g.unknowns.is_empty() && best_case(g.relation, g.blocked) >= bar {
+            unknowns.extend(g.unknowns.iter().copied());
+        }
+    }
+    let client_update = shared
+        .versions
+        .filter(|(from, to)| from != to)
+        .map(|(from, to)| ClientUpdated {
+            from_version: from.to_owned(),
+            to_version: to.to_owned(),
+        });
+    let change = best.change;
+    let gap_s = onset.by.duration_since(change.at).unsigned_abs().as_secs();
+    let suspect = Suspect {
+        tx: change.tx,
+        run: change.run,
+        kind: change.kind,
+        at: change.at,
+        actor: change.actor,
+        relation: best.relation,
+        confidence,
+        changed: changed_of(best),
+        evidence: Evidence {
+            gap_s,
+            exact: onset.exact,
+            same_session: best.same_session,
+            clean_sessions: best.clean,
+            client_update,
+            other_changes: u32::try_from(rest.len()).unwrap_or(u32::MAX),
+            unknowns: unknowns.into_iter().collect(),
+        },
+    };
+    verdict(JudgmentState::Complete, Some(suspect), None)
+}
+
+#[cfg(test)]
+mod judge_tests;
 
 #[cfg(test)]
 mod tests {
