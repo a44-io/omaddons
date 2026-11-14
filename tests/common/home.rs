@@ -148,7 +148,12 @@ impl Home {
         gh_latest(&behind, base, new.0);
         let (mut memo, _) = omaddons::state::memo::load(&paths(&self.env));
         for entry in memo.entries.values_mut() {
-            entry.fetched_at -= jiff::SignedDuration::from_hours(24);
+            // As if fetched a day ago: each release first seen then too (RG-50).
+            let day = jiff::SignedDuration::from_hours(24);
+            entry.fetched_at -= day;
+            for seen in &mut entry.seen_releases {
+                seen.first_seen_at -= day;
+            }
         }
         self.seed_memo(&memo);
         behind

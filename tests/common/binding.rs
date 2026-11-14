@@ -247,12 +247,15 @@ pub fn two_clients_with_foo(tag: &str) -> Home {
     home
 }
 
-/// Moves every release-memo entry's `fetched_at` back by `by`, so the next `update` asks
-/// its sources instead of answering from the 15-minute window.
+/// Moves every release-memo entry's `fetched_at` and first sightings back by `by`, so the
+/// next `update` asks its sources instead of answering from the 15-minute window.
 pub fn age_release_memo(home: &Home, by: jiff::SignedDuration) {
     let (mut memo, _) = omaddons::state::memo::load(&paths(&home.env));
     for entry in memo.entries.values_mut() {
         entry.fetched_at -= by;
+        for seen in &mut entry.seen_releases {
+            seen.first_seen_at -= by;
+        }
     }
     home.seed_memo(&memo);
 }

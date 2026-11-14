@@ -788,6 +788,91 @@ mod m2 {
         }
     }
 
+    /// RG-52b: Foo v1 installed a day ago, v2 seen by `outdated` now, and an epoch two
+    /// days back.
+    fn foo_seen(home: &mut Home) -> super::common::epoch::Epoch {
+        let (one, two) = (foo_assets("1.0"), foo_assets("2.0"));
+        home.installed_behind(
+            FOO,
+            ("v1", &foo_asset(&one.0, &one.1)),
+            ("v2", &foo_asset(&two.0, &two.1)),
+            &["retail"],
+        );
+        super::common::epoch::Epoch::ago(jiff::SignedDuration::from_hours(48))
+    }
+
+    /// `outdated`'s Foo item, which must carry no warning.
+    fn foo_latest(home: &Home) -> serde_json::Value {
+        let envelope = home.run(&["outdated", "-t", "retail"]).expect(0);
+        assert_eq!(envelope["warnings"], serde_json::json!([]), "{envelope}");
+        envelope["data"]["targets"][0]["items"][0]["latest"].clone()
+    }
+
+    /// RG-52b: an epoch sets a release's first sight, adds releases up to eight, places one
+    /// before the epoch, and removes them all; the binary reads each memo without a
+    /// warning and `outdated` shows the sight the epoch placed.
+    #[test]
+    fn an_epoch_places_first_sightings_the_binary_reads() {
+        let hours = jiff::SignedDuration::from_hours;
+        let mut home = Home::new(&["wow"]);
+        let epoch = foo_seen(&mut home);
+        foo_latest(&home);
+        epoch.seen(&home, "gh:o/foo", "v2", hours(41));
+        assert_eq!(
+            foo_latest(&home)["first_seen_at"],
+            serde_json::json!(epoch.at(hours(41)).to_string()),
+            "seven hours ago"
+        );
+        for (n, tag) in ["v3", "v4", "v5", "v6", "v7", "v8"].iter().enumerate() {
+            epoch.seen(&home, "gh:o/foo", tag, hours(30 + n as i64));
+        }
+        let (memo, _) = omaddons::state::memo::load(&paths(&home.env));
+        let entry = memo.entries.values().next().unwrap();
+        assert_eq!(entry.seen_releases.len(), 8, "{:?}", entry.seen_releases);
+        foo_latest(&home);
+        epoch.seen(&home, "gh:o/foo", "v1", hours(-5));
+        epoch.assert_consistent(&home);
+
+        epoch.unseen(&home, "gh:o/foo");
+        let (memo, _) = omaddons::state::memo::load(&paths(&home.env));
+        let entry = memo.entries.values().next().unwrap().clone();
+        assert!(entry.seen_releases.is_empty());
+        assert_eq!(
+            foo_latest(&home)["first_seen_at"],
+            serde_json::json!(entry.fetched_at.to_string()),
+            "an entry from before 1.2: its fetched_at"
+        );
+        epoch.assert_consistent(&home);
+    }
+
+    /// RG-52b: a first sight after its entry's fetch is a timeline the binary never writes;
+    /// the helper refuses it, naming the ref.
+    #[test]
+    #[should_panic(expected = "gh:o/foo: release v1 first seen at")]
+    fn an_epoch_refuses_a_first_sight_after_its_fetch() {
+        let mut home = Home::new(&["wow"]);
+        let epoch = foo_seen(&mut home);
+        // The entry was fetched a day ago; an hour ago is after it.
+        epoch.seen(
+            &home,
+            "gh:o/foo",
+            "v1",
+            jiff::SignedDuration::from_hours(47),
+        );
+    }
+
+    /// RG-52b: a sight before the epoch that the scenario did not place fails the
+    /// timeline, naming the ref.
+    #[test]
+    #[should_panic(expected = "before the epoch")]
+    fn an_epoch_refuses_a_sight_before_it_that_it_did_not_place() {
+        let mut home = Home::new(&["wow"]);
+        foo_seen(&mut home);
+        // An epoch after the install's sighting a day ago.
+        let late = super::common::epoch::Epoch::ago(jiff::SignedDuration::from_hours(2));
+        late.assert_consistent(&home);
+    }
+
     #[test]
     fn drift_mutators_change_exactly_what_they_say() {
         let env = TestEnv::new();

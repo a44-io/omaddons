@@ -98,14 +98,17 @@ pub fn of(entries: Vec<(String, MemoEntry)>) -> ReleaseMemo {
     }
 }
 
-/// The home's release memo aged by `hours`: every entry's `fetched_at`, the Tukui list's
-/// and every look-back's `at` moved back. The commands' 15-minute window has passed: the
-/// next window command asks its sources again.
+/// The home's release memo aged by `hours`: every entry's `fetched_at` and first
+/// sightings, the Tukui list's and every look-back's `at` moved back. The commands'
+/// 15-minute window has passed: the next window command asks its sources again.
 pub fn age(home: &Home, hours: i64) {
     let by = jiff::SignedDuration::from_hours(hours);
     let (mut memo, _) = memo::load(&paths(&home.env));
     for entry in memo.entries.values_mut() {
         entry.fetched_at -= by;
+        for seen in &mut entry.seen_releases {
+            seen.first_seen_at -= by;
+        }
     }
     if let Some(list) = memo.tukui_list.as_mut() {
         list.fetched_at -= by;
