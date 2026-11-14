@@ -70,6 +70,7 @@ mod drift_surfaces;
 mod e2e_manifest;
 mod e2e_misplaced_clients;
 mod e2e_plan_retention;
+mod e2e_regression;
 mod e2e_slice2;
 mod e2e_status_issues;
 mod e2e_target_typos;

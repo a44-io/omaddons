@@ -222,6 +222,11 @@ impl Home {
         self.proc = Some(proc.root().to_path_buf());
     }
 
+    /// Whether a client runs cannot be told: the fake `/proc` cannot be listed.
+    pub fn running_unknown(&mut self) {
+        self.proc = Some(self.env.root().join("proc-unlistable"));
+    }
+
     /// No client runs any more.
     pub fn nothing_running(&mut self) {
         let empty = self.env.root().join("proc-empty");

@@ -189,7 +189,8 @@ impl Scene {
         self
     }
 
-    fn verdict(&self) -> Verdict {
+    /// `f` on the error and the context the judge reads.
+    fn judging<R>(&self, f: impl FnOnce(&Appeared<'_>, &JudgeContext<'_>) -> R) -> R {
         let depends = |a: &str, b: &str| self.depends.iter().any(|(x, y)| same(x, a) && same(y, b));
         let error = Appeared {
             cluster: "c:1",
@@ -208,7 +209,21 @@ impl Scene {
             depends: &depends,
             changed_since: &self.changed_since,
         };
-        judge(&error, &self.changes, &cx)
+        f(&error, &cx)
+    }
+
+    fn verdict(&self) -> Verdict {
+        self.judging(|error, cx| judge(error, &self.changes, cx))
+    }
+
+    /// Whether a later change took away change `i`'s code ([`replaced`]).
+    fn replaced(&self, i: usize) -> Replaced {
+        self.judging(|error, cx| {
+            let change = &self.changes[i];
+            let (_, _, ops) = connect(error, change, cx);
+            let (onset, _) = onset(&self.appearance);
+            replaced(&self.appearance, change, &ops, &self.changes, cx, &onset)
+        })
     }
 
     fn suspect(&self) -> Option<Suspect> {
@@ -1022,6 +1037,101 @@ fn the_verdict_does_not_depend_on_the_order_of_the_changes() {
     }
 }
 
+/// Decided in RG-19 (found by its model): a later change that added, replaced or
+/// removed every folder of a candidate's relation, not later than `onset.by`, ends the
+/// sessions that can have run the candidate's code. Each case is change 0 (`Foo`'s
+/// update at 200, its mark of session 40 with the game closed) and the error with `p`
+/// 40 and the write without it at 100.
+#[test]
+fn a_later_change_that_took_the_code_away_ends_a_candidate() {
+    use Replaced::{Before, Maybe, No};
+    let foo =
+        |e: u32, counter: u32| Scene::at(e, counter).change(200, "Foo", Some((40, Some(false))));
+    let in_stack = || {
+        let mut s = Scene::at(43, 1);
+        s.stack = vec!["Bar".to_owned(), "Baz".to_owned()];
+        let both = [(FolderOp::Replace, "Bar"), (FolderOp::Replace, "Baz")];
+        s.change_with(200, &both, Some((Some(40), Some(false), true)))
+    };
+    let removed = [(FolderOp::Replace, "Bar"), (FolderOp::Remove, "Baz")];
+    let cases: [(&str, Scene, Replaced); 10] = [
+        ("no later change", foo(43, 1), No),
+        (
+            "a later change without a mark",
+            foo(43, 1).change(300, "Foo", None),
+            Maybe,
+        ),
+        (
+            "its code loaded before the error's only session",
+            foo(43, 1).change(300, "Foo", Some((42, Some(false)))),
+            Before,
+        ),
+        (
+            "the game ran at it: the mixed session 43 still had the old code",
+            foo(43, 1).change(300, "Foo", Some((42, Some(true)))),
+            No,
+        ),
+        (
+            "it loaded inside the error's window (41 to 45)",
+            foo(45, 3).change(300, "Foo", Some((42, Some(false)))),
+            Maybe,
+        ),
+        (
+            "it loaded after the error's last session",
+            foo(45, 3).change(300, "Foo", Some((45, Some(false)))),
+            No,
+        ),
+        (
+            "the game wrote the file without the error after it",
+            Scene::at(43, 1)
+                .change(50, "Foo", Some((38, Some(false))))
+                .change(90, "Foo", None),
+            Before,
+        ),
+        (
+            "a later change after the onset",
+            foo(43, 1).change(4500, "Foo", None),
+            No,
+        ),
+        (
+            "it replaced one of the two stack folders",
+            in_stack().change(300, "Bar", None),
+            No,
+        ),
+        (
+            "it replaced one and removed the other",
+            in_stack().change_with(300, &removed, None),
+            Maybe,
+        ),
+    ];
+    for (why, scene, want) in cases {
+        assert_eq!(scene.replaced(0), want, "{why}");
+    }
+}
+
+#[test]
+fn a_candidate_whose_code_was_taken_away_is_never_named_above_low() {
+    let two = Scene::at(43, 1)
+        .change(200, "Foo", Some((40, Some(false))))
+        .change(300, "Foo", None);
+    let s = two.suspect().unwrap();
+    assert_eq!(
+        (s.tx, s.confidence),
+        (id(0), Low),
+        "medium before RG-19: the second update's missing mark made the first likely"
+    );
+    assert!(s.evidence.unknowns.contains(&Unknown::Mark), "{s:?}");
+    let ran = Scene::at(44, 1)
+        .change(200, "Foo", Some((40, Some(false))))
+        .change(300, "Foo", Some((42, None)));
+    let s = ran.suspect().unwrap();
+    assert_eq!(
+        (s.tx, s.confidence, s.evidence.other_changes),
+        (id(1), Medium, 0),
+        "session 44 loaded the second update either way; before RG-19 the first, with one clean count, was named"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // Properties over generated inputs.
 
@@ -1180,11 +1290,15 @@ prop_compose! {
 
 /// A change that only a trusted time keeps out of the window (it is after the entry's
 /// last occurrence, before the read that found it) came after the error, and where its
-/// mark can show that, it does: its session is at least `e`. The game cannot produce
-/// otherwise, and without it, taking the time away would let in a change whose made-up
-/// sessions put it before the error.
+/// mark can show that, it does: its session is at least `e`, or, when `e` is unknown,
+/// `p + 1`, the earliest the error can have begun. The game cannot produce otherwise,
+/// and without it, taking the time away would let in a change whose made-up sessions
+/// put it before the error, or put the error after it (RG-19: a later change then
+/// seems to have taken an earlier one's code away before the error began).
 fn consistent(scene: &mut Scene) {
-    let Some(e) = entry_session(&scene.appearance) else {
+    let a = &scene.appearance;
+    let p_next = a.before.session.and_then(|p| p.checked_add(1));
+    let Some(e) = entry_session(a).or(p_next) else {
         return;
     };
     let (narrow, _) = onset(&scene.appearance);

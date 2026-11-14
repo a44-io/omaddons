@@ -651,6 +651,99 @@ fn best_case(relation: Relation, blocked: bool) -> u8 {
     }
 }
 
+/// Whether a later change took away the code a candidate put in place (decided in
+/// RG-19): it can have caused the error only in a session that still had it loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Replaced {
+    /// No later change took it away while the error can have begun.
+    No,
+    /// It was gone before every session in which the error can have begun: no link.
+    Before,
+    /// It may have been gone when the error began: the link is `low` at most.
+    Maybe,
+}
+
+/// Whether `change`'s code, in the folders that make its relation (`ops`), was taken
+/// away by a later change before `appearance`'s errors can have begun: a change after
+/// it, not later than `onset.by`, that added, replaced or removed every one of those
+/// folders. The game loads code at a UI load, so that code ran in no session that
+/// loaded after the later change.
+///
+/// - The game wrote the file without the error after the later change (`onset.after`
+///   not earlier than it): every session that can have begun the error loaded after
+///   it. `Before`.
+/// - The later change's mark gives the last session that can have held the old code,
+///   `loaded − 1` (with the game running, the mixed session). Before the first session
+///   the error can have begun in: `Before`; at or after the last one: no effect; in
+///   between: `Maybe`. Under two boundaries both must agree, else `Maybe`: not knowing
+///   whether the game ran never favours the earlier change.
+/// - No settled mark, or session numbers that do not tell (missing, or a first
+///   possible session after the last occurrence's): `Maybe`.
+///
+/// A relation made by no folder (`none`) is timing only and is never replaced.
+fn replaced(
+    appearance: &Appearance,
+    change: &ChangeFact,
+    ops: &[&ChangeOp],
+    changes: &[ChangeFact],
+    cx: &JudgeContext<'_>,
+    onset: &Onset,
+) -> Replaced {
+    let e = entry_session(appearance);
+    let first = match (appearance.counter, appearance.before.session) {
+        (1, _) => e,
+        (_, Some(p)) => p.checked_add(1),
+        (_, None) => None,
+    };
+    // The first session the error can have begun in, only from a whole window whose
+    // numbers fit together: as in [`sessions`], missing or contradictory numbers tell
+    // nothing, so they can never take a candidate away.
+    let first = match (first, e) {
+        (Some(first), Some(e)) if first <= e => Some(first),
+        _ => None,
+    };
+    let mut replaced = Replaced::No;
+    let later = changes
+        .iter()
+        .filter(|c| c.at > change.at && c.at <= onset.by);
+    for c in later {
+        let covers = !ops.is_empty()
+            && ops
+                .iter()
+                .all(|o| c.ops.iter().any(|later| same(&later.folder, &o.folder)));
+        if !covers {
+            continue;
+        }
+        if onset.after.is_some_and(|after| after >= c.at) {
+            return Replaced::Before;
+        }
+        let mark = mark_of(cx.marks, c.run, &appearance.generation);
+        let loads = match boundaries(mark, cx.databases).0 {
+            Boundaries::One { loaded, .. } => vec![loaded],
+            Boundaries::Both {
+                stopped, running, ..
+            } => vec![stopped, running],
+            Boundaries::Unknown(_) => Vec::new(),
+        };
+        let each: Vec<Replaced> = loads
+            .iter()
+            .map(|loaded| match (loaded.checked_sub(1), first, e) {
+                (Some(last), Some(first), _) if last < first => Replaced::Before,
+                (Some(last), _, Some(e)) if last >= e => Replaced::No,
+                _ => Replaced::Maybe,
+            })
+            .collect();
+        match each.as_slice() {
+            [Replaced::Before, rest @ ..] if rest.iter().all(|r| *r == Replaced::Before) => {
+                return Replaced::Before;
+            }
+            [Replaced::No, rest @ ..] if rest.iter().all(|r| *r == Replaced::No) => {}
+            _ => replaced = Replaced::Maybe,
+        }
+    }
+    replaced
+}
+
 /// One candidate, graded.
 #[derive(Debug, Clone)]
 struct Graded<'c> {
@@ -679,11 +772,20 @@ struct Shared<'a> {
 fn grade_candidate<'c>(
     error: &Appeared<'_>,
     change: &'c ChangeFact,
+    changes: &[ChangeFact],
     cx: &JudgeContext<'_>,
     shared: &Shared<'_>,
 ) -> Option<Graded<'c>> {
     let appearance = error.appearance;
     let (relation, blocked, ops) = connect(error, change, cx);
+    let replaced = if relation == Relation::None {
+        Replaced::No
+    } else {
+        replaced(appearance, change, &ops, changes, cx, &shared.onset)
+    };
+    if replaced == Replaced::Before {
+        return None;
+    }
     let mark = mark_of(cx.marks, change.run, &appearance.generation);
     let (bounds, from_mark) = boundaries(mark, cx.databases);
     let mut unknowns: BTreeSet<Unknown> = from_mark.into_iter().collect();
@@ -727,6 +829,9 @@ fn grade_candidate<'c>(
         .flatten();
     if per.len() > 1 {
         link = capped(link, Confidence::Medium);
+    }
+    if replaced == Replaced::Maybe {
+        link = capped(link, Confidence::Low);
     }
     let all = |want: fn(&Sessions) -> bool| per.iter().all(want);
     let same_session = if all(|x| *x == Sessions::SameSession) {
@@ -787,6 +892,9 @@ fn changed_of(graded: &Graded<'_>) -> Vec<ReleaseTransition> {
 ///
 /// - Each candidate is graded by [`cell`] under each load boundary its mark allows, the
 ///   weaker kept and capped at `medium` when there were two.
+/// - A candidate whose code a later change took away before the error can have begun
+///   has no link; one whose code may have been gone by then is `low` at most
+///   ([`replaced`]).
 /// - A `none` link needs the newest live candidate, within [`SUSPECT_TIMING_MAX_AGE`] of
 ///   `onset.by`, and the game's version known at both reads and the same.
 /// - The game updated, or its version is not known at one read: one grade lower, never
@@ -836,7 +944,7 @@ pub fn judge(error: &Appeared<'_>, changes: &[ChangeFact], cx: &JudgeContext<'_>
     }
     let mut graded: Vec<Graded<'_>> = candidates(changes, &onset)
         .into_iter()
-        .filter_map(|c| grade_candidate(error, c, cx, &shared))
+        .filter_map(|c| grade_candidate(error, c, changes, cx, &shared))
         .collect();
     graded.sort_by_key(|g| std::cmp::Reverse((g.change.at, g.change.tx)));
     let same_game = shared.versions.is_some_and(|(from, to)| from == to);

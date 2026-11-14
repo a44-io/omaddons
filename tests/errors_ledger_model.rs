@@ -19,6 +19,18 @@
 //! no cluster's reads span two lifetimes or carry another state's session; and making
 //! any one complete read degraded never adds a cluster. The model may be more generous
 //! than the ledger, never the reverse.
+//!
+//! RG-19's second half: the judge after each full read. A change updates one of three
+//! addons (each family is one addon's error; half the families have a second addon's
+//! frame in their stack, and one addon depends on another), is a history fact with the
+//! run its marks carry, and the game is closed while it commits. After each full read
+//! the real judge (`suspect::judge`) runs once on every cluster owed a judgment, as the
+//! full read does, and every `high` or `medium` link must hold four facts: its change is
+//! not later than the error's `onset.by`; a settled mark of that change shares the
+//! cluster's generation; the release the change installed was the installed one in at
+//! least one session in which the error can have begun (between the cluster's two
+//! reads), so the code it names could have run; and the cluster is an appearance in the
+//! model.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -26,15 +38,20 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
+use omaddons::errors::attribute::Confidence;
 use omaddons::errors::buggrabber::{TimeEvidence, TimeMeaning, TzEvidence};
 use omaddons::errors::ledger::{
     self, ChangeMark, ClientNow, Cluster, DbRead, DbSighting, EntrySighting, Restored, SightMode,
     TargetLedger,
 };
 use omaddons::errors::observe::{Coverage, Gap};
+use omaddons::errors::suspect::{self, Appeared, ChangeFact, ChangeOp, JudgeContext};
 use omaddons::fsx::ScopeTable;
 use omaddons::limits::LEDGER_READS_MAX;
-use omaddons::model::RunId;
+use omaddons::model::{
+    Actor, ReleaseTransition, RunId, TransitionChange, TransitionSource, TxId, TxKind,
+};
+use omaddons::state::history::FolderOp;
 use omaddons::state::paths::Paths;
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
@@ -45,9 +62,36 @@ const CLIENT: &str = "c";
 const FAMILIES: usize = 6;
 /// Each database's provider: a provider restore replaces that database alone.
 const PROVIDERS: [&str; 3] = ["!BugGrabber", "bdUI", "ElvUI"];
+/// Addons a change may update; family `f` is an error of addon `f % ADDONS`.
+const ADDONS: usize = 3;
 
 fn at(seconds: i64) -> Timestamp {
     Timestamp::from_second(1_800_000_000 + seconds).unwrap()
+}
+
+/// Addon `n`'s one folder, which is also its name.
+fn addon(n: usize) -> String {
+    format!("Ad{n}")
+}
+
+/// The family of a ledger family key (`a:f<n>`).
+fn family_of(key: &str) -> usize {
+    key.trim_start_matches("a:f").parse().unwrap()
+}
+
+/// The folders of family `f`'s stack: its addon's, and for the upper half another
+/// addon's frame below it (`in_stack` for a change to that one).
+fn stack_of(f: usize) -> Vec<String> {
+    let mut stack = vec![addon(f % ADDONS)];
+    if f >= ADDONS {
+        stack.push(addon((f + 1) % ADDONS));
+    }
+    stack
+}
+
+/// `Ad2` declares `Ad0` a dependency: a change to `Ad0` is a `dependency` of `Ad2`'s errors.
+fn depends(a: &str, b: &str) -> bool {
+    a == addon(2) && b == addon(0)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -96,8 +140,12 @@ enum Step {
         gap: Option<(usize, Gap)>,
         hidden: Option<usize>,
     },
-    /// A change: its light read of every database, then a mark on each.
-    Change { gap: Option<(usize, Gap)> },
+    /// A change: its light read of every database, then a mark on each, then the update
+    /// of `addon` to its next release commits.
+    Change {
+        gap: Option<(usize, Gap)>,
+        addon: usize,
+    },
     /// The database wiped: session 1, no entries.
     Reset { db: usize },
     /// A restore puts back an earlier state of every database (`whole`) or of `db`,
@@ -150,7 +198,7 @@ fn arb_step() -> impl Strategy<Value = Step> {
         8 => (0usize..3, arb_op()).prop_map(|(db, op)| Step::Write { db, op }),
         5 => (gap(), prop::option::weighted(0.1, 0usize..3))
             .prop_map(|(gap, hidden)| Step::Full { gap, hidden }),
-        3 => gap().prop_map(|gap| Step::Change { gap }),
+        3 => (gap(), 0..ADDONS).prop_map(|(gap, addon)| Step::Change { gap, addon }),
         1 => (0usize..3).prop_map(|db| Step::Reset { db }),
         2 => (any::<bool>(), 0usize..3, 0usize..6, arb_counter())
             .prop_map(|(whole, db, back, counter)| Step::Restore { whole, db, back, counter }),
@@ -315,6 +363,14 @@ struct Run {
     clustered: Vec<Cluster>,
     stamps: u64,
     log: String,
+    /// History: every change committed, in order.
+    changes: Vec<ChangeFact>,
+    /// Per change, in the same order: the addon it updated and the release it installed.
+    installed: Vec<(TxId, usize, u32)>,
+    /// Clusters judged, by id and the read that found them: a judgment is made once.
+    judged: BTreeSet<(String, String)>,
+    /// The grade of every `high` or `medium` link the judge made.
+    links: Vec<Confidence>,
 }
 
 impl Run {
@@ -337,9 +393,153 @@ impl Run {
             clustered: Vec::new(),
             stamps: 0,
             log: String::new(),
+            changes: Vec::new(),
+            installed: Vec::new(),
+            judged: BTreeSet::new(),
+            links: Vec::new(),
         };
         run.account(&[0]);
         run
+    }
+
+    /// The release of `addon` installed at `when`: release 1 until a change updated it.
+    fn release_at(&self, addon: usize, when: i64) -> u32 {
+        self.changes
+            .iter()
+            .zip(&self.installed)
+            .rev()
+            .find(|(c, (_, a, _))| *a == addon && c.at < at(when))
+            .map_or(1, |(_, (_, _, release))| *release)
+    }
+
+    /// The update of `addon` to its next release commits now, its marks carrying `run`.
+    fn commit_change(&mut self, run: RunId, addon_n: usize) {
+        let when = self.tick();
+        let release = self.release_at(addon_n, when + 1) + 1;
+        let tx = TxId::new();
+        let folder = addon(addon_n);
+        self.changes.push(ChangeFact {
+            tx,
+            run: Some(run),
+            kind: TxKind::Update,
+            at: at(when),
+            actor: Actor::Agent,
+            ops: vec![ChangeOp {
+                op: FolderOp::Replace,
+                folder: folder.clone(),
+                addon: folder.clone(),
+            }],
+            transitions: vec![ReleaseTransition {
+                addon: folder,
+                change: TransitionChange::Updated,
+                from: None,
+                to: None,
+            }],
+            recorded: TransitionSource::Recorded,
+        });
+        self.installed.push((tx, addon_n, release));
+    }
+
+    /// The judge on every cluster owed a judgment (its generation current, not judged
+    /// yet), as the full read runs it; each `high` or `medium` link checked.
+    fn judge_owed(&mut self, target: &TargetLedger, now: Timestamp) -> Result<(), String> {
+        for (id, cluster) in &target.clusters {
+            let a = &cluster.appearance;
+            let Some(db) = target.databases.get(&a.database) else {
+                continue;
+            };
+            if db.generation != a.generation
+                || !self.judged.insert((id.clone(), a.found.stamp.clone()))
+            {
+                continue;
+            }
+            let f = family_of(&cluster.family);
+            let name = addon(f % ADDONS);
+            let since: BTreeSet<String> = self
+                .changes
+                .iter()
+                .filter(|c| c.at > a.found.observed_at)
+                .flat_map(|c| c.ops.iter().map(|o| o.folder.clone()))
+                .collect();
+            let cx = JudgeContext {
+                now,
+                generation: &db.generation,
+                marks: &db.marks,
+                databases: target.databases.len(),
+                depends: &depends,
+                changed_since: &since,
+            };
+            let error = Appeared {
+                cluster: id,
+                appearance: a,
+                addon: &name,
+                managed: true,
+                folder: Some(&name),
+                attribution: Confidence::High,
+                stack_folders: stack_of(f),
+            };
+            let verdict = suspect::judge(&error, &self.changes, &cx);
+            let Some(link) = verdict
+                .suspect
+                .filter(|s| suspect::grade(s.confidence) >= suspect::grade(Confidence::Medium))
+            else {
+                continue;
+            };
+            let why = |what: String| {
+                format!(
+                    "{:?} link of cluster {id} ({}): {what}",
+                    link.confidence, cluster.family
+                )
+            };
+            let (onset, _) = suspect::onset(a);
+            if link.at > onset.by {
+                return Err(why(format!(
+                    "its change at {} is after onset.by {}",
+                    link.at, onset.by
+                )));
+            }
+            if !db
+                .marks
+                .iter()
+                .any(|m| Some(m.run) == link.run && m.generation == a.generation && m.settled)
+            {
+                return Err(why(
+                    "no settled mark of its change in the cluster's generation".into(),
+                ));
+            }
+            let (_, changed, release) = *self
+                .installed
+                .iter()
+                .find(|(tx, _, _)| *tx == link.tx)
+                .ok_or_else(|| why("a change history does not hold".into()))?;
+            let states = &self
+                .world
+                .iter()
+                .find(|d| d.key == a.database)
+                .unwrap()
+                .states;
+            let index = |stamp: &str| states.iter().position(|s| s.stamp == stamp);
+            let (Some(from), Some(to)) = (index(&a.before.stamp), index(&a.found.stamp)) else {
+                return Err(why("a read of a state the game never wrote".into()));
+            };
+            if from >= to {
+                return Err(why("its read without the error is of a later state".into()));
+            }
+            let ran = states[from + 1..=to]
+                .iter()
+                .any(|s| self.release_at(changed, s.written) == release);
+            if !ran {
+                return Err(why(format!(
+                    "{} release {release} was installed in no session between its reads",
+                    addon(changed)
+                )));
+            }
+            self.model
+                .allows(cluster)
+                .map_err(|what| why(format!("not an appearance: {what}")))?;
+            self.links.push(link.confidence);
+        }
+        Ok(())
     }
 
     fn tick(&mut self) -> i64 {
@@ -574,14 +774,15 @@ impl Run {
         (sightings, discovered)
     }
 
-    /// Records `sightings` in one ledger session, with a mark per database for a change;
-    /// checks every cluster it creates against the model.
+    /// Records `sightings` in one ledger session, with a mark per database for a change
+    /// (`mark`, its run); checks every cluster it creates against the model and, after a
+    /// full read, every link the judge then makes.
     fn record(
         &mut self,
         sightings: &[DbSighting],
         discovered: bool,
         mode: SightMode,
-        mark: bool,
+        mark: Option<RunId>,
     ) -> Result<(), String> {
         let now = at(self.tick());
         let mut session = ledger::open(&self.paths, &self.scopes, "test").unwrap();
@@ -603,9 +804,10 @@ impl Run {
                 .map_err(|why| format!("cluster {id} of {}: {why}", cluster.family))?;
             self.clustered.push(cluster.clone());
         }
-        if mark {
+        if let Some(run) = mark {
             // As the light read marks: the database's newest proved read names the state
             // and its session (`add_mark` takes it only when that is the state looked at).
+            // The game is closed while a change commits.
             for s in sightings {
                 if let Some(db) = target.databases.get(&s.key) {
                     let newest = db.reads.last().and_then(|r| r.session);
@@ -613,7 +815,7 @@ impl Run {
                         CLIENT,
                         &s.key,
                         ChangeMark {
-                            run: RunId::new(),
+                            run,
                             at: s.observed_at,
                             generation: db.generation.clone(),
                             stamp: s.stamp.clone(),
@@ -628,6 +830,9 @@ impl Run {
         let stored = session.commit().unwrap();
         if let Some(target) = stored.ledger.targets.get(CLIENT) {
             marks_hold(target, &self.world)?;
+            if mode == SightMode::Full {
+                self.judge_owed(target, now)?;
+            }
         }
         Ok(())
     }
@@ -638,11 +843,13 @@ impl Run {
             Step::Write { db, op } => self.write(*db, *op),
             Step::Full { gap, hidden } => {
                 let (sightings, discovered) = self.look(*gap, *hidden);
-                self.record(&sightings, discovered, SightMode::Full, false)?;
+                self.record(&sightings, discovered, SightMode::Full, None)?;
             }
-            Step::Change { gap } => {
+            Step::Change { gap, addon } => {
+                let run = RunId::new();
                 let (sightings, discovered) = self.look(*gap, None);
-                self.record(&sightings, discovered, SightMode::Light, true)?;
+                self.record(&sightings, discovered, SightMode::Light, Some(run))?;
+                self.commit_change(run, *addon);
             }
             Step::Reset { db } => self.reset(*db),
             Step::Restore {
@@ -658,7 +865,7 @@ impl Run {
                     Between::Write { db, op } => self.write(db, op),
                     Between::Full => {
                         let (first, discovered) = self.look(None, None);
-                        self.record(&first, discovered, SightMode::Full, false)?;
+                        self.record(&first, discovered, SightMode::Full, None)?;
                     }
                     Between::Restore {
                         whole,
@@ -667,13 +874,13 @@ impl Run {
                         counter,
                     } => self.restore(whole, db, back, counter),
                 }
-                self.record(&late, discovered, SightMode::Full, false)?;
+                self.record(&late, discovered, SightMode::Full, None)?;
             }
             Step::Burst { db } => {
                 for _ in 0..=LEDGER_READS_MAX {
                     self.write(*db, Op::Recur(0));
                     let (sightings, discovered) = self.look(None, None);
-                    self.record(&sightings, discovered, SightMode::Full, false)?;
+                    self.record(&sightings, discovered, SightMode::Full, None)?;
                 }
             }
         }
@@ -715,6 +922,8 @@ struct Played {
     clustered: Vec<Cluster>,
     model: Model,
     looked: usize,
+    /// The grade of every `high` or `medium` link the judge made, each checked.
+    links: Vec<Confidence>,
 }
 
 /// Runs `history`, the read numbered `degrade` made degraded; or why a cluster is not an
@@ -729,6 +938,7 @@ fn play(history: &[Step], degrade: Option<usize>) -> Result<Played, String> {
         clustered: run.clustered,
         model: run.model,
         looked: run.looked,
+        links: run.links,
     })
 }
 
@@ -810,7 +1020,9 @@ fn the_generator_reaches_every_step_kind() {
                 Step::Full {
                     gap: Some((_, g)), ..
                 }
-                | Step::Change { gap: Some((_, g)) } => format!("gap {g:?}"),
+                | Step::Change {
+                    gap: Some((_, g)), ..
+                } => format!("gap {g:?}"),
                 Step::Full {
                     hidden: Some(_), ..
                 } => "hidden".to_owned(),
@@ -855,5 +1067,80 @@ fn the_generator_reaches_every_step_kind() {
             seen.contains(want),
             "never generated: {want} (saw {seen:?})"
         );
+    }
+}
+
+/// The judge pass is not vacuous: over generated histories it checks `high` and
+/// `medium` links both.
+#[test]
+fn the_judge_pass_checks_high_and_medium_links() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+    let mut runner = TestRunner::deterministic();
+    let (mut high, mut medium) = (0, 0);
+    for _ in 0..200 {
+        let history = arb_history().new_tree(&mut runner).unwrap().current();
+        let played = play(&history, None).unwrap();
+        for link in played.links {
+            match link {
+                Confidence::High => high += 1,
+                Confidence::Medium => medium += 1,
+                Confidence::Low => {}
+            }
+        }
+    }
+    assert!(high > 0 && medium > 0, "high {high}, medium {medium}");
+}
+
+/// An addon updated twice, the second change's light read degraded so it has no mark,
+/// and the error first in a session after both: the first change's release never ran
+/// in the error's window, so the judge must not name it `high` or `medium`.
+#[test]
+fn a_change_replaced_since_is_never_named_for_a_window_it_did_not_run_in() {
+    let history = vec![
+        Step::Full {
+            gap: None,
+            hidden: None,
+        },
+        Step::Change {
+            gap: None,
+            addon: 1,
+        },
+        Step::Write {
+            db: 0,
+            op: Op::Recur(0),
+        },
+        Step::Full {
+            gap: None,
+            hidden: None,
+        },
+        Step::Write {
+            db: 0,
+            op: Op::Recur(0),
+        },
+        Step::Change {
+            gap: Some((0, Gap::Unread)),
+            addon: 1,
+        },
+        Step::Full {
+            gap: None,
+            hidden: None,
+        },
+        Step::Write {
+            db: 0,
+            op: Op::Add(1, 0),
+        },
+        Step::Full {
+            gap: None,
+            hidden: None,
+        },
+    ];
+    match play(&history, None) {
+        Ok(played) => {
+            let families: Vec<&str> = played.clustered.iter().map(|c| c.family.as_str()).collect();
+            assert_eq!(families, ["a:f1"], "the error appears");
+            assert!(played.links.is_empty(), "{:?}", played.links);
+        }
+        Err(why) => panic!("{why}"), // ubs:ignore — the test's own failure
     }
 }
