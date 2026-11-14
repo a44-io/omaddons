@@ -229,9 +229,15 @@ fn a_direct_update_followed_by_a_new_error_names_the_update_and_keeps_the_judgme
                 "gap_s": "<gap_s>", "exact": false, "same_session": false, "clean_sessions": 0,
                 "client_update": null, "other_changes": 0, "unknowns": [],
             },
-            "commands": [],
+            // RG-40: the way back, naming the transaction it goes back from.
+            "commands": [{
+                "action": "rollback",
+                "argv": ["omaddons", "skip", "Foo", "--back", "--tx", update, "-t", "retail"],
+                "command": format!("omaddons skip Foo --back --tx {update} -t retail"),
+                "destructive": true,
+            }],
         }),
-        "design 5.1's shape, without commands (RG-40)"
+        "design 5.1's shape"
     );
     assert_eq!(
         addon(&first, "Foo")["after_change"],
@@ -362,6 +368,9 @@ fn library_regression() -> Scene {
     s.release("lib", "v1", &[folder("Lib", &[])]);
     s.release("foo", "v1", &[folder("Foo", &["Lib"])]);
     s.ok(&["install", "gh:o/lib", "gh:o/foo", "-t", "retail"]);
+    // Installed three weeks ago, past the judge's window, as `foo_installed`: an install
+    // with no mark inside it might itself have been the change (RG-40's rival rule).
+    age_history(&s, SignedDuration::from_hours(21 * 24));
     save(&s, &BugDb::new(Writer::Modern, 5));
     errors(&s, &[]);
     s.release("lib", "v2", &[folder("Lib", &[])]);
@@ -895,4 +904,368 @@ fn a_restore_s_light_read_removes_the_links_of_the_file_it_replaced() {
     log.json("the doorbell", &bell);
     assert!(bell["at"].is_string(), "the memo write rang it");
     assert_eq!(both(&s, "Foo"), (Value::Null, Value::Null));
+}
+
+// ---------------------------------------------------------------------------------------
+// RG-40: the ways back a qualifying link carries (design 7.4.1).
+
+/// The error at Foo's line 12's `after_change.commands`, as `(action, argv)`.
+fn ways_back(v: &Value) -> Vec<(String, Vec<String>)> {
+    at_line(v, "Foo", 12)["after_change"]["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            let argv = c["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.as_str().unwrap().to_owned())
+                .collect();
+            (c["action"].as_str().unwrap().to_owned(), argv)
+        })
+        .collect()
+}
+
+/// The envelope's top-level commands' actions, in order.
+fn top_actions(v: &Value) -> Vec<String> {
+    v["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["action"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn rollback_argv(tx: &str) -> Vec<String> {
+    [
+        "omaddons", "skip", "Foo", "--back", "--tx", tx, "-t", "retail",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+#[test]
+fn a_regression_offers_the_rollback_first_and_it_runs() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    log.step("design 5.1: Foo to v2, a new error in its first session");
+    regression(&s);
+    let update = last_tx(&s, "update");
+    let (v, _) = errors(&s, &[]);
+    let rollback = ("rollback".to_owned(), rollback_argv(&update));
+    assert_eq!(ways_back(&v), vec![rollback.clone()]);
+    assert_eq!(
+        top_actions(&v),
+        ["rollback", "dismiss_errors"],
+        "the rollback first, before the dismissal"
+    );
+    assert_eq!(v["commands"][0]["destructive"], true);
+    let text = human(&s);
+    let next = format!(
+        "Next: omaddons skip Foo --back --tx {update} -t retail    # go back to v1, and pass over v2"
+    );
+    assert!(text.contains(&next), "{next:?} in:\n{text}");
+
+    log.step("the argv runs as given: Foo back at v1, v2 marked");
+    let run = s.run(&rollback.1[1..], "");
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let foo = s.record("foo");
+    assert_eq!(foo["version"], "v1");
+    assert_eq!(foo["skipped_releases"][0]["origin"], "rollback");
+    assert_eq!(foo["skipped_releases"][0]["release"]["tag"], "v2");
+}
+
+#[test]
+fn an_old_rollback_is_refused_once_the_addon_moved_on() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    let (v, _) = errors(&s, &[]);
+    let (_, argv) = ways_back(&v).remove(0);
+    log.step("v3 installed by hand, then the captured rollback");
+    update_foo(&s, "v3");
+    let run = s.run(&argv[1..], "");
+    assert_ne!(run.code, 0);
+    assert!(
+        run.stdout.contains("plan_stale") || run.stderr.contains("plan_stale"),
+        "{}\n{}",
+        run.stdout,
+        run.stderr
+    );
+    let foo = s.record("foo");
+    assert_eq!(foo["version"], "v3");
+    assert!(
+        foo["skipped_releases"].as_array().is_none_or(Vec::is_empty),
+        "{foo}"
+    );
+    log.step("a fresh errors run offers no rollback: v2 is no longer installed");
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(ways_back(&v), vec![]);
+}
+
+#[test]
+fn a_low_link_an_old_error_and_a_replaced_file_offer_nothing() {
+    let log = common::tlog::tlog!();
+    log.step("low: an update while the game ran, the error in that session");
+    let mut s = foo_installed();
+    log.env(&s);
+    s.home.retail_running();
+    update_foo(&s, "v2");
+    s.home.nothing_running();
+    let when = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6).entry(error("Foo", 12, 6, when, 3)),
+    );
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(at_line(&v, "Foo", 12)["after_change"]["confidence"], "low");
+    assert_eq!(ways_back(&v), vec![]);
+
+    log.step("not new: the error dismissed");
+    let s = foo_installed();
+    regression(&s);
+    errors(&s, &[]);
+    s.ok(&["errors", "dismiss", "-t", "retail"]);
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(at_line(&v, "Foo", 12)["new"], false);
+    assert_eq!(ways_back(&v), vec![]);
+
+    log.step("not current: the file put back by a restore since");
+    let s = foo_installed();
+    regression(&s);
+    errors(&s, &[]);
+    let made = s.ok(&["backup", "create", "-t", "retail"]);
+    let id = made["data"]["targets"][0]["backup"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    s.ok(&["backup", "restore", &id, "-t", "retail"]);
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(
+        at_line(&v, "Foo", 12)["after_change"]["state"],
+        "database_replaced"
+    );
+    assert_eq!(ways_back(&v), vec![]);
+}
+
+/// The ways back of the error at `folder`'s line 12.
+fn ways_back_of(v: &Value, folder: &str) -> Vec<String> {
+    at_line(v, folder, 12)["after_change"]["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["command"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_change_with_no_known_transition_offers_no_rollback() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    log.step("Foo to v2 by a line from before transitions were recorded, snapshots pruned");
+    update_foo(&s, "v2");
+    let update = last_tx(&s, "update");
+    let path = s.home.state().join("history.jsonl");
+    let mut rewritten = String::new();
+    for line in fs::read_to_string(&path).unwrap().lines() {
+        let mut entry: Value = serde_json::from_str(line).unwrap();
+        if entry["tx"] == update.as_str() {
+            entry.as_object_mut().unwrap().remove("transitions");
+        }
+        rewritten.push_str(&serde_json::to_string(&entry).unwrap());
+        rewritten.push('\n');
+    }
+    fs::write(&path, rewritten).unwrap();
+    fs::remove_dir_all(s.home.state().join("snapshots").join(&update)).unwrap();
+    fs::remove_dir_all(
+        s.home
+            .client("_retail_")
+            .join("Interface/.omaddons/snapshots")
+            .join(&update),
+    )
+    .unwrap();
+    let when = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6).entry(error("Foo", 12, 6, when, 7)),
+    );
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(
+        at_line(&v, "Foo", 12)["after_change"]["tx"],
+        update.as_str()
+    );
+    assert_eq!(ways_back_of(&v, "Foo"), Vec::<String>::new());
+}
+
+#[test]
+fn a_first_install_and_an_undo_are_offered_their_undo() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    log.step("Bar installed after the first read, then an error in it");
+    s.release("bar", "v1", &[folder("Bar", &[])]);
+    s.ok(&["install", "gh:o/bar", "-t", "retail"]);
+    let install = last_tx(&s, "install");
+    let when = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6).entry(error("Bar", 12, 6, when, 2)),
+    );
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(
+        ways_back_of(&v, "Bar"),
+        [format!("omaddons undo {install}")]
+    );
+
+    log.step("Foo updated and undone, then an error: the undo's own undo (the redo)");
+    let s = foo_installed();
+    update_foo(&s, "v2");
+    s.ok(&["undo"]);
+    let undo = last_tx(&s, "undo");
+    let when = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6).entry(error("Foo", 12, 6, when, 2)),
+    );
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(at_line(&v, "Foo", 12)["after_change"]["kind"], "undo");
+    assert_eq!(ways_back_of(&v, "Foo"), [format!("omaddons undo {undo}")]);
+}
+
+#[test]
+fn a_newer_release_is_offered_before_the_rollback() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    let update = last_tx(&s, "update");
+    log.step("v3 out, and outdated has seen it");
+    s.release("foo", "v3", &[folder("Foo", &[])]);
+    s.ok(&["outdated", "-t", "retail", "--refresh"]);
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(
+        ways_back_of(&v, "Foo"),
+        [
+            "omaddons update Foo -t retail".to_owned(),
+            format!("omaddons skip Foo --back --tx {update} -t retail"),
+        ]
+    );
+    assert_eq!(top_actions(&v), ["update", "rollback", "dismiss_errors"]);
+}
+
+#[test]
+fn each_link_carries_its_own_and_the_top_level_list_only_the_strongest() {
+    let log = common::tlog::tlog!();
+    let s = Scene::new();
+    log.env(&s);
+    log.step("Foo and Bar installed three weeks ago, both updated, both erroring");
+    s.release("foo", "v1", &[folder("Foo", &[])]);
+    s.release("bar", "v1", &[folder("Bar", &[])]);
+    s.ok(&["install", "gh:o/foo", "gh:o/bar", "-t", "retail"]);
+    age_history(&s, SignedDuration::from_hours(21 * 24));
+    save(&s, &BugDb::new(Writer::Modern, 5));
+    errors(&s, &[]);
+    s.release("foo", "v2", &[folder("Foo", &[])]);
+    s.release("bar", "v2", &[folder("Bar", &[])]);
+    s.ok(&["update", "-t", "retail", "--refresh"]);
+    let update = last_tx(&s, "update");
+    let when = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6)
+            .entry(error("Foo", 12, 6, when, 2))
+            .entry(error("Bar", 12, 6, when, 2)),
+    );
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(
+        ways_back_of(&v, "Foo"),
+        [format!("omaddons skip Foo --back --tx {update} -t retail")]
+    );
+    assert_eq!(
+        ways_back_of(&v, "Bar"),
+        [format!("omaddons skip Bar --back --tx {update} -t retail")]
+    );
+    let rollbacks = top_actions(&v).iter().filter(|a| *a == "rollback").count();
+    assert_eq!(rollbacks, 1, "once per client: {:?}", top_actions(&v));
+}
+
+#[test]
+fn a_wowinterface_addon_goes_back_while_its_archive_is_cached_else_undoes() {
+    use common::wowi::{details, wowi_details, wowi_file};
+    let log = common::tlog::tlog!();
+    let mut s = Scene::new();
+    log.env(&s);
+    let bugsack = |scenario: &std::path::Path, version: &str| {
+        let toc = toc(
+            "120105",
+            &["## Title: BugSack", &format!("## Version: {version}")],
+        );
+        let core = format!("-- BugSack {version}");
+        let zip = common::archives::zip_text(&[
+            ("BugSack/BugSack.toc", &toc),
+            ("BugSack/core.lua", &core),
+        ]);
+        let md5 = wowi_file(scenario, 5995, &zip);
+        wowi_details(
+            scenario,
+            &[5995],
+            &[details(5995, "BugSack", version, &md5)],
+        );
+    };
+    log.step("BugSack 1.0 installed three weeks ago, read, then 1.1 and a new error");
+    bugsack(&s.home.http, "1.0");
+    s.ok(&["install", "wowi:5995", "-t", "retail"]);
+    let earlier = s.record("bugsack")["blob_sha256"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    age_history(&s, SignedDuration::from_hours(21 * 24));
+    save(&s, &BugDb::new(Writer::Modern, 5));
+    errors(&s, &[]);
+    let newer = s.home.scenario("newer");
+    bugsack(&newer, "1.1");
+    common::binding::age_release_memo(&s.home, SignedDuration::from_hours(24));
+    s.ok(&["update", "-t", "retail"]);
+    let update = last_tx(&s, "update");
+    let when = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6).entry(error("BugSack", 12, 6, when, 2)),
+    );
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(
+        ways_back_of(&v, "BugSack"),
+        [format!(
+            "omaddons skip BugSack --back --tx {update} -t retail"
+        )],
+        "its earlier archive is cached"
+    );
+
+    log.step("the archive evicted: the update's undo");
+    fs::remove_file(s.home.env.cache().join("omaddons/blobs").join(&earlier)).unwrap();
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(
+        ways_back_of(&v, "BugSack"),
+        [format!("omaddons undo {update}")]
+    );
+
+    log.step("its snapshot pruned too: nothing, and the line says so");
+    fs::remove_dir_all(
+        s.home
+            .client("_retail_")
+            .join("Interface/.omaddons/snapshots")
+            .join(&update),
+    )
+    .unwrap();
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(ways_back_of(&v, "BugSack"), Vec::<String>::new());
+    let text = human(&s);
+    assert!(
+        text.contains("the files installed before that update are not available here"),
+        "{text}"
+    );
 }

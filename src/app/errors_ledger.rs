@@ -846,10 +846,12 @@ impl<'a> ClientLedger<'a> {
                     from_release: t.from.as_ref().and_then(|r| r.release.clone()),
                     to_release: t.to.as_ref().and_then(|r| r.release.clone()),
                     still_installed: still_installed(self.record, t, suspect.tx),
+                    from_artifact: t.from.clone(),
                 })
                 .collect(),
             evidence: suspect.evidence.clone(),
             commands: Vec::new(),
+            undo_also: Vec::new(),
         }
     }
     /// What the ledger knows of when the local error `fingerprint` (of family `family`)

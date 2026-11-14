@@ -922,15 +922,21 @@ fn the_worked_examples_of_7_2_7() {
         (Relation::Dependency, Medium, Some(0))
     );
     assert_eq!(s.changed[0].addon, "Lib");
-    // The same, the library's folder replaced again since: the edge is not asserted.
+    // The same, the library's folder replaced again since: the edge is not asserted, so
+    // the library might still have been the one (its best case reaches the own update's
+    // grade): the own update is named, `low` at most (decided in RG-40), and no way back
+    // is offered for a change the full facts would not have named.
     let mut since = library;
     since.changed_since.insert("lib".to_owned());
     let s = since.suspect().unwrap();
     assert_eq!(
         (s.relation, s.confidence, s.evidence.clean_sessions),
-        (Relation::Own, Medium, Some(3))
+        (Relation::Own, Low, Some(3))
     );
-    assert_eq!(s.evidence.unknowns, vec![Unknown::Dependencies]);
+    assert!(
+        s.evidence.unknowns.contains(&Unknown::Dependencies),
+        "{s:?}"
+    );
 
     // An unrelated addon updated two days ago, nothing else.
     let two_days = 2 * 24 * 60 * 60;
@@ -1425,8 +1431,24 @@ proptest! {
     #[test]
     fn taking_a_fact_away_never_raises_a_grade(scene in arb_scene()) {
         let before = scene.verdict();
+        // RG-40: a way back is offered only on a `high` or `medium` link, so taking a
+        // fact away may withdraw one, never offer one for a change it was not offered for.
+        let offers = |v: &Verdict| {
+            v.suspect
+                .as_ref()
+                .filter(|s| grade(s.confidence) >= grade(Medium))
+                .map(|s| s.tx)
+        };
         for removal in removals(&scene) {
             let after = remove(&scene, removal).verdict();
+            if let Some(tx) = offers(&after) {
+                prop_assert_eq!(
+                    offers(&before),
+                    Some(tx),
+                    "{:?} offered a way back for another change",
+                    removal
+                );
+            }
             match (&before.suspect, &after.suspect) {
                 (Some(b), Some(a)) => {
                     prop_assert!(

@@ -93,6 +93,9 @@ actions! {
     /// Offered after a change that marked releases to pass over (`skip`), scoped to that
     /// transaction's marks, so it never clears an independent decision about another release.
     Unskip = "unskip", false, "Offer again the releases one transaction marked skipped";
+    /// Offered by `errors` on a link to the change before a new error (RG-40): one addon
+    /// back to the files installed before that change, which it names (`skip --back --tx`).
+    Rollback = "rollback", true, "Take one addon back to the files installed before a change";
 }
 
 impl fmt::Display for Action {
@@ -116,7 +119,7 @@ mod tests {
     fn every_action_has_a_unique_snake_case_wire_name() {
         assert_eq!(
             Action::ALL.len(),
-            28,
+            29,
             "registered actions: {:?}",
             Action::ALL
         );
@@ -233,6 +236,7 @@ mod tests {
             (Action::DoctorFix, false),
             (Action::InstallSkill, false),
             (Action::Unskip, false),
+            (Action::Rollback, true),
         ];
         for action in Action::ALL {
             assert!(

@@ -18,6 +18,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::errors_ledger::{self, ClientLedger, FullClient, Installed};
+use super::errors_remedy::Remedies;
 use super::history::{local_time, parse_since};
 use super::list::Latest;
 use super::precondition::{DismissPart, check, of_dismiss, preview_argv};
@@ -730,6 +731,30 @@ fn link_lines(e: &ErrorInfo, link: &AfterChange, began: String) -> Vec<String> {
         lines.push(format!("it may have begun before the {kind}"));
     }
     lines.extend(evidence.unknowns.iter().map(|u| unknown_line(*u, &kind)));
+    // Its ways back (design 7.4.1), when it qualifies for one: what an undo would also
+    // move back, or that none is available here.
+    if super::errors_remedy::qualifies(link, e.new) {
+        let back = link
+            .commands
+            .iter()
+            .any(|c| matches!(c.action(), Action::Rollback | Action::Undo));
+        if !link.undo_also.is_empty() {
+            lines.push(format!(
+                "undoing that {kind} also moves back {}",
+                link.undo_also.join(", ")
+            ));
+        } else if !back {
+            let installed = link
+                .changed
+                .first()
+                .is_some_and(|c| c.change == TransitionChange::Updated);
+            lines.push(if installed {
+                format!("the files installed before that {kind} are not available here")
+            } else {
+                format!("that {kind} cannot be undone here")
+            });
+        }
+    }
     match link.state {
         LinkState::Current => {}
         LinkState::DatabaseReplaced => lines.push(format!(
@@ -907,8 +932,15 @@ pub struct AfterChange {
     /// addon it changed, at most 5), as its history line recorded it.
     pub changed: Vec<ChangedNow>,
     pub evidence: Evidence,
-    /// The ways back from this change, best first; always empty for now.
+    /// The ways back from this change, best first (design 7.4.1): `update` when a newer
+    /// release is out, then the rollback (`skip --back --tx`) or the transaction's `undo`.
+    /// Empty for a link that does not qualify: not `current`, `low`, on an error that is
+    /// not new, or whose first changed addon has moved on.
     pub commands: Vec<CommandHint>,
+    /// The other addons this link's `undo` would move back too, for the human line;
+    /// empty unless it offers one. Not on the wire.
+    #[serde(skip)]
+    pub undo_also: Vec<String>,
 }
 
 /// Whether a link still stands for attention and action (design 7.3.1).
@@ -939,6 +971,10 @@ pub struct ChangedNow {
     /// The addon is still at the release that change left it at: the same release key,
     /// revision included, and the same archive where both sides know its hash.
     pub still_installed: bool,
+    /// The release before, with what proves its bytes, as the history line recorded it:
+    /// what a way back is decided from (`engine::plan::restorable`). Not on the wire.
+    #[serde(skip)]
+    pub from_artifact: Option<crate::model::InstalledRelease>,
 }
 
 /// An addon's strongest current link, for its row (design 7.3.1).
@@ -1076,6 +1112,40 @@ impl Outcome for ErrorsOutcome {
             .collect();
         if !updates.is_empty() {
             writeln!(w, "Update them: {}", updates.join(" · "))?;
+        }
+        // The strongest link's way back on each client (design 5.1), with what it does.
+        for c in self
+            .commands
+            .iter()
+            .filter(|c| matches!(c.action(), Action::Rollback | Action::Undo))
+        {
+            let link = self
+                .data
+                .targets
+                .iter()
+                .flat_map(|t| &t.addons)
+                .flat_map(|a| &a.errors)
+                .filter_map(|e| e.after_change.as_ref())
+                .find(|l| l.commands.iter().any(|own| own.argv() == c.argv()));
+            let what = link.map(|l| match (c.action(), l.changed.first()) {
+                (Action::Rollback, Some(x)) => format!(
+                    "go back to {}, and pass over {}",
+                    x.from_version.as_deref().unwrap_or("the release before"),
+                    x.to_version.as_deref().unwrap_or("this one")
+                ),
+                _ if l.undo_also.is_empty() => {
+                    format!("undo that {}", super::history::kind_name(l.kind))
+                }
+                _ => format!(
+                    "undo that {}, which also moves back {}",
+                    super::history::kind_name(l.kind),
+                    l.undo_also.join(", ")
+                ),
+            });
+            match what {
+                Some(what) => writeln!(w, "Next: {}    # {what}", c.command())?,
+                None => writeln!(w, "Next: {}", c.command())?,
+            }
         }
         for c in self
             .commands
@@ -1341,7 +1411,16 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
             |addon: &str| latest_of(&remembered, t, s.record.as_ref(), &world.table, addon);
         let names = WtfPathRedactor::for_client(&s.client);
         let known = ledger.client(&s.filed_as, now, s.record.as_ref());
-        targets.push(view.target(t, &s.filed_as, &s.observation, &latest, &names, known));
+        let remedies = Remedies::new(&world.paths, &t.client_dir, &t.id, s.record.as_ref());
+        targets.push(view.target(
+            t,
+            &s.filed_as,
+            &s.observation,
+            &latest,
+            &names,
+            known,
+            &remedies,
+        ));
         labels.push(format!("{} ({}, {})", t.id, t.version, t.family));
         if running_scan
             .clients
@@ -1535,6 +1614,10 @@ impl View<'_> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one client's view threads its observation, ledger, names, release memo and ways back; a struct would only rename them"
+    )]
     fn target(
         &mut self,
         t: &Target,
@@ -1543,6 +1626,7 @@ impl View<'_> {
         latest: &dyn Fn(&str) -> Option<(String, Latest)>,
         names: &WtfPathRedactor,
         known: ClientLedger<'_>,
+        remedies: &Remedies<'_>,
     ) -> ErrorsTarget {
         let local: Vec<&Observed> = observation.local().collect();
         let chosen: Vec<&Observed> = local.iter().copied().filter(|e| self.chosen(e)).collect();
@@ -1605,8 +1689,31 @@ impl View<'_> {
                 );
             }
         }
+        let addons: Vec<AddonInfo> = groups
+            .iter()
+            .map(|g| self.addon_info(g, observation, latest, names, known, remedies))
+            .collect();
+        // The ways back of the client's strongest link come first (design 7.4.1): the
+        // higher grade, then the newer change. Each link keeps its own; only this one is
+        // copied here, so eight broken addons do not print eight rollbacks.
+        let strongest = addons
+            .iter()
+            .flat_map(|a| &a.errors)
+            .filter_map(|e| e.after_change.as_ref())
+            .filter(|l| !l.commands.is_empty())
+            .max_by_key(|l| (grade(l.confidence), l.at));
+        let mut updated_by_link: Option<&str> = None;
+        if let Some(link) = strongest {
+            for c in &link.commands {
+                if c.action() == Action::Update {
+                    updated_by_link = link.changed.first().map(|c| c.addon.as_str());
+                }
+                self.commands.push(c.clone());
+            }
+        }
         // Updates that may fix new errors: managed addons with new local errors and a
-        // newer release known (received errors never count).
+        // newer release known (received errors never count), but the one the link's own
+        // update names already.
         let mut to_update: Vec<String> = Vec::new();
         for g in group(&chosen) {
             if g.managed
@@ -1614,6 +1721,7 @@ impl View<'_> {
                 && let Some((_, l)) = latest(&g.name)
                 && l.status == StatusKind::UpdateAvailable
                 && !to_update.iter().any(|u| u.eq_ignore_ascii_case(&g.name))
+                && !updated_by_link.is_some_and(|u| u.eq_ignore_ascii_case(&g.name))
             {
                 to_update.push(g.name.clone());
             }
@@ -1681,10 +1789,6 @@ impl View<'_> {
                 path: self.verbose.then(|| names.rel(&db.path)),
             })
             .collect();
-        let addons = groups
-            .iter()
-            .map(|g| self.addon_info(g, observation, latest, names, known))
-            .collect();
         ErrorsTarget {
             target: TargetRef {
                 id: t.id.clone(),
@@ -1742,9 +1846,13 @@ impl View<'_> {
         latest: &dyn Fn(&str) -> Option<(String, Latest)>,
         names: &WtfPathRedactor,
         known: ClientLedger<'_>,
+        remedies: &Remedies<'_>,
     ) -> AddonInfo {
         // Errors other players sent are never behind an update hint.
         let local = g.managed && g.origin == Origin::Local;
+        // What the memo says is newest, for any addon a link names (the shadowing below is
+        // this addon's own).
+        let newest_of = latest;
         let (version, latest) = match local.then(|| latest(&g.name)).flatten() {
             Some((version, latest)) => (Some(version), Some(latest)),
             None => (None, None),
@@ -1797,7 +1905,11 @@ impl View<'_> {
                         db.shape == DbShape::Legacy,
                         &tainted_here,
                     );
-                    let link = link_of(e.shown);
+                    let mut link = link_of(e.shown);
+                    // Each qualifying link carries its own ways back (design 7.4.1).
+                    if let Some(after) = link.0.as_mut() {
+                        remedies.fill(after, e.new, newest_of);
+                    }
                     // r152 keeps its frames in the message, after the first line; a
                     // warning embeds them after `Stack:`, as attribution reads them.
                     let own = entry.stack.as_deref().filter(|s| !s.trim().is_empty());

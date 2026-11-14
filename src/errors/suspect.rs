@@ -756,6 +756,22 @@ struct Graded<'c> {
     same_session: Option<bool>,
     clean: Option<u32>,
     unknowns: BTreeSet<Unknown>,
+    /// Its own facts are not all known, so its grade could be higher had they been: its
+    /// mark, sessions, whether the game ran, which account played, or a dependency edge.
+    /// What every candidate shares (the entry's time, the game's version) never counts.
+    open: bool,
+}
+
+/// Whether `u` is one of a candidate's own facts that grading reads.
+fn own_fact(u: Unknown) -> bool {
+    matches!(
+        u,
+        Unknown::Mark
+            | Unknown::Sessions
+            | Unknown::Running
+            | Unknown::Accounts
+            | Unknown::Dependencies
+    )
 }
 
 /// What the whole appearance leaves unknown, for every candidate.
@@ -854,6 +870,7 @@ fn grade_candidate<'c>(
     };
     let mut addons: Vec<&str> = ops.iter().map(|o| o.addon.as_str()).collect();
     addons.dedup_by(|a, b| same(a, b));
+    let open = unknowns.iter().any(|u| own_fact(*u));
     Some(Graded {
         change,
         relation,
@@ -863,6 +880,7 @@ fn grade_candidate<'c>(
         same_session,
         clean,
         unknowns,
+        open,
     })
 }
 
@@ -972,6 +990,18 @@ pub fn judge(error: &Appeared<'_>, changes: &[ChangeFact], cx: &JudgeContext<'_>
     };
     let Some(confidence) = best.link else {
         return verdict(JudgmentState::Complete, None, None);
+    };
+    // Another candidate that might have outranked it had its own facts been known (its
+    // best case reaches this grade): which change came before the error is then not
+    // known either, so the link is `low` at most (decided in RG-40). Taking a fact away
+    // never names another change above `low`, so it never offers a way back from one.
+    let rivalled = graded.iter().any(|g| {
+        !std::ptr::eq(g, *best) && g.open && best_case(g.relation, g.blocked) >= grade(confidence)
+    });
+    let confidence = if rivalled {
+        capped(Some(confidence), Confidence::Low).unwrap_or(Confidence::Low)
+    } else {
+        confidence
     };
     let bar = grade(confidence);
     let mut unknowns = best.unknowns.clone();
