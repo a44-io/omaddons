@@ -58,6 +58,9 @@ echo "release: building $tag from a clean clone" >&2
 binary=$work/src/target/release/omaddons
 said=$("$binary" --version)
 [[ $said == "omaddons $version" ]] || fail "the build says '$said', not 'omaddons $version'"
+# The digest a44-io/omaddons-omarchy pins with the version (omad-c50my): the binary
+# itself, which is what its setup button hashes before it runs anything.
+binary_sha256=$(sha256sum "$binary" | cut -d' ' -f1)
 
 # The binary at the archive's root, beside the license and README: mise links
 # <installs>/<tool>/<version>/omaddons, which `omarchy install` stamps by its latest link.
@@ -97,3 +100,5 @@ gh release create "$tag" -R "$repo" --verify-tag ${draft[@]+"${draft[@]}"} \
     --title "omaddons $version" --notes-file "$work/notes.md" \
     "$work/$name.tar.gz" "$work/checksums.txt"
 echo "release: $tag published: https://github.com/$repo/releases/tag/$tag" >&2
+echo "release: the omaddons binary's SHA-256 is $binary_sha256" >&2
+echo "release: move a44-io/omaddons-omarchy's pin to $version and that digest (its README, Moving the pin)" >&2
