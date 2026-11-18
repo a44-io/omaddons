@@ -40,7 +40,7 @@ use crate::fsx::{
     ScopeTable, SnapshotRoots, StampDigest, WriteSession, Writer, ensure_dir_all, failpoint,
     mount_id, mutate_with, probe_exchange,
 };
-use crate::limits::{BACKUP_TREE_MAX_DEPTH, BACKUP_TREE_MAX_ENTRIES};
+use crate::limits::{BACKUP_TREE_MAX_DEPTH, BACKUP_TREE_MAX_ENTRIES, RACY_SLACK_NS};
 use crate::model::{FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind};
 use crate::privacy::WtfPathRedactor;
 use crate::state::history::{self, FolderOp, HistoryEntry, HistoryOp, TxResult, WtfSource};
@@ -395,6 +395,9 @@ struct Staged {
     /// The staged copy; `None` when the live tree only moves out (the undo of a restore
     /// onto a client that had no `WTF/`).
     copy: Option<TreeCopy>,
+    /// The wall clock (nanoseconds) when the copy finished: no staged file's ctime is
+    /// later. `None` without a copy.
+    copied_at_ns: Option<i128>,
     /// The live `WTF/`'s stamp digest; `None` when there is none.
     live_stamp: Option<StampDigest>,
     integrity: Integrity,
@@ -404,6 +407,27 @@ impl Staged {
     /// The bytes the copy wrote, where the filesystem could not clone.
     fn copied_bytes(&self) -> u64 {
         self.copy.as_ref().map_or(0, |copy| copy.copied_bytes)
+    }
+
+    /// Waits until every file the copy wrote is past the racy slack (M2-D16), as an
+    /// install's stage does ([`super::stage::Staged::wait_out_racy_slack`]): `RACY_SLACK_NS`
+    /// after the copy finished settles them all. At most that, usually less (the checks
+    /// after the copy take time), and before the lock, so it costs no lock time. Without
+    /// it a read in or right after the commit window finds the files put back unsettled,
+    /// and the errors ledger cannot start the restored database's new lifetime from it:
+    /// the replaced file's links stayed current and what the file brought back was not
+    /// a baseline (omad-1e7ka).
+    fn wait_out_racy_slack(&self) {
+        let Some(copied_at) = self.copied_at_ns else {
+            return;
+        };
+        let now = jiff::Timestamp::now().as_nanosecond();
+        let wait = (copied_at + RACY_SLACK_NS - now).clamp(0, RACY_SLACK_NS);
+        if wait > 0 {
+            std::thread::sleep(std::time::Duration::from_nanos(
+                u64::try_from(wait).unwrap_or(0),
+            ));
+        }
     }
 }
 
@@ -572,6 +596,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: RestoreRequest<'_>) -> Result<RestoreOu
         reason,
         run,
     };
+    staged.wait_out_racy_slack();
     let result = window.commit();
     let committed = result.is_ok();
     ring_after_window(ctx, &result);
@@ -626,6 +651,7 @@ fn stage(
         ctx.progress,
     )
     .map_err(|e| e.error(names))?;
+    let copied_at_ns = Some(jiff::Timestamp::now().as_nanosecond());
     failpoint::hit("engine.restore.staged").map_err(fail)?;
     let shape = |entries: &[crate::backup::ManifestEntry]| -> BTreeMap<String, (EntryKind, u64)> {
         entries
@@ -666,6 +692,7 @@ fn stage(
     };
     Ok(Staged {
         copy: Some(copy),
+        copied_at_ns,
         live_stamp: live_stamp(topology)?,
         integrity,
     })
@@ -1244,6 +1271,7 @@ pub(super) fn undo_whole(
         reason: req.reason.clone(),
         run: req.run,
     };
+    staged.wait_out_racy_slack();
     let result = window.commit();
     let committed = result.is_ok();
     ring_after_window(ctx, &result);
@@ -1282,8 +1310,12 @@ fn stage_snapshot(
         }
         None => None,
     };
+    let copied_at_ns = copy
+        .as_ref()
+        .map(|_| jiff::Timestamp::now().as_nanosecond());
     Ok(Staged {
         copy,
+        copied_at_ns,
         live_stamp: live_stamp(topology)?,
         integrity: Integrity::MetadataOnly,
     })

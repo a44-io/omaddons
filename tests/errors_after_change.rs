@@ -535,6 +535,57 @@ fn a_link_whose_file_was_put_back_is_history_only() {
     assert_eq!(addon(&v, "Foo")["after_change"], Value::Null);
 }
 
+/// A restore waits out the racy slack for the files it puts back before it commits, as
+/// an install does (M2-D16), so a read right after it, whatever the machine's speed,
+/// proves the restored file and starts its new lifetime. Before, a fast machine read the
+/// file within the slack: the read proved nothing, the replaced file's link stayed
+/// `current`, and what the file brought back was not a baseline (omad-1e7ka). This holds
+/// the guarantee itself; a slow machine passed the read-after tests without it.
+#[test]
+fn a_restore_settles_the_files_it_puts_back_before_it_commits() {
+    use std::os::unix::fs::MetadataExt;
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    errors(&s, &[]);
+    let started_before = retail(&s).databases.values().next().unwrap().started_at;
+    let created = s.ok(&["backup", "create", "-t", "retail"]);
+    let id = created["data"]["targets"][0]["backup"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    log.step("restored, and nothing read after it yet");
+    s.ok(&["backup", "restore", &id, "-t", "retail"]);
+    let history = fs::read_to_string(paths(&s).history_file()).unwrap();
+    let line: Value = serde_json::from_str(history.lines().last().unwrap()).unwrap();
+    assert_eq!(line["kind"], "restore");
+    let committed: Timestamp = line["at"].as_str().unwrap().parse().unwrap();
+    let rel = BugDb::new(Writer::Modern, 6).file().rel;
+    let restored = s.home.client("_retail_").join("WTF").join(rel);
+    let meta = fs::metadata(&restored).unwrap();
+    let ctime_ns = i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec());
+    log.json(
+        "the restored file and the commit",
+        &json!({"ctime_ns": ctime_ns.to_string(), "committed": committed.to_string()}),
+    );
+    assert!(
+        ctime_ns + omaddons::limits::RACY_SLACK_NS <= committed.as_nanosecond(),
+        "the file put back was settled when the restore committed"
+    );
+    let (v, _) = errors(&s, &[]);
+    let db = retail(&s).databases.values().next().unwrap().clone();
+    assert!(
+        db.started_at > started_before,
+        "the read right after the restore started the restored file's lifetime"
+    );
+    assert_eq!(db.unproved_stamp, None, "and proved it");
+    assert_eq!(
+        at_line(&v, "Foo", 12)["after_change"]["state"],
+        "database_replaced"
+    );
+}
+
 #[test]
 fn a_weak_link_stays_off_the_addon_s_row() {
     let log = common::tlog::tlog!();
@@ -906,10 +957,8 @@ fn a_restore_s_light_read_removes_the_links_of_the_file_it_replaced() {
     assert_eq!(both(&s, "Foo"), (Value::Null, Value::Null));
     // The first projection after the restore rings (the restore came after the previous
     // projection, which `status` dates links against); the one after it, which saw
-    // nothing new, does not (omad-6u54g). The restored file is first left past the
-    // ledger's racy slack, as `save` leaves the game's: a read within it proves nothing,
-    // and the read after it would then rightly ring for what it proved.
-    std::thread::sleep(Duration::from_millis(60));
+    // nothing new, does not (omad-6u54g). No wait first: the restore left the file it
+    // put back settled (omad-1e7ka), so the first read proves it.
     let bell = s.home.env.cache().join("omaddons/doorbell.json");
     for (read, rings) in [("after the restore", true), ("again", false)] {
         fs::remove_file(&bell).unwrap_or_default();
