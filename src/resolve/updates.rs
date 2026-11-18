@@ -24,7 +24,7 @@ use serde::Serialize;
 use crate::error::{Error, ErrorBody, Suggestion};
 use crate::model::{
     AddonRecord, Candidate, Channel, RankReason, Ref, Release, ReleaseKey, SkippedRelease, Target,
-    VersionConfidence, skip_label,
+    VersionConfidence, skip_label, split_release_id,
 };
 use crate::resolve::select::select;
 use crate::rules::{Family, RulesTable};
@@ -395,7 +395,7 @@ fn looked_back_status(
         first_seen_at: Some(at),
         ..brief(&best, Some(release), None)
     };
-    let tag = |id: &str| id.rsplit_once('@').map(|(_, tag)| tag.to_owned());
+    let tag = |id: &str| split_release_id(id).map(|(_, tag)| tag.to_owned());
     let older = record
         .release_id
         .as_deref()
@@ -450,7 +450,7 @@ pub fn same_release(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
-    match (a.rsplit_once('@'), b.rsplit_once('@')) {
+    match (split_release_id(a), split_release_id(b)) {
         (Some((ref_a, tag_a)), Some((ref_b, tag_b))) if tag_a == tag_b => {
             match (ref_a.parse::<Ref>(), ref_b.parse::<Ref>()) {
                 (Ok(x), Ok(y)) => x.identity() == y.identity(),
@@ -537,7 +537,46 @@ fn installed_is_newer(
     if let (Some(installed), Some(latest)) = (installed_at, newest.and_then(|r| r.published_at)) {
         return installed > latest;
     }
-    compare_versions(&record.version, &best.version) == Some(Ordering::Greater)
+    compare_release_versions(
+        (&record.version, record.release_id.as_deref()),
+        (&best.version, Some(&best.release_id)),
+    ) == Some(Ordering::Greater)
+}
+
+/// Whether `version` is only the abbreviation of the commit `release_id` names. A `git:`
+/// release of a branch is `git:<url>@<sha>` and is labelled by that commit's first
+/// characters: a name, never a version number, although its leading digits read as one
+/// (`9aaaaaa` is no newer than `1bbbbbb`).
+pub fn is_commit_label(version: &str, release_id: &str) -> bool {
+    let commit = split_release_id(release_id).map_or("", |(_, tag)| tag);
+    version.len() >= 7
+        && commit.len() == 40
+        && commit.bytes().all(|b| b.is_ascii_hexdigit())
+        && commit
+            .get(..version.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(version))
+}
+
+/// Whether `version` reads as a commit's abbreviation when no release id is at hand to
+/// check it against: 7 to 40 hex digits. Only meaningful for a `git:` source, whose
+/// versions are tags or commits.
+pub fn looks_like_commit(version: &str) -> bool {
+    (7..=40).contains(&version.len()) && version.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// [`compare_versions`] for two releases, each with the id that names it when known:
+/// `None` as well when either version is only its commit's abbreviation
+/// ([`is_commit_label`]), which says nothing about which release is newer.
+pub fn compare_release_versions(
+    a: (&str, Option<&str>),
+    b: (&str, Option<&str>),
+) -> Option<Ordering> {
+    let commit =
+        |(version, id): (&str, Option<&str>)| id.is_some_and(|id| is_commit_label(version, id));
+    if commit(a) || commit(b) {
+        return None;
+    }
+    compare_versions(a.0, b.0)
 }
 
 /// The dotted numbers of a version: an optional leading `v`, then numbers separated by
@@ -622,7 +661,7 @@ pub fn statuses(
             let source_enabled = enabled.contains(&SourceId::of(&addon.r#ref));
             // The newest release's tag (`gh:o/r@<tag>`) the look-back was made against.
             let looked_back = |newest: &str| {
-                let tag = newest.rsplit_once('@').map(|(_, tag)| tag)?;
+                let tag = split_release_id(newest).map(|(_, tag)| tag)?;
                 look_back(&addon.r#ref, addon.channel, target.family, tag)
             };
             rows.push(StatusRow {
@@ -1416,6 +1455,52 @@ mod tests {
         assert_eq!(compare_versions("Plater-v662", "662"), None);
         assert_eq!(compare_versions("bundle/v12.2.0+v1.0.7", "12.2.0"), None);
         assert_eq!(dotted("v5.19.2+build.7"), Some(vec![5, 19, 2]));
+    }
+
+    /// A commit's abbreviation is a name, not a version: its leading digits say nothing
+    /// about which of two commits is newer, so releases labelled by one never compare.
+    #[test]
+    fn a_commit_label_is_no_version() {
+        let nine = format!("git:https://github.com/o/r@9{}", "a".repeat(39));
+        let one = format!("git:https://github.com/o/r@1{}", "b".repeat(39));
+        assert!(is_commit_label("9aaaaaa", &nine));
+        assert!(is_commit_label("9AAAAAA", &nine), "in either case");
+        assert!(
+            is_commit_label(&format!("9{}", "a".repeat(39)), &nine),
+            "the commit whole"
+        );
+        assert!(!is_commit_label("9aaaaa", &nine), "under 7 characters");
+        assert!(!is_commit_label("1bbbbbb", &nine), "another commit's");
+        assert!(
+            !is_commit_label("v1.2.0", "git:https://github.com/o/r@v1.2.0"),
+            "a tag fetched by name"
+        );
+        assert!(
+            !is_commit_label("1234567", "gh:o/r@1234567"),
+            "a GitHub tag of digits is a version"
+        );
+        assert_eq!(
+            compare_versions("9aaaaaa", "1bbbbbb"),
+            Some(Ordering::Greater),
+            "by their digits alone they would compare"
+        );
+        assert_eq!(
+            compare_release_versions(("9aaaaaa", Some(&nine)), ("1bbbbbb", Some(&one))),
+            None
+        );
+        assert_eq!(
+            compare_release_versions(("9aaaaaa", Some(&nine)), ("2.0", Some("gh:o/r@2.0"))),
+            None,
+            "one commit label is enough"
+        );
+        assert_eq!(
+            compare_release_versions(("1.10", Some("gh:o/r@1.10")), ("1.9", None)),
+            Some(Ordering::Greater),
+            "versions still compare"
+        );
+        assert!(looks_like_commit("9aaaaaa") && looks_like_commit(&"0".repeat(40)));
+        assert!(!looks_like_commit("9aaaaa") && !looks_like_commit("1.2.3456"));
+        assert!(!looks_like_commit(&"0".repeat(41)));
     }
 
     #[test]

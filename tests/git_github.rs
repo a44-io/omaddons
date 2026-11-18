@@ -204,6 +204,50 @@ fn synthetic(dir: &Path, head: &str) {
     }
 }
 
+/// A branch's releases are named by their commits, and a commit's abbreviation is no
+/// version number: a head that moves from `9aaaaaa` to `1bbbbbb` is an update, never the
+/// installed one "ahead" of it.
+#[test]
+fn a_moved_branch_is_an_update_whatever_its_commits_spell() {
+    let mut home = Home::new(&[]);
+    let root = CustomRoot::at(home.env.home().join("Games/wow-335"))
+        .version(3, 3, 5, 12_340)
+        .build();
+    let old = format!("9{}", "a".repeat(39));
+    let new = format!("1{}", "b".repeat(39));
+    let first = home.scenario("first");
+    synthetic(&first, &old);
+    home.run(&[
+        "targets",
+        "add",
+        &root.display().to_string(),
+        "--name",
+        "wotlk",
+    ])
+    .expect(0);
+    home.run(&["install", "git:https://github.com/o/r#main", "-t", "wotlk"])
+        .expect(0);
+
+    let moved = home.scenario("moved");
+    synthetic(&moved, &new);
+    let r = home.run(&["outdated", "--refresh", "-t", "wotlk"]);
+    let item = r.expect(0)["data"]["targets"][0]["items"][0].clone();
+    assert_eq!(
+        (&item["status"], &item["latest"]["version"]),
+        (&Value::from("update_available"), &Value::from(&new[..7])),
+        "{}",
+        r.context()
+    );
+    let r = home.run(&["update", "-t", "wotlk"]);
+    let item = r.expect(0)["data"]["targets"][0]["items"][0].clone();
+    assert_eq!(
+        (&item["status"], &item["to_version"]),
+        (&Value::from("updated"), &Value::from(&new[..7])),
+        "{}",
+        r.context()
+    );
+}
+
 #[test]
 fn tags_after_a_branch_404_shas_without_a_request_and_a_moved_branch() {
     let env = TestEnv::new();
@@ -331,6 +375,59 @@ fn a_legacy_addon_installs_into_a_335_client_from_its_repository() {
         "wotlk",
     ]);
     assert_eq!(r.expect(2)["error"]["code"], "usage", "{}", r.context());
+}
+
+/// A ref with a `#rev` (the catalog's `gbb` follows `#main`) has releases named by the
+/// repository alone, `git:<url>@<sha>`: `skip --release` takes one, as the widget's
+/// "skip this version" passes it, and still refuses a release of another repository.
+#[test]
+fn skip_release_takes_a_release_of_a_ref_with_a_rev() {
+    let mut home = Home::new(&[]);
+    home.http = scenario("git-github");
+    let root = CustomRoot::at(home.env.home().join("Games/wow-335"))
+        .version(3, 3, 5, 12_340)
+        .build();
+    home.run(&[
+        "targets",
+        "add",
+        &root.display().to_string(),
+        "--name",
+        "wotlk",
+    ])
+    .expect(0);
+    home.run(&["install", "gbb", "-t", "wotlk"]).expect(0);
+
+    let next = "0123456789abcdef0123456789abcdef01234567";
+    let r = home.run(&[
+        "skip",
+        "GroupBulletinBoard",
+        "--release",
+        &format!("{GBB}@{next}"),
+        "-t",
+        "wotlk",
+    ]);
+    let envelope: Value = r.expect(0);
+    assert_eq!(
+        envelope["data"]["targets"][0]["skips_marked"][0]["release"],
+        serde_json::json!({ "source": GBB, "tag": next }),
+        "{}",
+        r.context()
+    );
+
+    let other = home.run(&[
+        "skip",
+        "GroupBulletinBoard",
+        "--release",
+        &format!("git:https://github.com/fondlez/Other@{next}"),
+        "-t",
+        "wotlk",
+    ]);
+    assert_eq!(
+        other.expect(2)["error"]["code"],
+        "usage",
+        "{}",
+        other.context()
+    );
 }
 
 /// omad-t8m3: codeload serves `git archive`'s zip of one commit, the same bytes every

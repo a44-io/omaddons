@@ -476,7 +476,7 @@ fn unpin_hints(
         let id = &d.target.id;
         let name = &a.name;
         let look_back = |newest: &str| {
-            let tag = newest.rsplit_once('@').map(|(_, tag)| tag)?;
+            let tag = crate::model::split_release_id(newest).map(|(_, tag)| tag)?;
             memo.look_back_seen(&a.r#ref, a.channel, d.target.family, tag)
         };
         hints.push(

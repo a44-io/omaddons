@@ -85,10 +85,10 @@ impl Notes {
     }
 }
 
-/// The identity a `release_id` ends with: what follows its last `@` (a GitHub tag, a git
-/// sha, a Tukui version).
+/// The identity a `release_id` ends with: what follows its ref (a GitHub tag, a git sha,
+/// a Tukui version).
 pub fn identity(release_id: &str) -> &str {
-    release_id.rsplit_once('@').map_or(release_id, |(_, id)| id)
+    crate::model::split_release_id(release_id).map_or(release_id, |(_, id)| id)
 }
 
 /// Whether two versions or tags name one release, ignoring case and a leading `v`; a
@@ -218,9 +218,12 @@ pub fn oldest_since(installed: &[Installed<'_>], set: &ReleaseSet) -> Option<Str
                 (Some(x), Some(y)) if x != y => return x.cmp(&y),
                 _ => {}
             }
-            crate::resolve::updates::compare_versions(a.version, b.version)
-                .filter(|o| o.is_ne())
-                .unwrap_or_else(|| a.installed_at.cmp(&b.installed_at))
+            crate::resolve::updates::compare_release_versions(
+                (a.version, Some(a.release_id)),
+                (b.version, Some(b.release_id)),
+            )
+            .filter(|o| o.is_ne())
+            .unwrap_or_else(|| a.installed_at.cmp(&b.installed_at))
         })
         .map(|i| identity(i.release_id).to_owned())
 }

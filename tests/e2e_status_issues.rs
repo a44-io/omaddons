@@ -552,6 +552,49 @@ fn an_unattributed_journal_is_the_machines_issue() {
     assert_trees_unchanged(&log, &trees);
 }
 
+/// `-t all` lists every client, as no `-t` does, and so keeps what no listed client
+/// carries on the machine: a stuck journal of a client that is not registered stays a P0
+/// that `--check` fails on, never out of scope.
+#[test]
+fn all_clients_keep_an_issue_of_a_client_that_is_not_listed() {
+    let log = tlog!();
+    log.step("build the home");
+    let home = Home::new(&["wow"]);
+    install(&log, &home, "retail", "Foo", "120105");
+    log.step("plant a journal too new to recover, of a client that is not registered");
+    plant_journal(&log, &home, TargetKey::new(), Planted::TooNew);
+
+    log.step("status --json");
+    let bare = status(&log, &home, &[]);
+    bare.ok();
+    let on_machine = machine_issues(bare.envelope());
+    assert_eq!(on_machine[0]["id"], TOO_NEW, "{}", bare.envelope());
+    assert_eq!(bare.data()["needs_attention"], true, "{}", bare.envelope());
+
+    log.step("status -t all --json");
+    let all = status(&log, &home, &["-t", "all"]);
+    all.ok();
+    assert_issues(
+        &log,
+        "the machine's, as without -t",
+        &machine_issues(all.envelope()),
+        &on_machine,
+    );
+    assert_eq!(all.data()["needs_attention"], true, "{}", all.envelope());
+    log.step("status -t all --check");
+    status(&log, &home, &["-t", "all", "--check"]).fails(6, "check_failed");
+
+    log.step("status -t retail leaves another client's journal out of scope");
+    let scoped = status(&log, &home, &["-t", "retail"]);
+    scoped.ok();
+    assert_issues(
+        &log,
+        "out of scope",
+        &machine_issues(scoped.envelope()),
+        &json!([]),
+    );
+}
+
 #[test]
 fn a_newer_record_is_state_version_newer() {
     let log = tlog!();

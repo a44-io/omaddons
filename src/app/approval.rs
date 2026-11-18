@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::engine::plan::{ChangeKind, Plan, WorkMode};
 use crate::error::{Error, Result};
 use crate::model::{BackupId, Channel, FolderName, TargetKey, TxId};
-use crate::resolve::updates::compare_versions;
+use crate::resolve::updates::{compare_versions, looks_like_commit};
 use crate::sources::SourceId;
 use crate::state::records::TargetRecord;
 
@@ -292,12 +292,20 @@ impl Approval {
             ))
         });
         // A version that is not dotted numbers is never older ("unknown is never
-        // older"): a commit or a date never makes an update a downgrade.
+        // older"): a commit or a date never makes an update a downgrade. A `git:`
+        // release of a branch is labelled by its commit's first characters, whose
+        // leading digits would read as a number (`1bbbbbb` after `9aaaaaa`).
         let downgrade = selection.iter().any(|item| {
+            let commit =
+                |version: &str| item.source == Some(SourceId::Git) && looks_like_commit(version);
             item.to_version
                 .as_deref()
                 .zip(item.from_version.as_deref())
-                .is_some_and(|(to, from)| compare_versions(to, from) == Some(Ordering::Less))
+                .is_some_and(|(to, from)| {
+                    !commit(to)
+                        && !commit(from)
+                        && compare_versions(to, from) == Some(Ordering::Less)
+                })
         });
         let reasons: Vec<ApprovalReason> = [
             (
@@ -728,6 +736,30 @@ mod tests {
             ("1.10", "1.2", true),
         ] {
             let mut case = Case::plain();
+            case.change.from_version = Some(from.to_owned());
+            case.change.to_version = Some(to.to_owned());
+            let reasons = case.approval().reasons;
+            assert_eq!(
+                reasons.contains(&ApprovalReason::Downgrade),
+                downgrade,
+                "{from} → {to}: reasons {reasons:?}"
+            );
+        }
+    }
+
+    /// A `git:` release of a branch is labelled by its commit's first characters, whose
+    /// leading digits are no number: a branch that moves is never a downgrade, while a
+    /// git ref's tags still compare.
+    #[test]
+    fn a_commit_label_never_makes_a_downgrade() {
+        for (from, to, downgrade) in [
+            ("9aaaaaa", "1bbbbbb", false),
+            ("9123456", "1123456", false),
+            ("9aaaaaa", "v1.2", false),
+            ("1.10", "1.2", true),
+        ] {
+            let mut case = Case::plain();
+            case.change.r#ref = "git:https://github.com/o/r#main".parse().unwrap();
             case.change.from_version = Some(from.to_owned());
             case.change.to_version = Some(to.to_owned());
             let reasons = case.approval().reasons;

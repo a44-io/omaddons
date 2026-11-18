@@ -1060,7 +1060,7 @@ fn leaving_mark(
     then: &AddonRecord,
     marking: &Marking,
 ) -> Option<SkippedRelease> {
-    use crate::resolve::updates::{compare_versions, is_static, skip_covering};
+    use crate::resolve::updates::{compare_release_versions, is_static, skip_covering};
     if is_static(now) || is_static(then) {
         return None;
     }
@@ -1069,10 +1069,12 @@ fn leaving_mark(
         (Some(left), Some(back)) => left != back,
         _ => now.version != then.version || now.blob_sha256 != then.blob_sha256,
     };
-    if !differ
-        || skip_covering(now, back.as_ref(), &then.version).is_some()
-        || compare_versions(&then.version, &now.version) == Some(std::cmp::Ordering::Greater)
-    {
+    // A commit's abbreviation is no version: two commits of a branch do not compare.
+    let then_is_newer = compare_release_versions(
+        (&then.version, then.release_id.as_deref()),
+        (&now.version, now.release_id.as_deref()),
+    ) == Some(std::cmp::Ordering::Greater);
+    if !differ || skip_covering(now, back.as_ref(), &then.version).is_some() || then_is_newer {
         return None;
     }
     let mut mark = SkippedRelease::pending(left, now.version.clone(), SkipOrigin::Undo);

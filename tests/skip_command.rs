@@ -333,6 +333,91 @@ fn release_and_label_marks() {
     log.assert_eq("three marks still", &marks(&home).len(), &3);
 }
 
+/// A Git tag may hold an `@` (`pkg@2`), and a GitHub ref never does: the release id
+/// `gh:o/foo@pkg@2` is tag `pkg@2` of `gh:o/foo`. Such a release is first seen, marked,
+/// passed over and, once old enough, taken by `update --auto` like any other.
+#[test]
+fn a_tag_holding_an_at_names_a_release_like_any_other() {
+    let log = tlog!();
+    log.step("Foo pkg@1 installed, pkg@2 out and checked");
+    let mut home = Home::new(&["wow"]);
+    log.env(&home);
+    let (v1, v2) = (Rel::new("pkg@1"), Rel::new("pkg@2"));
+    home.installed_behind(
+        FOO,
+        ("pkg%401", &v1.assets()),
+        ("pkg%402", &v2.assets()),
+        &["retail"],
+    );
+    let checked = json(&log, &home, &["outdated", "-t", "retail"]);
+    checked.ok();
+    let latest = &checked.data()["targets"][0]["items"][0]["latest"];
+    log.assert_eq(
+        "the waiting release",
+        &latest["release_id"],
+        &json!("gh:o/foo@pkg@2"),
+    );
+    assert!(
+        latest["first_seen_at"].is_string(),
+        "its first sight is kept: {latest}"
+    );
+
+    log.step("skip marks it by its key");
+    let ran = json(&log, &home, &["skip", "foo", "-t", "retail"]);
+    ran.ok();
+    let mark = json!({"release": {"source": "gh:o/foo", "tag": "pkg@2"}});
+    log.assert_eq("its mark", &selected(&marks(&home)), &vec![mark]);
+    let passed = json(&log, &home, &["update", "-t", "retail"]);
+    passed.ok();
+    log.assert_eq(
+        "update passes over it",
+        &passed.data()["targets"][0]["items"][0]["skip_reason"],
+        &json!("skipped_release"),
+    );
+
+    log.step("--release takes its id whole, and clears the same mark");
+    json(
+        &log,
+        &home,
+        &["skip", "foo", "--release", "gh:o/foo@pkg@2", "-t", "retail"],
+    )
+    .ok();
+    log.assert_eq("still one mark", &marks(&home).len(), &1);
+    json(
+        &log,
+        &home,
+        &[
+            "unskip",
+            "foo",
+            "--release",
+            "gh:o/foo@pkg@2",
+            "-t",
+            "retail",
+        ],
+    )
+    .ok();
+    log.assert_eq("no mark", &marks(&home).len(), &0);
+
+    log.step("two days on, the automatic update takes it");
+    let (mut memo, _) = omaddons::state::memo::load(&paths(&home.env));
+    for entry in memo.entries.values_mut() {
+        let days = jiff::SignedDuration::from_hours(48);
+        entry.fetched_at -= days;
+        for seen in &mut entry.seen_releases {
+            seen.first_seen_at -= days;
+        }
+    }
+    home.seed_memo(&memo);
+    let auto = json(&log, &home, &["update", "--auto", "-t", "retail"]);
+    auto.ok();
+    let item = &auto.data()["targets"][0]["items"][0];
+    log.assert_eq(
+        "updated, not held as too new",
+        &(&item["status"], &item["to_version"]),
+        &(&json!("updated"), &json!("pkg@2")),
+    );
+}
+
 #[test]
 fn unskip_clears_exactly_what_it_names() {
     let log = tlog!();

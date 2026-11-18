@@ -1214,7 +1214,9 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     // A check `status` could not make is the doctor's `skipped[]`; here a `-v` note.
     notes.extend(skipped_notes(&found.skipped));
     let listed: BTreeSet<TargetKey> = targets.iter().filter_map(|t| t.key).collect();
-    let (mut per_client, issues) = issues::assign(&found.findings, &listed, ctx.target.is_some());
+    // Scoped as the doctor was: `-t all` lists every client, as no `-t` does, so a
+    // finding about a client it does not list stays the machine's.
+    let (mut per_client, issues) = issues::assign(&found.findings, &listed, scope.is_some());
     for t in &mut targets {
         t.issues = t
             .key

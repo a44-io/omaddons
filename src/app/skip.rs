@@ -495,10 +495,11 @@ fn run(ctx: &Context, mode: Mode<'_>) -> Result<SkipOutcome> {
         return Err(not_installed(name));
     }
     // `skip --release` names a release of the addon's own source, or it would never hold.
+    // A release is keyed by its repository or project, never by the `#rev` its ref follows.
     if let (Mode::Skip(_), Some(key)) = (mode, &release_key)
         && let Some((_, a, _)) = found
             .iter()
-            .find(|(_, a, _)| a.r#ref.identity() != key.source)
+            .find(|(_, a, _)| a.r#ref.release_source() != key.source)
     {
         let id = mode_release_id(mode).unwrap_or_default();
         return Err(Error::new(

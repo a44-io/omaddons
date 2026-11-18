@@ -85,12 +85,12 @@ pub fn select(set: &ReleaseSet, target: &Target, channel: Channel, pin: Option<&
     }
 }
 
-/// Whether `release` is the one `pin` names: its version or tag (after the last `@` of
+/// Whether `release` is the one `pin` names: its version or tag (what follows the ref in
 /// the release id), ignoring a leading `v` on either side.
 fn pinned(release: &Release, pin: &str) -> bool {
     let bare = |s: &str| s.strip_prefix(['v', 'V']).unwrap_or(s).to_owned();
     let pin = bare(pin);
-    let tag = release.release_id.rsplit_once('@').map(|(_, tag)| tag);
+    let tag = crate::model::split_release_id(&release.release_id).map(|(_, tag)| tag);
     [Some(release.version.as_str()), tag]
         .into_iter()
         .flatten()

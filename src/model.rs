@@ -926,6 +926,25 @@ impl fmt::Display for SkipsFull {
 // key, so a tag republished with other bytes is still the same release (a skip holds)
 // while the witness says the content changed.
 
+/// A release id's two parts, `<ref>@<tag>`: the ref that was fetched and the release's
+/// own name there (a tag, a commit, the source's release number).
+///
+/// Only a `git:`, `url:` or `file:` ref can hold an `@` itself (in a URL's path or a file
+/// name), and what follows theirs never does (a commit, a hash), so those split at the
+/// last `@`. Every other ref has none (`gh:Owner/Repo`, `wowace:slug`, `tukui:slug`), so
+/// its first `@` ends it and the tag keeps any of its own: a Git tag may hold one
+/// (`gh:o/r@pkg@1.2.0` is tag `pkg@1.2.0`). `None` for an id with no `@`.
+pub fn split_release_id(release_id: &str) -> Option<(&str, &str)> {
+    let ref_may_hold_at = ["git:", "url:", "file:"]
+        .iter()
+        .any(|prefix| release_id.starts_with(prefix));
+    if ref_may_hold_at {
+        release_id.rsplit_once('@')
+    } else {
+        release_id.split_once('@')
+    }
+}
+
 /// Which release, exactly.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
@@ -934,8 +953,8 @@ pub struct ReleaseKey {
     /// The source, in its one canonical spelling (`Ref::identity()`): a GitHub owner
     /// and repo in one case, and so on.
     pub source: String,
-    /// The part of the release id after its last `@`, exactly as the source spells it:
-    /// a tag, or the source's own release number.
+    /// The part of the release id after its ref ([`split_release_id`]), exactly as the
+    /// source spells it: a tag, or the source's own release number.
     pub tag: String,
     /// The source's revision of that tag, when it numbers them (WowAce: the tag's
     /// last-changed revision, which a re-tag moves). Omitted otherwise.
@@ -944,13 +963,13 @@ pub struct ReleaseKey {
 }
 
 impl ReleaseKey {
-    /// From a release id (`<ref>@<tag>`) and a revision. The ref is split off at the
-    /// last `@` and canonicalized here, once, with the identity
+    /// From a release id (`<ref>@<tag>`) and a revision. The ref is split off
+    /// ([`split_release_id`]) and canonicalized here, once, with the identity
     /// `resolve::updates::same_release` compares, so two ids that `same_release` calls
     /// one release give equal keys at one revision. `None` for an id with no `@`, an
     /// empty tag, or a ref that does not parse.
     pub fn parse(release_id: &str, revision: Option<u32>) -> Option<Self> {
-        let (r, tag) = release_id.rsplit_once('@')?;
+        let (r, tag) = split_release_id(release_id)?;
         if tag.is_empty() {
             return None;
         }
@@ -1220,6 +1239,26 @@ impl Ref {
                 format!("file:{}", lexical.display())
             }
             _ => self.to_string(),
+        }
+    }
+
+    /// The source this ref's releases are keyed by ([`ReleaseKey::source`]): its
+    /// identity without the `#rev` a `git:` or `wowace:` ref may carry. A release id
+    /// names the repository or project alone (`git:<url>@<sha>`, `wowace:<slug>@<tag>`),
+    /// so a ref that follows a branch has the releases of its repository.
+    pub(crate) fn release_source(&self) -> String {
+        match self {
+            Self::Git { url, rev: Some(_) } => Self::Git {
+                url: url.clone(),
+                rev: None,
+            }
+            .identity(),
+            Self::WowAce { slug, rev: Some(_) } => Self::WowAce {
+                slug: slug.clone(),
+                rev: None,
+            }
+            .identity(),
+            _ => self.identity(),
         }
     }
 }
@@ -2602,7 +2641,7 @@ mod tests {
     }
 
     #[test]
-    fn release_key_parse_canonicalizes_the_source_and_splits_at_the_last_at() {
+    fn release_key_parse_canonicalizes_the_source_and_splits_off_the_ref() {
         let gh = key("gh:WeakAuras/WeakAuras2@5.19.2", Some(7));
         assert_eq!(gh.source, "gh:weakauras/weakauras2");
         assert_eq!(gh.tag, "5.19.2");
@@ -2610,6 +2649,79 @@ mod tests {
         let wowace = key("wowace:bug-grabber@r43:tmp/trunk/!BugGrabber", Some(43));
         assert_eq!(wowace.source, "wowace:bug-grabber");
         assert_eq!(wowace.tag, "r43:tmp/trunk/!BugGrabber");
+        // A Git tag may hold an `@`: a GitHub ref never does, so its first `@` ends it.
+        let scoped = key("gh:O/Foo@pkg@1.2.0", None);
+        assert_eq!(
+            (scoped.source.as_str(), scoped.tag.as_str()),
+            ("gh:o/foo", "pkg@1.2.0")
+        );
+        // A git URL may hold one, and its commit never does: the last `@` ends the ref.
+        let git = key(&format!("git:https://git.example/@me/r@{COMMIT}"), None);
+        assert_eq!(
+            (git.source.as_str(), git.tag.as_str()),
+            ("git:https://git.example/@me/r", COMMIT)
+        );
+    }
+
+    #[test]
+    fn a_release_id_splits_where_its_ref_ends() {
+        // (id, its ref, its tag)
+        let cases = [
+            ("gh:o/foo@v1", Some(("gh:o/foo", "v1"))),
+            ("gh:o/foo@pkg@1.2.0", Some(("gh:o/foo", "pkg@1.2.0"))),
+            ("tukui:elvui@13.92", Some(("tukui:elvui", "13.92"))),
+            (
+                "wowace:bug-grabber@r43:tmp/trunk/!BugGrabber",
+                Some(("wowace:bug-grabber", "r43:tmp/trunk/!BugGrabber")),
+            ),
+            (
+                "git:https://git.example/@me/r@0123abc",
+                Some(("git:https://git.example/@me/r", "0123abc")),
+            ),
+            (
+                "file:/x/a@b.zip@sha256:1",
+                Some(("file:/x/a@b.zip", "sha256:1")),
+            ),
+            ("gh:o/foo", None),
+            ("", None),
+        ];
+        for (id, expected) in cases {
+            assert_eq!(split_release_id(id), expected, "{id}");
+        }
+    }
+
+    /// A ref's releases are keyed by its repository or project, without the `#rev` the
+    /// ref follows: the source of every key its release ids parse to.
+    #[test]
+    fn a_refs_release_source_is_its_release_ids_source() {
+        // (ref, one of its release ids)
+        let cases = [
+            ("gh:Owner/Repo", "gh:Owner/Repo@v1"),
+            (
+                "git:https://github.com/o/r#main",
+                "git:https://github.com/o/r@0123456789abcdef0123456789abcdef01234567",
+            ),
+            (
+                "git:https://github.com/o/r",
+                "git:https://github.com/o/r@0123456789abcdef0123456789abcdef01234567",
+            ),
+            ("wowace:bug-grabber#v12.1.0", "wowace:bug-grabber@v12.1.0"),
+            ("wowace:bug-grabber#r152", "wowace:bug-grabber@r152"),
+            (
+                "wowace:bug-grabber#r43:tmp/trunk/!BugGrabber",
+                "wowace:bug-grabber@r43:tmp/trunk/!BugGrabber",
+            ),
+            ("wowace:bug-grabber", "wowace:bug-grabber@v12.1.1"),
+            ("tukui:ElvUI", "tukui:elvui@13.92"),
+            ("wowi:5108", "wowi:5108@1700000000000"),
+        ];
+        for (ref_, release_id) in cases {
+            assert_eq!(
+                r(ref_).release_source(),
+                key(release_id, None).source,
+                "{ref_}"
+            );
+        }
     }
 
     #[test]
