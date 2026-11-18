@@ -3289,6 +3289,7 @@ file plan intent<command=skip>.tx string?!
 file plan intent<command=skip>.version string?!
 file plan intent<command=skip>.while_running boolean!
 file plan intent<command=sync> variant
+file plan intent<command=sync>.base string?
 file plan intent<command=sync>.default_file boolean!
 file plan intent<command=sync>.file string!
 file plan intent<command=sync>.locked boolean!

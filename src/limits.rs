@@ -731,7 +731,7 @@ pub const REGISTRY: &[LimitInfo] = &[
     limit(
         "CHANGELOG_MAX_CHARS",
         LimitValue::Count(CHANGELOG_MAX_CHARS as u64),
-        LimitUnit::Count,
+        LimitUnit::Chars,
         None,
         "Longest changelog entry shown, in characters; longer ones end with an ellipsis",
     ),
@@ -871,7 +871,7 @@ pub const REGISTRY: &[LimitInfo] = &[
     limit(
         "SEARCH_SUMMARY_MAX_CHARS",
         LimitValue::Count(SEARCH_SUMMARY_MAX_CHARS as u64),
-        LimitUnit::Count,
+        LimitUnit::Chars,
         None,
         "Characters a search result's summary keeps",
     ),
@@ -885,14 +885,14 @@ pub const REGISTRY: &[LimitInfo] = &[
     limit(
         "SOURCE_TEXT_MAX_CHARS",
         LimitValue::Count(SOURCE_TEXT_MAX_CHARS as u64),
-        LimitUnit::Count,
+        LimitUnit::Chars,
         None,
         "Characters kept from a source's name, author or version",
     ),
     limit(
         "TOC_TEXT_MAX_CHARS",
         LimitValue::Count(TOC_TEXT_MAX_CHARS as u64),
-        LimitUnit::Count,
+        LimitUnit::Chars,
         None,
         "Characters info keeps from one field of an installed addon's TOC (title, notes, author, version, website)",
     ),
@@ -1525,6 +1525,21 @@ mod tests {
                 "{}: {wire}",
                 row.name
             );
+        }
+    }
+
+    /// A limit that counts characters says so: every `_CHARS` limit, and `TOC_LINE_MAX`,
+    /// is published in `chars`, never as a bare `count`.
+    #[test]
+    fn character_limits_are_published_in_chars() {
+        let rows: Vec<&LimitInfo> = REGISTRY
+            .iter()
+            .chain(politeness::REGISTRY)
+            .filter(|row| row.name.ends_with("_CHARS") || row.name == "TOC_LINE_MAX")
+            .collect();
+        assert!(rows.len() >= 9, "{}", rows.len());
+        for row in rows {
+            assert_eq!(row.unit, LimitUnit::Chars, "{}", row.name);
         }
     }
 

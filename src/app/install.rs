@@ -750,6 +750,20 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         .iter()
         .filter(|(item, _)| item.skip_reason != Some(SkipReason::Duplicate))
         .count();
+    // A run bound to a preview that the client's lock refused committed nothing: that
+    // refusal is the command's, whatever else was unchanged (M4-D19), as `update`'s is.
+    let refusal = done
+        .failures
+        .iter()
+        .filter(|f| f.r#ref.is_none() && f.addon.is_none())
+        .filter_map(|f| f.cause.as_ref())
+        // ubs:ignore — comparing error codes, not secrets
+        .find(|e| e.code == ErrorCode::PlanStale && !e.retryable)
+        .filter(|_| outcome.and_then(|o| o.tx).is_none());
+    if let Some(refusal) = refusal {
+        let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
+        return Err(with_items(refusal.clone(), &errors, Some(&id)));
+    }
     if errors.len() == asked {
         let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
         return Err(all_failed(&errors, Some(&id)));
@@ -1525,17 +1539,23 @@ pub(super) fn all_failed(errors: &[(String, Error)], target: Option<&str>) -> Er
     let Some((_, first)) = errors.first() else {
         return Error::internal("install without items");
     };
+    with_items(first.clone(), errors, target)
+}
+
+/// `error`, whole, with each failed request's error beside its own details in
+/// `details.items` (`{target, request, error}`).
+fn with_items(error: Error, errors: &[(String, Error)], target: Option<&str>) -> Error {
     let listed: Vec<serde_json::Value> = errors
         .iter()
         .map(|(request, e)| {
             json!({ "target": target, "request": request, "error": ItemError::from(e) })
         })
         .collect();
-    let mut details = first.details.clone();
+    let mut details = error.details.clone();
     if let Some(map) = details.as_object_mut() {
         map.insert("items".into(), json!(listed));
     }
-    first.clone().details(details)
+    error.details(details)
 }
 
 fn usage(message: &str) -> Error {

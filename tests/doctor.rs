@@ -543,6 +543,102 @@ fn a_check_whose_input_cannot_be_read_is_incomplete_never_healthy() {
     );
 }
 
+/// A registry that does not decode skips every check that needs discovery. Named by
+/// `--skip`, its finding is left out, and nothing else in the report explains those
+/// skips: each is a `check-incomplete`, and the run is `DONE_FINDINGS`, exit 1, never
+/// healthy. Without `--skip` the registry's own finding stands for them.
+#[test]
+fn a_skip_whose_failure_is_named_by_skip_is_incomplete_never_healthy() {
+    let log = tlog!();
+    let home = home(&log);
+    let registry = home.state().join("registry.json");
+    fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    fs::write(&registry, "{").unwrap();
+    let unreadable = |envelope: &Value| -> Vec<String> {
+        findings(envelope, ids::CHECK_INCOMPLETE)
+            .iter()
+            .filter(|f| f["evidence"]["reason"] == "unreadable")
+            .map(|f| f["evidence"]["detector"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let by_registry = |envelope: &Value| -> Vec<String> {
+        envelope["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["reason"] == "registry_unavailable")
+            .map(|s| s["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    log.step("the registry's finding named by --skip");
+    let ran = run(
+        &log,
+        &home,
+        &["doctor", "--json", "--skip", ids::STATE_CORRUPT],
+    );
+    ran.exit(1);
+    let envelope = ran.envelope();
+    assert_eq!(envelope["state"], "DONE_FINDINGS", "{envelope:#}");
+    let skipped = by_registry(envelope);
+    assert!(!skipped.is_empty(), "{envelope:#}");
+    assert!(
+        findings(envelope, ids::STATE_CORRUPT).is_empty(),
+        "{envelope:#}"
+    );
+    assert_eq!(unreadable(envelope), skipped, "{envelope:#}");
+
+    log.step("shown, it stands for its skips");
+    let ran = run(&log, &home, &["doctor", "--json"]);
+    ran.exit(1);
+    let envelope = ran.envelope();
+    assert_eq!(by_registry(envelope), skipped, "{envelope:#}");
+    assert_eq!(
+        findings(envelope, ids::STATE_CORRUPT).len(),
+        1,
+        "{envelope:#}"
+    );
+    assert!(unreadable(envelope).is_empty(), "{envelope:#}");
+}
+
+/// `--only` naming only a subsystem with no failure mode (`hooks`, `sockets`) selects no
+/// check: refused as `usage` naming `--only`, never `--skip`, with a fix that is another
+/// command, which runs.
+#[test]
+fn only_an_empty_subsystem_is_refused_with_a_fix_that_runs() {
+    let log = tlog!();
+    let home = home(&log);
+    for args in [
+        &["doctor", "--only", "hooks", "--json"][..],
+        &["doctor", "fix", "--only", "sockets", "--json"][..],
+    ] {
+        log.step(&args.join(" "));
+        let ran = run(&log, &home, args);
+        ran.fails(64, "usage");
+        let error = &ran.envelope()["error"];
+        let message = error["message"].as_str().unwrap();
+        assert!(
+            message.contains("--only") && !message.contains("--skip"),
+            "{message}"
+        );
+        let fix = words(&error["fix_argv"]);
+        let given: Vec<String> = std::iter::once("omaddons")
+            .chain(args.iter().copied().filter(|a| *a != "--json"))
+            .map(str::to_owned)
+            .collect();
+        assert_ne!(fix, given, "the fix is another command");
+        log.step(&fix.join(" "));
+        let fixed = run_argv(&log, &home, &fix);
+        assert!(
+            matches!(fixed.run.code, 0 | 1),
+            "{}: exit {}: {}",
+            fix.join(" "),
+            fixed.run.code,
+            fixed.stdout()
+        );
+    }
+}
+
 /// The declared cost of a plain diagnose's selection: every row of the default tiers.
 fn default_cost() -> u32 {
     FAILURE_MODES
@@ -722,6 +818,67 @@ fn since_never_calls_resolved_what_the_run_did_not_look_for() {
         );
     }
     log.step("the same checks again");
+    let ran = run(&log, &home, &["doctor", "--json", "--since", &a]);
+    ran.exit(1);
+    assert_eq!(
+        ran.envelope()["since"],
+        json!({"run": a, "new_instances": [], "resolved_instances": [], "unchanged": 1})
+    );
+}
+
+/// A client whose directory is gone is not looked at by the checks that walk the
+/// discovered clients: what an earlier run found there is in neither list of `--since` or
+/// `doctor diff <run>`, while the client's `target-vanished` is new. Back, the instance is
+/// unchanged.
+#[test]
+fn since_never_calls_resolved_what_a_vanished_client_held() {
+    let log = tlog!();
+    let home = home(&log);
+    log.step("plant");
+    plant::managed_files_modified(&home, "retail", "foo");
+    log.step("diagnose");
+    let first = run(&log, &home, &["doctor", "--json"]);
+    first.exit(1);
+    let a = first.envelope()["run_id"].as_str().unwrap().to_owned();
+    let found = findings(first.envelope(), ids::MANAGED_FILES_MODIFIED);
+    assert_eq!(found.len(), 1);
+    let modified = found[0]["instance"].as_str().unwrap().to_owned();
+
+    log.step("the client's directory is gone");
+    let client = home.client("_retail_");
+    let away = home.env.root().join("unplugged-retail");
+    fs::rename(&client, &away).unwrap();
+    for args in [
+        &["doctor", "--json", "--since", &a][..],
+        &["doctor", "diff", &a, "--json"][..],
+    ] {
+        log.step(&args.join(" "));
+        let ran = run(&log, &home, args);
+        let since = &ran.envelope()["since"];
+        let listed = |key: &str| -> Vec<String> {
+            since[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert!(
+            !listed("resolved_instances").contains(&modified),
+            "{}: {since:#}",
+            args.join(" ")
+        );
+        assert!(
+            listed("new_instances")
+                .iter()
+                .any(|key| key.starts_with(&format!("{}@", ids::TARGET_VANISHED))),
+            "{}: {since:#}",
+            args.join(" ")
+        );
+    }
+
+    log.step("back");
+    fs::rename(&away, &client).unwrap();
     let ran = run(&log, &home, &["doctor", "--json", "--since", &a]);
     ran.exit(1);
     assert_eq!(

@@ -409,8 +409,9 @@ impl HistoryView {
 }
 
 /// One client's part of retention at `now`: the snapshot policy over the target `key`'s
-/// transactions, then that client's orphan sweep. Its counts and warnings go to
-/// `report`.
+/// transactions, judged by `history` and, when it selects any, again under the global
+/// lock before they are deleted ([`judged_again`]); then that client's orphan sweep. Its
+/// counts and warnings go to `report`.
 #[allow(clippy::too_many_arguments)]
 fn prune_client(
     paths: &Paths,
@@ -427,7 +428,8 @@ fn prune_client(
         entries: all,
         pinned,
     } = history;
-    let selection = judge(
+    // The tree walk for sizes runs before the lock: only the check below needs it.
+    let judged = judge(
         paths,
         client,
         key,
@@ -436,8 +438,14 @@ fn prune_client(
         limits,
         now,
         Sizes::Measured,
-    )
-    .selection;
+    );
+    let (selection, lock) = if judged.selection.prune.is_empty() {
+        (judged.selection, None)
+    } else {
+        let guard = fsx::GlobalLock::acquire(paths, "prune")?;
+        let selection = judged_again(paths, client, key, limits, now, &judged)?;
+        (selection, Some(guard))
+    };
     report.pruned_tx = selection.prune.len();
     report.kept_tx = selection.kept;
     report.cap_exceeded = selection.cap_exceeded.is_some();
@@ -447,8 +455,17 @@ fn prune_client(
         .flat_map(|tx| snapshot_dirs(paths, client, tx))
         .filter(|p| p.exists())
         .collect();
-    if !victims.is_empty() {
-        fsx::prune(scopes, PruneReason::Retention, &victims, LockUse::Acquire)?;
+    if let Some(guard) = lock {
+        if victims.is_empty() {
+            drop(guard);
+        } else {
+            fsx::prune(
+                scopes,
+                PruneReason::Retention,
+                &victims,
+                LockUse::HandOff(guard),
+            )?;
+        }
     }
     if let Some(bytes) = selection.cap_exceeded {
         report.warnings.push(
@@ -484,6 +501,48 @@ fn prune_client(
     }
     report.orphans_swept = orphans.scratch.len() + orphans.snapshots.len();
     Ok(())
+}
+
+/// The policy over the target `key`'s snapshots once more, under the global lock the
+/// caller holds, for what `judged` selected: by the history read now, so a transaction
+/// it protects since (an undo that deferred its SavedVariables restore commits while a
+/// pass walks trees, or before a later client's turn in [`sweep`]) is kept, and with the
+/// sizes `judged` walked (a snapshot it did not walk counts as empty), so no tree is
+/// walked under the lock. Never prunes more than `judged` selected; its cap verdict
+/// stands.
+fn judged_again(
+    paths: &Paths,
+    client: &ClientPaths,
+    key: TargetKey,
+    limits: &RetentionLimits,
+    now: Timestamp,
+    judged: &Judgment,
+) -> Result<Selection> {
+    let history = HistoryView::read(paths)?;
+    let mut again = judge(
+        paths,
+        client,
+        key,
+        &history.entries,
+        &history.pinned,
+        limits,
+        now,
+        Sizes::Unmeasured,
+    );
+    for t in &mut again.txs {
+        t.bytes = judged
+            .txs
+            .iter()
+            .find(|walked| walked.tx == t.tx)
+            .map_or(0, |walked| walked.bytes);
+    }
+    let mut selection = select(&again.txs, now, limits);
+    selection
+        .prune
+        .retain(|tx| judged.selection.prune.contains(tx));
+    selection.kept = again.txs.len().saturating_sub(selection.prune.len());
+    selection.cap_exceeded = judged.selection.cap_exceeded;
+    Ok(selection)
 }
 
 /// What one pass over the other clients did ([`sweep`]).
@@ -1373,6 +1432,59 @@ mod tests {
             .unwrap()
             .entries;
         assert_eq!(entries.len(), 3, "history is append-only");
+    }
+
+    /// A pass that read the history before an undo of `t` deferred its SavedVariables
+    /// restore, which pins `t`'s snapshot, deletes nothing of `t`'s: what history protects
+    /// when the snapshots are deleted is kept, however long before the pass judged. What
+    /// is still due goes.
+    #[test]
+    fn a_snapshot_pinned_after_the_history_was_read_is_kept() {
+        let f = fixture();
+        let t = f.commit(10 * DAY, 10);
+        let other = f.commit(9 * DAY, 10);
+        let latest = f.commit(2 * DAY, 10);
+        let stale = HistoryView::read(&f.paths).unwrap();
+        let limits = RetentionLimits::default();
+        let due = judge(
+            &f.paths,
+            &f.client,
+            f.key,
+            &stale.entries,
+            &stale.pinned,
+            &limits,
+            f.clock,
+            Sizes::Unmeasured,
+        )
+        .selection
+        .prune;
+        assert_eq!(due, [other, t], "both past the window when it read");
+
+        let mut undo = entries(&f).into_iter().find(|e| e.tx == t).unwrap();
+        undo.tx = TxId::new();
+        undo.kind = TxKind::Undo;
+        undo.reverts = Some(t);
+        undo.sv_deferred = true;
+        undo.at = f.clock;
+        let mut s = WriteSession::untracked(Writer::Mutating, &f.scopes, "test");
+        history::append(&mut s, &f.paths, &undo).unwrap();
+
+        let mut report = RetentionReport::default();
+        prune_client(
+            &f.paths,
+            &f.scopes,
+            f.key,
+            &f.client,
+            &limits,
+            f.clock,
+            &stale,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(f.has_snapshot(&t), (true, true), "pinned since: {report:?}");
+        assert_eq!(f.has_snapshot(&other), (false, false), "still due");
+        assert_eq!(f.has_snapshot(&latest), (true, true));
+        assert_eq!((report.pruned_tx, report.kept_tx), (1, 2), "{report:?}");
     }
 
     #[test]

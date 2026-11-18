@@ -190,6 +190,44 @@ fn fish_offers_files_beside_client_ids_and_never_beside_other_values() {
     assert!(glue.contains("complete -c omaddons -n '__fish_omaddons_at positional' -f "));
 }
 
+/// bash inserts what it is offered as it is: a value holding a character the shell reads is
+/// quoted as one shell word before the function returns (an id or a failure-mode list,
+/// `a,b`, is not), and the reader is given the typed word with its escapes removed. zsh
+/// and fish quote what they are handed, so their glue passes the values as printed.
+#[test]
+fn bash_quotes_each_value_before_it_returns() {
+    let bash = glue(Shell::Bash, &command()).unwrap_or_default();
+    let at = |needle: &str| {
+        bash.find(needle)
+            .unwrap_or_else(|| panic!("no {needle:?} in the bash glue"))
+    };
+    let quoted = at(
+        "[[ ${COMPREPLY[i]} == *[![:alnum:]_.,:@%+=/-]* ]] && printf -v 'COMPREPLY[i]' '%q' \"${COMPREPLY[i]}\"",
+    );
+    assert!(at("mapfile -t COMPREPLY") < quoted);
+    assert!(quoted < at("[[ -n $eq ]] && COMPREPLY="));
+    assert!(at("\"--prefix=${cur//\\\\/}\"") < quoted);
+    for shell in [Shell::Zsh, Shell::Fish] {
+        let other = glue(shell, &command()).unwrap_or_default();
+        assert!(!other.contains("%q"), "{shell:?}");
+    }
+}
+
+/// clap reads `-t=retail` as the client `retail`, one leading `=` aside: so does each
+/// shell's walk.
+#[test]
+fn a_short_target_drops_one_leading_equals_sign() {
+    for shell in [Shell::Bash, Shell::Zsh] {
+        let script = glue(shell, &command()).unwrap_or_default();
+        assert!(
+            script.contains("-t?*) target=${word#-t}; target=${target#=}; continue ;;"),
+            "{shell:?}"
+        );
+    }
+    let fish = glue(Shell::Fish, &command()).unwrap_or_default();
+    assert!(fish.contains("set target (string replace -r -- '^=' '' (string sub -s 3 -- $word))"));
+}
+
 #[test]
 fn a_word_with_a_shell_character_is_refused() {
     for (word, ok) in [

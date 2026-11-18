@@ -1834,12 +1834,15 @@ pub(crate) fn positional_indices(argv: &[String]) -> Vec<usize> {
     positionals
 }
 
-/// `-h` or `--help` appears before any `--`.
+/// `-h` or `--help` appears before any `--`: `-h` alone or in a word of short flags that
+/// take no value (`-vh`), as clap reads it.
 fn wants_help(argv: &[String]) -> bool {
-    argv.iter()
-        .skip(1)
-        .take_while(|a| *a != "--")
-        .any(|a| a == "-h" || a == "--help")
+    argv.iter().skip(1).take_while(|a| *a != "--").any(|a| {
+        a == "--help"
+            || a.strip_prefix('-').is_some_and(|flags| {
+                flags.contains('h') && flags.chars().all(|c| VALUELESS_SHORTS.contains(&c))
+            })
+    })
 }
 
 /// The same command online: `argv` without `--offline`, when that flag alone kept the
@@ -1978,6 +1981,31 @@ pub(crate) fn without_target(argv: &[String]) -> Option<Vec<String>> {
 /// kept.
 pub(crate) fn without_switch(argv: &[String], switch: &str) -> Vec<String> {
     argv.iter().filter(|a| *a != switch).cloned().collect()
+}
+
+/// A suggested command line: `path` (`omaddons` and the command), its addon `operands`,
+/// then `flags`. An operand that starts with `-` (a lone `-` aside) would read as a flag,
+/// so then the flags come first and `--` ends them, as a stored plan's display argv does.
+pub(crate) fn with_operands<S: AsRef<str>>(
+    path: &[&str],
+    operands: &[S],
+    flags: &[&str],
+) -> Vec<String> {
+    let mut argv: Vec<String> = path.iter().map(|w| (*w).to_owned()).collect();
+    let names = operands.iter().map(|o| o.as_ref().to_owned());
+    let flags = flags.iter().map(|f| (*f).to_owned());
+    if operands.iter().any(|o| {
+        let o = o.as_ref();
+        o.starts_with('-') && o != "-"
+    }) {
+        argv.extend(flags);
+        argv.push("--".to_owned());
+        argv.extend(names);
+    } else {
+        argv.extend(names);
+        argv.extend(flags);
+    }
+    argv
 }
 
 /// `argv` with `flag`'s value replaced by `value`.
@@ -3339,6 +3367,19 @@ mod tests {
         assert_eq!(command_of(&argv(&["hepl"])), "omaddons");
         assert!(wants_help(&argv(&["targets", "add", "-h"])));
         assert!(!wants_help(&argv(&["install", "--", "-h"])));
+        for word in ["-h", "-vh", "-hv", "-vvh", "-Vh", "--help"] {
+            assert!(wants_help(&argv(&["install", word])), "{word}");
+        }
+        for args in [
+            &["install", "-th"][..],
+            &["install", "-vt", "retail"],
+            &["install", "-v"],
+            &["install", "--", "-vh"],
+            &["install", "-hx"],
+            &["install", "--hv"],
+        ] {
+            assert!(!wants_help(&argv(args)), "{args:?}");
+        }
     }
 
     /// Every error a run renders without an outcome (usage, a refused context, a panic)

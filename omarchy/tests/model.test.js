@@ -523,6 +523,44 @@ describe("buildArgv", () => {
     expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, context: { HOME: "/h" } })))).toBe("bad_context")
   })
 
+  // A client's name runs to 200 characters (the CLI keeps one that long): every action
+  // the panel offers on such a client builds, its recorded reason one line of at most 120
+  // characters ending in "…"; a label within the bound is recorded as it is.
+  test("a client named at length: every action on it builds, its reason cut to the label's bound", () => {
+    const long = "R".repeat(200)
+    const targets = [{ id: "retail", key: "01M5JHFF37RESHT6QWM5BT2SXW", displayName: long, issues: [] },
+      { id: "era", key: "01M5JHFF37RESHT6QWM5BT2SXX", displayName: "Classic Era", issues: [] }]
+    const rows = M.clientSettingRows(targets)
+    const backup = "01M8Q2ZZZZZZZZZZZZZZZZZZZY"
+    const asked = [
+      ["rename", M.clientNameRequest(rows.find((r) => r.key === "name:retail"), "Retail")],
+      ["U", M.updateRequest("retail", [], targets)],
+      ["Update {client}", M.groupUpdateRequest("retail", [], targets)],
+      ["back up", M.backupRequest("retail", targets)],
+      ["copy the list", M.exportRequest("retail", targets)],
+      ["paste a list", Object.assign(M.syncRequest("retail", targets), { stdin: LIST })],
+      ["restore all", M.restoreRequest("retail", backup, "", targets)],
+      ["delete a backup", M.pruneRequest({ target: "retail", id: backup, at: "2100-01-01 00:00" }, targets)],
+      ["the default", M.configRequest(rows.find((r) => r.key === "default"), 1, true)],
+      ["take over", { template: "adopt_target", slots: { target: "retail" }, label: M.copy("installed.take_over.label", { client: long }) }],
+    ]
+    const reasonIn = (argv) => argv[argv.indexOf("--reason") + 1]
+    for (const [what, request] of asked) {
+      expect([what, request.label.indexOf(long) !== -1]).toEqual([what, true]) // ubs:ignore — a label's text, not a secret
+      const built = M.buildArgv(request.template, request.slots, opts({ label: request.label, preview: true, stdin: request.stdin }))
+      const reason = reasonIn(built.argv)
+      expect([what, reason.length, reason]).toEqual([what, 120 + " (bar widget)".length, request.label.slice(0, 119) + "… (bar widget)"])
+    }
+    // Forget runs the CLI's own argv.
+    const forget = M.cliArgv(["omaddons", "targets", "rm", "retail"], opts({ label: "Forget " + M.heroTitle(targets, "retail"), preview: true }))
+    expect(reasonIn(forget.argv)).toBe(("Forget " + long).slice(0, 119) + "… (bar widget)")
+    // Within the bound, as it is; past it by one, cut; a second line is still refused.
+    const recorded = (label) => reasonIn(M.buildArgv("backup_all", {}, opts({ label })).argv)
+    expect(recorded("x".repeat(120))).toBe("x".repeat(120) + " (bar widget)")
+    expect(recorded("x".repeat(121))).toBe("x".repeat(119) + "… (bar widget)")
+    expect(reasonOf(() => recorded("x".repeat(130) + "\nmore"))).toBe("bad_label")
+  })
+
   test("a bad {target} is refused", () => {
     for (const target of ["-t", "--json", "re tail", "retail;rm", "ünï", "", ".hidden"]) {
       expect(reasonOf(() => M.buildArgv("update_target", { target }, opts()))).toBe(target === "" ? "bad_value" : "bad_target")
@@ -4095,16 +4133,29 @@ describe("previewDecision", () => {
 
   // RG-65: a Repeater's `modelData` is a copy whose arrays are no longer arrays, so an
   // argv taken from it is one the classifier refuses (`malformed`), and the click does
-  // nothing. A button hands the CLI path its view's own object (`root.x[index]`).
+  // nothing. A button hands the CLI path its view's own object (`root.x[index]`); an
+  // Issues row's button hands `press` (which runs its fix) the view's own row.
   test("no runtime file hands a Repeater's modelData to the CLI path", () => {
     const root = path.join(__dirname, "..")
     const runtime = ["PanelView.qml", "Service.qml", "BarWidget.qml", "RestoreChooser.qml", "SettingsSheet.qml"]
       .concat(fs.readdirSync(path.join(root, "views")).map((f) => "views/" + f), fs.readdirSync(path.join(root, "ui")).map((f) => "ui/" + f))
       .filter((f) => f.endsWith(".qml"))
-    const call = /\b(runCli|runCliArgv|runWayBack|installCapture)\(([^)\n]*)\)/g
-    const handed = (text) => [...text.matchAll(call)].filter((m) => /\bmodelData\b/.test(m[2])).map((m) => m[0])
+    const call = /\b(runCli|runCliArgv|runWayBack|installCapture|press)\(([^)\n]*)\)/g
+    // An argument hands the copy when it is `modelData` (or `x.modelData`) or anything
+    // taken from it, except a string or number the copy keeps as it is (its `name`,
+    // `index` or `key`); a subscript's index picks the view's own object.
+    const handsCopy = (arg) => {
+      const outside = arg.trim()
+      return /\bmodelData\b/.test(outside) && !/^(\w+\.)?modelData\.(name|index|key)$/.test(outside)
+    }
+    const handed = (text) => [...text.matchAll(call)]
+      .filter((m) => m[2].replace(/\[[^\]]*\]/g, "[]").split(",").some(handsCopy)).map((m) => m[0])
     expect(handed('onClicked: root.runCli(modelData, "Fix")')).toEqual(['runCli(modelData, "Fix")'])
+    expect(handed('onClicked: root.runCli(modelData.action, "Fix")')).toEqual(['runCli(modelData.action, "Fix")'])
     expect(handed("onClicked: root.installCapture(section.modelData)")).toEqual(["installCapture(section.modelData)"])
+    expect(handed("root.press(entry.modelData, modelData.name)")).toEqual(["press(entry.modelData, modelData.name)"])
+    expect(handed("root.press(root.rows[entry.modelData.index], modelData.name)")).toEqual([])
+    expect(handed("root.owner.press(root.row, modelData.name)")).toEqual([])
     expect(handed('onClicked: root.runCli(root.lastError.fixes[index], "Fix")')).toEqual([])
     for (const name of runtime) expect([name, handed(fs.readFileSync(path.join(root, name), "utf8"))]).toEqual([name, []])
   })

@@ -182,6 +182,9 @@ pub fn run(ctx: &Context, args: &AuthArgs) -> Result<AuthOutcome> {
     };
     let paths = Paths::from_env()?;
     let path = paths.credential_file("github");
+    // Read before the token is touched: a config.toml that cannot be read refuses the
+    // change rather than reporting a failure after it was made.
+    let config = Config::load(&paths)?;
     match action {
         AuthAction::Set => {
             let token = if args.from_gh {
@@ -194,7 +197,6 @@ pub fn run(ctx: &Context, args: &AuthArgs) -> Result<AuthOutcome> {
         AuthAction::Clear => write(ctx, &paths, b"")?,
         AuthAction::Status => {}
     }
-    let config = Config::load(&paths)?;
     let mut warnings = config.warnings;
     let token = GithubToken::resolve(&paths, &config.config.sources);
     warnings.extend(token.warnings.iter().cloned());

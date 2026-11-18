@@ -418,6 +418,52 @@ fn a_dependency_updated_again_since_is_not_asserted_from_the_inventory_now() {
     assert!(unknowns.contains("dependencies"), "{unknowns:?}");
 }
 
+/// LibX installed; then Foo throws an error; then, before any read finds it, an update
+/// gives Foo a TOC that requires LibX. The TOC on disk is not the one loaded when the
+/// error began, so the install of LibX is never named through it.
+#[test]
+fn a_dependency_read_from_a_toc_installed_after_the_error_is_not_asserted() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    log.step("LibX installed: the only change before the error");
+    s.release("libx", "v1", &[folder("LibX", &[])]);
+    s.ok(&["install", "gh:o/libx", "-t", "retail"]);
+    let when = a_second_later();
+    log.step("after the error, Foo updated to a release whose TOC requires LibX");
+    s.release("foo", "v2", &[folder("Foo", &["LibX"])]);
+    s.ok(&["update", "-t", "retail", "--refresh"]);
+    log.step("the game saves the error, timed before the update");
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6).entry(error("Foo", 12, 6, when, 1)),
+    );
+    let (v, _) = errors(&s, &[]);
+    let e = at_line(&v, "Foo", 12);
+    log.json("the error", &e);
+    assert_eq!(
+        e["first_seen"]["onset_by_at"],
+        json!(Timestamp::from_second(when).unwrap().to_string())
+    );
+    let link = &e["after_change"];
+    assert_ne!(link["relation"], "dependency", "{link}");
+    assert!(
+        link.is_null() || link["confidence"] == "low",
+        "no link above low: {link}"
+    );
+    if !link.is_null() {
+        let unknowns: BTreeSet<&str> = link["evidence"]["unknowns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u.as_str().unwrap())
+            .collect();
+        assert!(unknowns.contains("dependencies"), "{unknowns:?}");
+        assert_eq!(ways_back(&v), vec![]);
+    }
+    assert_eq!(addon(&v, "Foo")["after_change"], Value::Null);
+}
+
 #[test]
 fn another_error_of_the_shape_inherits_nothing() {
     let log = common::tlog::tlog!();
@@ -1217,6 +1263,88 @@ fn a_newer_release_is_offered_before_the_rollback() {
         ]
     );
     assert_eq!(top_actions(&v), ["update", "rollback", "dismiss_errors"]);
+}
+
+/// The argv of the first of `commands` whose action is `action`; empty when none is.
+fn argv_of(commands: &Value, action: &str) -> Vec<String> {
+    commands
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["action"] == action)
+        .map(|c| serde_json::from_value(c["argv"].clone()).unwrap())
+        .unwrap_or_default()
+}
+
+/// An addon whose folder starts with '-': the update that may fix its new error and the
+/// way back from a change before one name it after `--`, and each runs as given.
+#[test]
+fn an_addon_named_like_a_flag_is_offered_commands_that_run() {
+    let log = common::tlog::tlog!();
+    let s = Scene::new();
+    log.env(&s);
+    log.step("-Foo v1, installed three weeks ago; the ledger's first read");
+    s.release("foo", "v1", &[folder("-Foo", &[])]);
+    s.ok(&["install", "gh:o/foo", "-t", "retail"]);
+    age_history(&s, SignedDuration::from_hours(21 * 24));
+    save(&s, &BugDb::new(Writer::Modern, 5));
+    errors(&s, &[]);
+
+    log.step("v2 known; a new error no change preceded: the update hint");
+    s.release("foo", "v2", &[folder("-Foo", &[])]);
+    s.ok(&["outdated", "-t", "retail", "--refresh"]);
+    let first = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6).entry(error("-Foo", 11, 6, first, 2)),
+    );
+    let (v, _) = errors(&s, &[]);
+    let update = argv_of(&v["commands"], "update");
+    assert_eq!(
+        update,
+        ["omaddons", "update", "-t", "retail", "--", "-Foo"],
+        "{v:#}"
+    );
+    let run = s.run(&update[1..], "");
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(s.record("-foo")["version"], "v2");
+
+    log.step("an error of another shape after that update: the rollback");
+    let tx = last_tx(&s, "update");
+    let when = a_second_later();
+    let message = format!(
+        "{} attempt to call a nil value",
+        stack_era_c("-Foo", "core.lua", 12)
+    );
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 7)
+            .entry(error("-Foo", 11, 6, first, 2))
+            .entry(BugEntry::new(&message, 7, (TimeKind::Unix, when)).counter(7)),
+    );
+    let (v, _) = errors(&s, &[]);
+    let rollback = argv_of(
+        &at_line(&v, "-Foo", 12)["after_change"]["commands"],
+        "rollback",
+    );
+    assert_eq!(
+        rollback,
+        [
+            "omaddons",
+            "skip",
+            "--back",
+            "--tx",
+            tx.as_str(),
+            "-t",
+            "retail",
+            "--",
+            "-Foo"
+        ],
+        "{v:#}"
+    );
+    let run = s.run(&rollback[1..], "");
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(s.record("-foo")["version"], "v1");
 }
 
 #[test]

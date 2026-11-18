@@ -205,6 +205,40 @@ fn help_for_a_command() {
     );
 }
 
+/// `-h` in a word of short flags (`-vh`, `-hv`, `-vvh`) is help, as `-h` alone is, on a
+/// command with required arguments too; `-th` is `-t` with the value `h`.
+#[test]
+fn help_in_a_word_of_short_flags_is_help() {
+    for (command, page) in [
+        (&["install"][..], "install"),
+        (&["doctor", "gc"], "doctor gc"),
+    ] {
+        let mut alone = command.to_vec();
+        alone.extend(["-h", "--json"]);
+        let want = run(&alone);
+        assert_eq!(want.code, 0, "{}", want.context());
+        let mut want = want.envelope();
+        want["meta"]["elapsed_ms"] = Value::from(0);
+        assert_eq!(want["data"]["command"], page, "{want}");
+        for word in ["-vh", "-hv", "-vvh"] {
+            let mut args = command.to_vec();
+            args.extend([word, "--json"]);
+            let r = run(&args);
+            assert_eq!(r.code, 0, "{word}: {}", r.context());
+            let mut got = r.envelope();
+            got["meta"]["elapsed_ms"] = Value::from(0);
+            assert_eq!(got, want, "{word}: {}", r.context());
+        }
+    }
+    let r = run(&["install", "-th", "--json"]);
+    assert_eq!(
+        (r.code, &r.envelope()["error"]["code"]),
+        (2, &Value::from("usage")),
+        "{}",
+        r.context()
+    );
+}
+
 #[test]
 fn help_walks_a_nested_path() {
     // A command whose bare form runs a default action is still the command's help.

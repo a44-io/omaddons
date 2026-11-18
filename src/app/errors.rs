@@ -1771,9 +1771,8 @@ impl View<'_> {
             }
         }
         if !to_update.is_empty() {
-            let mut argv = vec!["omaddons".to_owned(), "update".to_owned()];
-            argv.extend(to_update);
-            argv.extend(["-t".to_owned(), t.id.clone()]);
+            let argv =
+                crate::cli::with_operands(&["omaddons", "update"], &to_update, &["-t", &t.id]);
             self.commands.push(CommandHint::new(Action::Update, argv));
         }
         // A dismissal acknowledges only databases read whole: offered when it would clear

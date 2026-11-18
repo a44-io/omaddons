@@ -74,6 +74,38 @@ pub fn plan_diagnose(
         .filter(|row| row.tier != Tier::Runtime && sel.includes(row))
         .collect();
     if candidates.is_empty() {
+        // `--only` that selects no row by itself names only subsystems with no failure
+        // mode (`sockets`, `hooks`): its fix runs without them, never the same command.
+        let unskipped = Selection {
+            skip: Vec::new(),
+            ..sel.clone()
+        };
+        let only_selects = registry
+            .iter()
+            .any(|row| row.tier != Tier::Runtime && unskipped.includes(row));
+        if !sel.only.is_empty() && !only_selects {
+            let names: Vec<&str> = sel
+                .only
+                .iter()
+                .map(|pick| match pick {
+                    Pick::Mode(id) => *id,
+                    Pick::Subsystem(subsystem) => subsystem.as_str(),
+                })
+                .collect();
+            let (has, listed) = match names.split_last() {
+                Some((last, rest)) if !rest.is_empty() => {
+                    ("have", format!("{} and {last}", rest.join(", ")))
+                }
+                _ => ("has", names.join(", ")),
+            };
+            return Err(usage(
+                format!(
+                    "--only {} selects no check: {listed} {has} no failure modes",
+                    names.join(",")
+                ),
+                without(argv, "--only", true),
+            ));
+        }
         return Err(usage(
             "nothing to check: --skip leaves no check".to_owned(),
             without(argv, "--skip", true),
@@ -462,7 +494,46 @@ mod tests {
             budget: Some(Duration::from_millis(5)),
             ..Asked::default()
         };
-        let cases: [Refusal; 5] = [
+        let sockets = Selection {
+            only: vec![Pick::Subsystem(Subsystem::Sockets)],
+            ..Selection::all()
+        };
+        let sockets_and_hooks = Selection {
+            only: vec![
+                Pick::Subsystem(Subsystem::Sockets),
+                Pick::Subsystem(Subsystem::Hooks),
+            ],
+            skip: vec![Pick::Mode(C1)],
+            ..Selection::all()
+        };
+        let cases: [Refusal; 8] = [
+            (
+                "only_an_empty_subsystem_is_usage_naming_only",
+                sockets,
+                Asked::default(),
+                vec!["doctor", "--only", "sockets"],
+                ErrorCode::Usage,
+                "--only sockets selects no check: sockets has no failure modes",
+                &["doctor"],
+            ),
+            (
+                "only_empty_subsystems_keep_the_rest_of_the_line",
+                sockets_and_hooks,
+                Asked::default(),
+                vec!["doctor", "--only=sockets", "--skip", C1, "--only", "hooks"],
+                ErrorCode::Usage,
+                "--only sockets,hooks selects no check: sockets and hooks have no failure modes",
+                &["doctor", "--skip", C1],
+            ),
+            (
+                "skip_leaves_no_check_is_usage_naming_skip",
+                sel(&[C1], &[C1]),
+                Asked::default(),
+                vec!["doctor", "--only", C1, "--skip", C1],
+                ErrorCode::Usage,
+                "nothing to check: --skip leaves no check",
+                &["doctor", "--only", C1],
+            ),
             (
                 "quick_with_only_a_default_row_is_usage_naming_quick",
                 sel(&[D], &[]),
@@ -549,6 +620,22 @@ mod tests {
             refused.alternatives.first().and_then(|a| a.argv()),
             Some(argv(&["doctor"]).as_slice()),
             "the alternative runs without --budget"
+        );
+
+        // A subsystem with no failure mode beside an id that selects a row: the row runs.
+        let plan = plan_diagnose(
+            &registry(),
+            &Selection {
+                only: vec![Pick::Subsystem(Subsystem::Sockets), Pick::Mode(C1)],
+                ..Selection::all()
+            },
+            &Asked::default(),
+            &argv(&["doctor", "--only", &format!("sockets,{C1}")]),
+        );
+        assert_eq!(
+            plan.map(|plan| ids_of(&plan)).ok(),
+            Some(vec![C1]),
+            "case only_sockets_and_an_id_keeps_the_id"
         );
     }
 

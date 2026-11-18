@@ -979,6 +979,95 @@ fn a_relative_path_on_stdin_is_read_against_the_working_directory() {
     );
 }
 
+/// `omaddons <args> --json` run in `dir`, with `input` on standard input (closed when
+/// there is none).
+#[cfg(test)]
+fn run_in(home: &Home, dir: &std::path::Path, args: &[&str], input: &str) -> common::home::Run {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+    argv.push("--json".to_owned());
+    let mut child = home
+        .std_command(&argv, &[])
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Written, then closed by the drop.
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    common::home::Run {
+        argv,
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8(output.stdout).unwrap(),
+        stderr: String::from_utf8(output.stderr).unwrap(),
+    }
+}
+
+/// A `sync -` plan reads its relative paths where its preview read them, so `apply` from
+/// any other directory syncs what the preview showed; with `--prune`, the addon a path
+/// names is kept.
+#[test]
+fn a_stdin_plan_reads_its_relative_paths_where_it_was_previewed() {
+    let text = "[[family.mainline.addon]]\nref = \"./MyAddon\"\n";
+    for prune in [false, true] {
+        let home = prune_home();
+        let work = home.env.root().join("work");
+        let elsewhere = home.env.root().join("elsewhere");
+        fs::create_dir_all(work.join("MyAddon")).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(
+            work.join("MyAddon/MyAddon.toc"),
+            toc("120105", &["## Version: 1.0"]),
+        )
+        .unwrap();
+        let mut args = vec!["sync", "-", "-t", "retail"];
+        if prune {
+            run_in(&home, &work, &args, text).expect(0);
+            home.run(&["install", "gh:o/bar", "-t", "retail"]).expect(0);
+            args.push("--prune");
+        }
+        let mut preview = args.clone();
+        preview.push("--dry-run");
+        let previewed = run_in(&home, &work, &preview, text);
+        let envelope = previewed.expect(0);
+        let want = if prune {
+            [pair("Bar", "removed")]
+        } else {
+            [pair("./MyAddon", "installed")]
+        };
+        assert_eq!(
+            statuses(&envelope, "retail"),
+            want,
+            "{prune}: {}",
+            previewed.context()
+        );
+        let id = envelope["data"]["plan_id"].as_str().unwrap().to_owned();
+        let applied = run_in(&home, &elsewhere, &["apply", &id], "");
+        applied.expect(0);
+        let installed = record_of(&home, "retail", "MyAddon");
+        let from = fs::canonicalize(work.join("MyAddon")).unwrap();
+        assert_eq!(
+            installed.map(|a| a.r#ref.to_string()),
+            Some(format!("file:{}", from.display())),
+            "{prune}: {}",
+            applied.context()
+        );
+        assert!(
+            record_of(&home, "retail", "Bar").is_none(),
+            "{prune}: {}",
+            applied.context()
+        );
+    }
+}
+
 #[test]
 fn prune_previews_from_stdin_as_from_its_file() {
     let home = prune_home();
@@ -2003,6 +2092,190 @@ fn sync_prune_of_a_loaded_addon_is_refused_while_the_client_runs() {
     home.nothing_running();
     home.run(&["undo"]).expect(0);
     assert_eq!(tree_hash(&addons), tree);
+}
+
+/// A prune that fails while the client runs lets go of nothing: a newly listed addon
+/// shipping one of the pruned addon's folders, judged before the prune, is a takeover
+/// the owner never agreed to. It is refused at plan time, the preview says so, and the
+/// client's other changes still commit.
+#[test]
+fn a_failed_prune_hands_over_nothing() {
+    let mut home = prune_home();
+    let (old, new, common) = (
+        support::folder("Old", &[]),
+        support::folder("New", &[]),
+        support::folder("Common", &[]),
+    );
+    release_graph(
+        &home.http,
+        &[
+            Node {
+                base: "https://github.com/o/old",
+                tag: "v1",
+                folders: &[old, common],
+            },
+            Node {
+                base: "https://github.com/o/new",
+                tag: "v1",
+                folders: &[new, common],
+            },
+        ],
+    );
+    home.run(&["install", "gh:o/old", "-t", "retail"]).expect(0);
+    let addons = home.addons("_retail_");
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/new\", \"gh:o/baz\"]\n");
+    home.retail_running();
+
+    for (what, args) in [
+        ("preview", &["sync", "--prune", "--dry-run"][..]),
+        ("run", &["sync", "--prune"][..]),
+    ] {
+        let r = home.run(args);
+        let envelope = r.expect(0);
+        assert_eq!(envelope["partial"], true, "{what}: {}", r.context());
+        let got: Vec<(String, String, String)> = items(&envelope, "retail")
+            .iter()
+            .map(|i| {
+                (
+                    i["request"].as_str().unwrap_or_default().to_owned(),
+                    i["status"].as_str().unwrap_or_default().to_owned(),
+                    i["error"]["code"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        let row = |request: &str, status: &str, code: &str| {
+            (request.to_owned(), status.to_owned(), code.to_owned())
+        };
+        assert_eq!(
+            got,
+            [
+                row("gh:o/new", "failed", "ownership_conflict"),
+                row("gh:o/baz", "installed", ""),
+                row("Old", "failed", "game_running"),
+            ],
+            "{what}: {}",
+            r.context()
+        );
+        let refused = &item(&envelope, "retail", "gh:o/new")["error"];
+        assert_eq!(
+            (&refused["message"], &refused["fix_argv"]),
+            (
+                &json!("Common belongs to Old"),
+                &json!(["omaddons", "install", "gh:o/new", "--force", "-t", "retail"])
+            ),
+            "{what}: {}",
+            r.context()
+        );
+    }
+    assert!(
+        addons.join("Baz").is_dir(),
+        "the unrelated install committed"
+    );
+    assert!(!addons.join("New").exists());
+    let old = record_of(&home, "retail", "Old").unwrap();
+    assert!(old.folders.iter().any(|f| f.as_str() == "Common"));
+    assert!(record_of(&home, "retail", "New").is_none());
+}
+
+/// An entry re-pointed to another source: `--prune` replaces the old addon with the new
+/// one in one transaction, which one `undo` reverts.
+#[test]
+fn prune_after_repointing_an_entry_replaces_the_addon() {
+    let home = prune_home();
+    let (foo, options) = (
+        support::folder("Foo", &[]),
+        support::folder("FooOptions", &[]),
+    );
+    release_graph(
+        &home.http,
+        &[
+            Node {
+                base: "https://github.com/o/moved",
+                tag: "v1",
+                folders: &[foo, options],
+            },
+            Node {
+                base: "https://github.com/p/moved",
+                tag: "v2",
+                folders: &[foo],
+            },
+        ],
+    );
+    home.run(&["install", "gh:o/moved", "-t", "retail"])
+        .expect(0);
+    let addons = home.addons("_retail_");
+    let before = tree_hash(&addons);
+    let old = record_of(&home, "retail", "Foo").unwrap();
+    home.write_desired("[target.\"retail\"]\naddons = [\"gh:p/moved\"]\n");
+
+    // Without `--prune` the old addon stays, so the new ref under its name is a takeover.
+    let r = home.run(&["sync"]);
+    let envelope = r.expect(4);
+    assert_eq!(
+        envelope["error"]["message"],
+        "Foo on retail comes from gh:o/moved; installing gh:p/moved would replace it",
+        "{}",
+        r.context()
+    );
+    assert_eq!(tree_hash(&addons), before);
+
+    for args in [
+        &["sync", "--prune", "--dry-run"][..],
+        &["sync", "--prune"][..],
+    ] {
+        let r = home.run(args);
+        let envelope = r.expect(0);
+        assert_eq!(envelope["partial"], false, "{}", r.context());
+        // One change, listed once, under the entry that made it: the file never named
+        // the pruned addon, so its prune is no item of its own.
+        assert_eq!(
+            statuses(&envelope, "retail"),
+            [pair("gh:p/moved", "updated")],
+            "{}",
+            r.context()
+        );
+        let moved = item(&envelope, "retail", "gh:p/moved");
+        assert_eq!(
+            (&moved["name"], &moved["from_version"], &moved["to_version"]),
+            (&json!("Foo"), &json!("v1"), &json!("v2"))
+        );
+        assert_eq!(moved["folders"]["removed"], json!(["FooOptions"]));
+        assert_eq!(
+            envelope["data"]["summary"],
+            json!({ "targets": 2, "changed": 1, "unchanged": 0, "skipped": 0, "failed": 0 }),
+            "{}",
+            r.context()
+        );
+        assert_eq!(
+            warned(&envelope, "ownership_transferred"),
+            1,
+            "{}",
+            r.context()
+        );
+        let selection = &envelope["data"]["approval"]["selection"];
+        if args.contains(&"--dry-run") {
+            assert_eq!(
+                (
+                    selection[0]["op"].as_str(),
+                    selection.as_array().map(Vec::len)
+                ),
+                (Some("update"), Some(1)),
+                "one update: {}",
+                r.context()
+            );
+        }
+    }
+    let new = record_of(&home, "retail", "Foo").unwrap();
+    assert_eq!(new.r#ref.to_string(), "gh:p/moved");
+    assert_eq!(
+        new.folders.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
+        ["Foo"]
+    );
+    assert!(!addons.join("FooOptions").exists());
+
+    home.run(&["undo"]).expect(0);
+    assert_eq!(tree_hash(&addons), before);
+    assert_eq!(record_of(&home, "retail", "Foo").unwrap().r#ref, old.r#ref);
 }
 
 /// A new addon installs while the client runs, and the client must restart: no client

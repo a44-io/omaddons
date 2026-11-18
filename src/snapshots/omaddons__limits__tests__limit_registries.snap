@@ -577,7 +577,7 @@ expression: "(politeness, REGISTRY)"
       "value": {
         "count": 4000
       },
-      "unit": "count",
+      "unit": "chars",
       "config_key": null,
       "notes": "Longest changelog entry shown, in characters; longer ones end with an ellipsis"
     },
@@ -757,7 +757,7 @@ expression: "(politeness, REGISTRY)"
       "value": {
         "count": 200
       },
-      "unit": "count",
+      "unit": "chars",
       "config_key": null,
       "notes": "Characters a search result's summary keeps"
     },
@@ -775,7 +775,7 @@ expression: "(politeness, REGISTRY)"
       "value": {
         "count": 200
       },
-      "unit": "count",
+      "unit": "chars",
       "config_key": null,
       "notes": "Characters kept from a source's name, author or version"
     },
@@ -784,7 +784,7 @@ expression: "(politeness, REGISTRY)"
       "value": {
         "count": 400
       },
-      "unit": "count",
+      "unit": "chars",
       "config_key": null,
       "notes": "Characters info keeps from one field of an installed addon's TOC (title, notes, author, version, website)"
     },

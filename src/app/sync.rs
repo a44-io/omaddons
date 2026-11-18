@@ -61,6 +61,11 @@ pub struct SyncArgs {
     /// standard input again; never a command-line argument.
     #[arg(skip)]
     pub input: Option<String>,
+    /// The directory that plan's preview read the text's relative paths against, which
+    /// `apply` reads them against again from wherever it runs; never a command-line
+    /// argument.
+    #[arg(skip)]
+    pub base: Option<PathBuf>,
     /// Exit 6 when only some of the addons sync
     #[arg(long)]
     pub strict: bool,
@@ -487,6 +492,15 @@ fn reads_stdin(args: &SyncArgs) -> bool {
     args.file.as_deref() == Some(Path::new(STDIN))
 }
 
+/// The directory standard input's relative paths are read against: the one a stored
+/// plan's preview read them against, else the working directory, as `install` reads them.
+fn stdin_base(args: &SyncArgs) -> std::io::Result<PathBuf> {
+    match &args.base {
+        Some(base) => Ok(base.clone()),
+        None => std::env::current_dir(),
+    }
+}
+
 /// The desired state's text from standard input (`sync -`), refused before any read when
 /// it is a terminal, and past [`SYNC_STDIN_MAX_BYTES`] (its plan holds the text).
 fn read_stdin(is_tty: bool, input: &mut dyn Read) -> Result<String> {
@@ -558,6 +572,8 @@ struct TargetWork {
     /// `--locked`: the requests that install a recorded version, or a recorded archive
     /// (a `url:` entry's `sha256`).
     locked: Vec<String>,
+    /// `--prune`: the prunes' requests, also in `requested`.
+    prunes: Vec<ItemRequest>,
 }
 
 /// Resolves, checks and diffs `target`'s entries; with `--prune`, removes the records
@@ -575,10 +591,9 @@ fn target_work(
     // What the file names, or may name, on this target: never pruned.
     let mut named: Vec<Ref> = Vec::new();
     let t = &d.target;
-    // A file's relative paths are its directory's; standard input has none, so its are
-    // the working directory's, as `install` reads them.
+    // A file's relative paths are its directory's; standard input has none ([`stdin_base`]).
     let base = if reads_stdin(args) {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+        stdin_base(args).unwrap_or_else(|_| PathBuf::from("/"))
     } else {
         path.parent()
             .unwrap_or_else(|| Path::new("/"))
@@ -736,13 +751,15 @@ fn target_work(
             work.changes.push(RequestedChange::Prune {
                 addon: a.name.clone(),
             });
-            work.requested.push(ItemRequest {
+            let request = ItemRequest {
                 request: a.name.clone(),
                 target: t.id.clone(),
                 addon: Some(a.name.clone()),
                 r#ref: Some(a.r#ref.clone()),
                 version: Some(a.version.clone()),
-            });
+            };
+            work.prunes.push(request.clone());
+            work.requested.push(request);
             work.order.push(a.name.clone());
         }
     }
@@ -794,6 +811,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
 
     let mut changes: BTreeMap<String, Vec<RequestedChange>> = BTreeMap::new();
     let mut requested: Vec<ItemRequest> = Vec::new();
+    let mut prunes: Vec<ItemRequest> = Vec::new();
     let mut pushed: Vec<(TargetRef, ItemResult)> = Vec::new();
     let mut order: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut without: Vec<TargetResult> = Vec::new();
@@ -825,6 +843,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
             changes.insert(d.target.id.clone(), work.changes);
         }
         requested.extend(work.requested);
+        prunes.extend(work.prunes);
         pushed.extend(work.items.into_iter().map(|i| (target_ref(d), i)));
         order.insert(d.target.id.clone(), work.order);
     }
@@ -893,6 +912,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     let mut data = match &done {
         Some(done) => {
             let mut data = TargetsData::build(done, run, &requested);
+            drop_replaced_prunes(&mut data, &prunes);
             settle_failures(&mut data, &ctx.argv);
             unlock_fixes(&mut data, &locked, &ctx.argv);
             for o in &done.outcomes {
@@ -969,15 +989,25 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
         .filter(|done| done.plan.has_ops())
         .zip(plan_precondition)
     {
-        // Standard input is named as such, its text kept in the plan.
+        // Standard input is named as such, its text kept in the plan with the directory
+        // its relative paths were read against.
         Some((done, p)) => match if stdin {
-            Ok(AbsPath::stdin())
+            stdin_base(args)
+                .map_err(|err| err.to_string())
+                .and_then(|base| {
+                    base.into_os_string().into_string().map_err(|_| {
+                        "this directory cannot be stored in a plan: it is not UTF-8".to_owned()
+                    })
+                })
+                .and_then(AbsPath::new)
+                .map(|base| (AbsPath::stdin(), Some(base)))
         } else {
             std::env::current_dir()
                 .map_err(|err| err.to_string())
                 .and_then(|cwd| AbsPath::resolve(&cwd, &path))
+                .map(|file| (file, None))
         } {
-            Ok(file) => intent::preview_plan(
+            Ok((file, base)) => intent::preview_plan(
                 ctx,
                 &StorableArgs::Sync {
                     args,
@@ -985,6 +1015,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
                     file,
                     default_file: args.file.is_none(),
                     stdin: stdin.then(|| text.clone()),
+                    base,
                 },
                 p,
                 &done.plan,
@@ -1082,6 +1113,28 @@ fn unlock_fixes(data: &mut TargetsData, locked: &BTreeMap<String, Vec<String>>, 
             }
         }
     }
+}
+
+/// Drops the item of each prune that an entry's install replaced (an entry moved to
+/// another source: the engine updates the pruned addon to the entry's ref, and the prune
+/// yields). Such an item shows a change of the addon under another ref than the pruned
+/// record's, which the entry's own item reports; the file never named the pruned addon.
+fn drop_replaced_prunes(data: &mut TargetsData, prunes: &[ItemRequest]) {
+    let replaced = |target: &str, item: &ItemResult| {
+        let changed = !matches!(
+            item.status,
+            ItemStatus::Unchanged | ItemStatus::Skipped | ItemStatus::Failed
+        );
+        changed
+            && prunes
+                .iter()
+                .any(|p| p.target == target && p.request == item.request && p.r#ref != item.r#ref)
+    };
+    for t in &mut data.targets {
+        let id = t.target.id.clone();
+        t.items.retain(|item| !replaced(&id, item));
+    }
+    data.recount();
 }
 
 /// A fix that reruns this `sync` with `--force` (which `sync` does not have) says how

@@ -19,6 +19,7 @@
 //!
 //! This module reads and decides; it never writes.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::barrier::{self, Stuck};
@@ -241,6 +242,13 @@ pub(crate) fn closes_read(paths: &Paths, read: &PreparedRead) -> bool {
 /// the set. Reads `journal::diagnose` only when a repair journal exists: otherwise one
 /// listing.
 pub fn load(paths: &Paths, client_dirs: &[PathBuf]) -> FenceSet {
+    load_without(paths, client_dirs, &BTreeSet::new())
+}
+
+/// [`load`] as if the journals in `excused` were not there: what a set-aside of them
+/// leaves, every other journal's fences and close kept (a set holds one close, so lifting
+/// that of an excused journal from a loaded set could hide another's).
+fn load_without(paths: &Paths, client_dirs: &[PathBuf], excused: &BTreeSet<TxId>) -> FenceSet {
     match super::repair::journal::list(paths) {
         Ok(found) if found.is_empty() => return FenceSet::new(),
         Ok(_) => {}
@@ -250,7 +258,8 @@ pub fn load(paths: &Paths, client_dirs: &[PathBuf]) -> FenceSet {
             return set;
         }
     }
-    let diagnoses = journal::diagnose(paths, client_dirs, &journal::no_saved_variables);
+    let mut diagnoses = journal::diagnose(paths, client_dirs, &journal::no_saved_variables);
+    diagnoses.journals.retain(|d| !excused.contains(&d.tx));
     of_diagnoses(paths, &diagnoses)
 }
 
@@ -570,6 +579,20 @@ pub fn under_lock(
     target: Option<&Target>,
     writes: &[PathBuf],
 ) -> Result<()> {
+    under_lock_excusing(scopes, paths, target, writes, &BTreeSet::new())
+}
+
+/// [`under_lock`] for a commit that sets aside the journals in `excused` (the undo of a
+/// reactivation): their fences and their close no longer refuse its writes, as its commit
+/// lifts them (`FenceSet::excusing`). The first check is [`under_lock`]'s, and every other
+/// journal's fences and close stand, one hidden behind an excused close included.
+pub fn under_lock_excusing(
+    scopes: &ScopeTable,
+    paths: &Paths,
+    target: Option<&Target>,
+    writes: &[PathBuf],
+    excused: &BTreeSet<TxId>,
+) -> Result<()> {
     let held = scopes.fences();
     let now = load(paths, scopes.client_dirs());
     let had = held.txs();
@@ -599,12 +622,19 @@ pub fn under_lock(
         .and_then(|target| target.key)
         .map(|key| vec![paths.target_record(&key), paths.files_index(&key)])
         .unwrap_or_default();
+    let kept = held.excusing(excused);
     for path in records.iter().chain(writes) {
-        if let Some(fence) = held.covering(&canonical_file(path)) {
+        if let Some(fence) = kept.covering(&canonical_file(path)) {
             return Err(refusal(fence.resource.clone(), fence.stop.clone(), false));
         }
     }
-    if let Some((resource, stop)) = held.closed() {
+    // A set keeps one close: with an excused journal's lifted, another journal's close
+    // is read again from the journals as they are now.
+    let others = (!excused.is_empty()).then(|| load_without(paths, scopes.client_dirs(), excused));
+    let closed = kept
+        .closed()
+        .or_else(|| others.as_ref().and_then(FenceSet::closed));
+    if let Some((resource, stop)) = closed {
         return Err(refusal(resource.to_owned(), stop.clone(), true));
     }
     Ok(())

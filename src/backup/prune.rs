@@ -615,6 +615,25 @@ mod tests {
         assert_eq!(victims, [later.id], "naming them does not lift either");
     }
 
+    /// A newest capture found damaged is no checkpoint: the one before it is protected.
+    #[test]
+    fn a_damaged_newest_capture_leaves_the_protection_to_the_checkpoint_before_it() {
+        let older = pre("2026-09-03T08:00:00Z");
+        let mut damaged = post("2026-09-04T08:00:00Z");
+        if let Some(meta) = damaged.meta.as_mut() {
+            meta.integrity = Integrity::Damaged;
+            damaged.qualifying = super::super::qualifying(meta);
+        }
+        let backups = vec![older, damaged.clone()];
+        let now = at("2026-10-10T00:00:00Z");
+        let named = PruneOpts {
+            ids: Some(backups.iter().map(|b| b.id).collect()),
+            ..PruneOpts::default()
+        };
+        let victims = select(&backups, now, &TimeZone::UTC, 0, &named);
+        assert_eq!(victims, [damaged.id], "the older checkpoint stays");
+    }
+
     #[test]
     fn named_backups_go_whatever_their_age_and_only_they() {
         let now = at("2026-10-10T12:00:00Z");

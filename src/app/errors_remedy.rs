@@ -181,33 +181,38 @@ impl<'a> Remedies<'a> {
             restorable,
             undoable,
         });
-        let tx = link.tx.to_string();
-        let target = self.target.to_owned();
-        let name = a.name.clone();
         link.commands = steps
             .iter()
-            .map(|step| match step {
-                Step::Update => CommandHint::new(
-                    Action::Update,
-                    ["omaddons", "update", &name, "-t", &target].map(str::to_owned),
-                ),
-                Step::Rollback => CommandHint::new(
-                    Action::Rollback,
-                    [
-                        "omaddons", "skip", &name, "--back", "--tx", &tx, "-t", &target,
-                    ]
-                    .map(str::to_owned),
-                ),
-                Step::Undo => {
-                    CommandHint::new(Action::Undo, ["omaddons", "undo", &tx].map(str::to_owned))
-                }
-            })
+            .map(|step| way_back(*step, &a.name, link.tx, self.target))
             .collect();
         link.undo_also = if steps.contains(&Step::Undo) {
             others
         } else {
             Vec::new()
         };
+    }
+}
+
+/// The command that takes `step` for `addon` on `target`, back from `tx`: `update <addon>`,
+/// `skip <addon> --back --tx <tx>` or `undo <tx>`. An addon named like a flag (`-Foo`)
+/// comes last, after `--`.
+fn way_back(step: Step, addon: &str, tx: TxId, target: &str) -> CommandHint {
+    let tx = tx.to_string();
+    let with_addon =
+        |path: &[&str], flags: &[&str]| crate::cli::with_operands(path, &[addon], flags);
+    match step {
+        Step::Update => CommandHint::new(
+            Action::Update,
+            with_addon(&["omaddons", "update"], &["-t", target]),
+        ),
+        Step::Rollback => CommandHint::new(
+            Action::Rollback,
+            with_addon(
+                &["omaddons", "skip"],
+                &["--back", "--tx", &tx, "-t", target],
+            ),
+        ),
+        Step::Undo => CommandHint::new(Action::Undo, ["omaddons", "undo", tx.as_str()]),
     }
 }
 
@@ -324,5 +329,61 @@ mod tests {
             [],
             "a first install has no files before it, however its archive is cached"
         );
+    }
+
+    /// Each way back parses as the command it names, acting on the addon: an ordinary name
+    /// where it always stood, one like a flag after `--`.
+    #[test]
+    fn each_way_back_names_its_addon_as_the_parser_reads_it() {
+        use clap::Parser;
+
+        use crate::cli::{Cli, Command};
+        let tx = TxId::new();
+        let text = tx.to_string();
+        let t = text.as_str();
+        for (addon, update, rollback) in [
+            (
+                "Foo",
+                vec!["omaddons", "update", "Foo", "-t", "retail"],
+                vec![
+                    "omaddons", "skip", "Foo", "--back", "--tx", t, "-t", "retail",
+                ],
+            ),
+            (
+                "-Foo",
+                vec!["omaddons", "update", "-t", "retail", "--", "-Foo"],
+                vec![
+                    "omaddons", "skip", "--back", "--tx", t, "-t", "retail", "--", "-Foo",
+                ],
+            ),
+            (
+                "--all",
+                vec!["omaddons", "update", "-t", "retail", "--", "--all"],
+                vec![
+                    "omaddons", "skip", "--back", "--tx", t, "-t", "retail", "--", "--all",
+                ],
+            ),
+        ] {
+            let got = way_back(Step::Update, addon, tx, "retail");
+            assert_eq!(got.action(), Action::Update);
+            assert_eq!(got.argv(), update);
+            match Cli::try_parse_from(got.argv()).map(|cli| cli.command) {
+                Ok(Some(Command::Update(args))) => {
+                    assert_eq!((args.addons, args.all), (vec![addon.to_owned()], false));
+                }
+                other => panic!("{addon}: {other:?}"), // ubs:ignore — the test's own failure
+            }
+            let got = way_back(Step::Rollback, addon, tx, "retail");
+            assert_eq!(got.action(), Action::Rollback);
+            assert_eq!(got.argv(), rollback);
+            match Cli::try_parse_from(got.argv()).map(|cli| cli.command) {
+                Ok(Some(Command::Skip(args))) => {
+                    assert_eq!((args.addons, args.back), (vec![addon.to_owned()], true));
+                }
+                other => panic!("{addon}: {other:?}"), // ubs:ignore — the test's own failure
+            }
+            let got = way_back(Step::Undo, addon, tx, "retail");
+            assert_eq!(got.argv(), ["omaddons", "undo", t]);
+        }
     }
 }

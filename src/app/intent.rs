@@ -359,7 +359,10 @@ impl NormalizedRef {
             MatchKind::Path => file(&parsed.r#ref),
             MatchKind::Canonical if matches!(parsed.r#ref, Ref::File { .. }) => file(&parsed.r#ref),
             MatchKind::Shorthand => Self::parse(&parsed.r#ref.to_string()),
-            MatchKind::Canonical | MatchKind::Url | MatchKind::Catalog | MatchKind::Installed => {
+            // A link's scheme reads in any case; it is stored in lowercase, the rest of the
+            // link byte for byte.
+            MatchKind::Url => Self::parse(&crate::sources::refs::lowercase_scheme(request.trim())),
+            MatchKind::Canonical | MatchKind::Catalog | MatchKind::Installed => {
                 Self::parse(request.trim())
             }
         }
@@ -650,6 +653,11 @@ pub struct SyncIntent {
     pub default_file: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stdin: Option<String>,
+    /// With `stdin`: the directory the dry run read the text's relative paths against,
+    /// where `apply` reads them again from any directory. A plan without it reads them
+    /// against `apply`'s working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<AbsPath>,
     pub scope: TargetScope,
     pub strict: bool,
     pub no_deps: bool,
@@ -774,6 +782,8 @@ pub enum StorableArgs<'a> {
         default_file: bool,
         /// The text read from standard input, when `sync -` read it.
         stdin: Option<String>,
+        /// The directory that text's relative paths were read against, with it.
+        base: Option<AbsPath>,
     },
     Copy {
         args: &'a CopyArgs,
@@ -1003,7 +1013,12 @@ impl StoredIntent {
                 names("adopt's folders", &a.folders)?;
                 a.scope.validate()
             }
-            Self::Sync(s) => s.scope.validate(),
+            Self::Sync(s) => {
+                if s.base.is_some() && s.stdin.is_none() {
+                    return Err("sync's base goes with the text of its stdin".to_owned());
+                }
+                s.scope.validate()
+            }
             Self::Copy(c) => {
                 if c.from == c.to {
                     return Err("copy's sides are two clients".to_owned());
@@ -1249,10 +1264,12 @@ impl StoredIntent {
                 file,
                 default_file,
                 stdin,
+                base,
             } => Self::Sync(SyncIntent {
                 file: file.clone(),
                 default_file: *default_file,
                 stdin: stdin.clone(),
+                base: base.clone(),
                 scope: scope.clone(),
                 strict: args.strict,
                 no_deps: args.no_deps,
@@ -1457,6 +1474,7 @@ impl From<&SyncIntent> for SyncArgs {
         Self {
             file,
             input: s.stdin.clone(),
+            base: s.base.as_ref().map(|base| base.as_path().to_path_buf()),
             strict: false,
             no_deps: s.no_deps,
             locked: s.locked,
@@ -1951,6 +1969,7 @@ mod tests {
             file: abs("/home/u/dotfiles/addons.toml"),
             default_file: false,
             stdin: None,
+            base: None,
             scope: every(),
             strict: true,
             no_deps: true,
@@ -1961,6 +1980,7 @@ mod tests {
         let SyncArgs {
             file,
             input,
+            base,
             strict,
             no_deps,
             locked,
@@ -1968,6 +1988,7 @@ mod tests {
         } = SyncArgs::from(&intent);
         assert_eq!(file, Some(PathBuf::from("/home/u/dotfiles/addons.toml")));
         assert_eq!(input, None, "a file is read again");
+        assert_eq!(base, None, "a file's paths are its directory's");
         assert_eq!((no_deps, locked, prune), (true, true, true), "copied");
         assert!(!strict, "defaulted");
         let default = SyncArgs::from(&SyncIntent {
@@ -1983,11 +2004,17 @@ mod tests {
         let piped = SyncIntent {
             file: AbsPath::stdin(),
             stdin: Some(text.clone()),
+            base: Some(abs("/home/u/work")),
             ..intent
         };
         let args = SyncArgs::from(&piped);
         assert_eq!(args.file, Some(PathBuf::from("-")));
         assert_eq!(args.input, Some(text));
+        assert_eq!(
+            args.base,
+            Some(PathBuf::from("/home/u/work")),
+            "its relative paths are read where the dry run read them"
+        );
         let stored = StoredIntent::Sync(piped);
         assert!(
             stored.inputs().is_empty(),
@@ -2007,6 +2034,41 @@ mod tests {
             ]),
             "shown as `sync -`, flags after it"
         );
+    }
+
+    /// A `sync -` plan stored before its base was kept still decodes (and reads its
+    /// paths against `apply`'s working directory); a base goes with stdin's text only.
+    #[test]
+    fn a_sync_intent_s_base_is_optional_and_goes_with_stdin() {
+        let old = SyncIntent {
+            file: AbsPath::stdin(),
+            default_file: false,
+            stdin: Some("[family.mainline]\naddons = [\"gh:o/foo\"]\n".to_owned()),
+            base: None,
+            scope: every(),
+            strict: false,
+            no_deps: false,
+            locked: false,
+            prune: false,
+            while_running: false,
+        };
+        let stored = serde_json::to_value(StoredIntent::Sync(old.clone())).unwrap();
+        assert!(stored.get("base").is_none(), "as stored before: {stored}");
+        let decoded: StoredIntent = serde_json::from_value(stored).unwrap();
+        assert_eq!(decoded, StoredIntent::Sync(old.clone()));
+        assert_eq!(decoded.validate(), Ok(()));
+        assert_eq!(SyncArgs::from(&old).base, None);
+        let mut with_base = old;
+        with_base.base = Some(abs("/home/u/work"));
+        let stored = serde_json::to_value(StoredIntent::Sync(with_base.clone())).unwrap();
+        assert_eq!(stored["base"], "/home/u/work");
+        assert_eq!(StoredIntent::Sync(with_base.clone()).validate(), Ok(()));
+        let file = SyncIntent {
+            stdin: None,
+            file: abs("/home/u/addons.toml"),
+            ..with_base
+        };
+        assert!(StoredIntent::Sync(file).validate().is_err());
     }
 
     #[test]
@@ -2218,6 +2280,7 @@ mod tests {
                     file: abs("/home/u/addons.toml"),
                     default_file: true,
                     stdin: None,
+                    base: None,
                     scope: one("era", ERA),
                     strict: false,
                     no_deps: false,
@@ -2548,6 +2611,7 @@ mod tests {
                 file: s.file.clone(),
                 default_file: s.default_file,
                 stdin: s.stdin.clone(),
+                base: s.base.clone(),
             },
             (Args::Copy(args), StoredIntent::Copy(c)) => StorableArgs::Copy {
                 args,
@@ -2982,6 +3046,7 @@ mod tests {
                 args: Args::Sync(SyncArgs {
                     file: None,
                     input: None,
+                    base: None,
                     strict: true,
                     no_deps: false,
                     locked: true,
@@ -2992,6 +3057,7 @@ mod tests {
                     file: abs("/c/omaddons/addons.toml"),
                     default_file: true,
                     stdin: None,
+                    base: None,
                     scope: every(),
                     strict: true,
                     no_deps: false,
@@ -3013,6 +3079,7 @@ mod tests {
                     file: abs("/w/addons.toml"),
                     default_file: false,
                     stdin: None,
+                    base: None,
                     scope: one("retail", RETAIL),
                     strict: false,
                     no_deps: true,
@@ -3042,6 +3109,7 @@ mod tests {
                     file: AbsPath::stdin(),
                     default_file: false,
                     stdin: Some("[family.retail]\nDBM = {}\n".to_owned()),
+                    base: Some(abs("/w")),
                     scope: every(),
                     strict: false,
                     no_deps: false,
@@ -3507,6 +3575,47 @@ mod tests {
             let decoded: std::result::Result<NormalizedRef, _> =
                 serde_json::from_value(json!(expected));
             assert_eq!(decoded.ok(), got.ok(), "{case}: decodes as stored");
+        }
+    }
+
+    /// A pasted link's scheme in any case is stored in lowercase, and the stored link
+    /// parses back to the same ref and hints as the typed one.
+    #[test]
+    fn a_link_with_its_scheme_in_capitals_is_stored_and_reads_back_the_same() {
+        use crate::sources::refs::{RefContext, parse_user_ref};
+        let ctx = RefContext {
+            cwd: "/w".into(),
+            git_hosts: &[],
+            installed: &|_| Vec::new(),
+            catalog: &|_| None,
+        };
+        for (typed, stored) in [
+            ("Https://github.com/o/r", "https://github.com/o/r"),
+            (
+                "HTTPS://github.com/o/r/releases/download/v1.2/Foo-1.2.zip",
+                "https://github.com/o/r/releases/download/v1.2/Foo-1.2.zip",
+            ),
+            (
+                "hTTps://example.org/files/Addon-1.0.zip",
+                "https://example.org/files/Addon-1.0.zip",
+            ),
+        ] {
+            let parsed = parse_user_ref(typed, &ctx).unwrap();
+            assert_eq!(parsed.matched_by, MatchKind::Url, "{typed}");
+            let got = NormalizedRef::from_parsed(typed, &parsed);
+            assert_eq!(
+                got.as_ref().map(ToString::to_string),
+                Ok(stored.to_owned()),
+                "{typed}: {got:?}"
+            );
+            let decoded: NormalizedRef = serde_json::from_value(json!(stored)).unwrap();
+            assert_eq!(Ok(&decoded), got.as_ref(), "{typed}: decodes as stored");
+            let again = parse_user_ref(&decoded.to_string(), &ctx).unwrap();
+            assert_eq!(
+                (&again.r#ref, &again.version_hint, &again.asset_hint),
+                (&parsed.r#ref, &parsed.version_hint, &parsed.asset_hint),
+                "{typed}: the stored link means what the typed one did"
+            );
         }
     }
 

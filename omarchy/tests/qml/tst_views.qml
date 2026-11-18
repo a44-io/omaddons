@@ -143,7 +143,13 @@ TestCase {
       function clearRawErrors() { rawClears++; rawErrors = null }
       function readExplanation(key, argv) { explains = explains.concat([[key, argv]]); return true }
       function clearExplanation() { explainClears++; explanation = null }
-      function searchFor(query, target) { searches = searches.concat([[query, target]]) }
+      // As Service.searchFor: the newest search's query and client, what a running or
+      // queued search is for.
+      property var searchSelection: null
+      function searchFor(query, target) {
+        searches = searches.concat([[query, target]])
+        searchSelection = { "query": String(query || ""), "target": String(target || "") }
+      }
       // The catalog an empty Search box shows (1n2p.26): every readCatalog call, and the
       // answers by scope.
       property var catalogs: ({})
@@ -1326,6 +1332,36 @@ TestCase {
     compare(json(svc.cliRuns), json([[["omaddons", "targets", "rm", "classic"], "Forget classic…"]]))
   }
 
+  // A row's fix button runs what Enter on that row runs (RG-65): the CLI's own argv (a
+  // Forget, a Suggested removal of orphans) through the classifier, from the view's own
+  // row, never the Repeater's copy, whose argv is no array.
+  function test_a_click_on_a_rows_cli_fix_runs_what_enter_runs() {
+    var forget = ["omaddons", "targets", "rm", "classic"]
+    var orphans = ["omaddons", "remove", "-t", "retail", "LibA", "LibB"]
+    var reduced = Model.reduceStatus({ "ok": true, "schema_version": "1.1", "tool_version": "0.1.0", "command": "status",
+      "exit_code": 0, "data": { "targets": [{ "id": "classic", "issues": [
+        { "id": "fm-a", "severity": "P2", "title": "classic is no longer installed", "addon": null,
+          "remediation": { "command": forget.join(" "), "argv": forget, "destructive": true } }] },
+        { "id": "retail", "display_name": "Retail", "issues": [] }] },
+      "commands": [{ "action": "remove_orphans", "command": orphans.join(" "), "argv": orphans, "destructive": true }] })
+    svc.targets = reduced.targets
+    svc.commands = reduced.commands
+    keyClick("5")
+    compare(view.view, "issues")
+    compare(json(content().rows.map(function(r) { return [r.index, r.kind, r.fixLabel] })),
+      json([[0, "problem", "Forget classic…"], [1, "suggestion", "Remove LibA and LibB"]]))
+    findChild(row("issueRow", 0), "issueButton_fix").clicked()
+    compare(json(svc.cliRuns), json([[forget, "Forget classic…"]]))
+    findChild(row("issueRow", 1), "issueButton_fix").clicked()
+    compare(json(svc.cliRuns), json([[forget, "Forget classic…"], [orphans, "Remove LibA and LibB"]]))
+    compare(view.cursor, 1, "the click put the cursor on its row")
+    // Enter on the same rows runs the same.
+    keyClick(Qt.Key_Return)
+    keyClick("k")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.cliRuns.slice(2)), json([[orphans, "Remove LibA and LibB"], [forget, "Forget classic…"]]))
+  }
+
   // ---- the doctor's repairs (G2): Enter previews a repair through its bound template,
   // a forced one is a terminal command with the doctor's explanation, and a command that
   // needs consent or deletes what repairs keep is text.
@@ -1791,6 +1827,38 @@ TestCase {
     compare(svc.searches.length, before, "not before the pause")
     tryVerify(function() { return svc.searches.length === before + 1 })
     compare(json(svc.searches[before]), json(["damage meter", view.filter]))
+  }
+
+  // A scope changed while the search for another one runs: the shown query is searched
+  // for the new scope after the pause (the service stops the older search), never left
+  // "Searching…" with nothing running. Stepping through clients still searches once.
+  function test_a_scope_changed_while_a_search_runs_searches_the_new_scope() {
+    keyClick("3")
+    var field = findChild(content(), "searchField")
+    keyClick("s")
+    tryVerify(function() { return field.activeFocus })
+    field.text = "damage meter"
+    keyClick(Qt.Key_Return)
+    tryVerify(function() { return !field.activeFocus })
+    compare(json(svc.searches), json([["damage meter", ""]]))
+    svc.reading = ["search"]
+    keyClick("t")
+    keyClick("t")
+    compare(view.filter, "retail")
+    compare(svc.searches.length, 1, "not before the pause")
+    // The search for All answers.
+    svc.reading = []
+    svc.search = { "selection": { "query": "damage meter", "target": "" }, "skipped": [], "query": "damage meter",
+      "rows": [{ "name": "Details!", "ref": "wowi:23056", "source": "wowi", "downloads": 515870, "stars": null, "hints": {}, "compat": "" }] }
+    tryVerify(function() { return svc.searches.length === 2 })
+    compare(json(svc.searches), json([["damage meter", ""], ["damage meter", "retail"]]))
+    // While the new scope's runs, the same query on it is no new search.
+    svc.reading = ["search"]
+    wait(Model.SEARCH_DEBOUNCE_MS + 150)
+    keyClick("s")
+    tryVerify(function() { return field.activeFocus })
+    keyClick(Qt.Key_Return)
+    compare(svc.searches.length, 2)
   }
 
   // The view shows no release for a search result, so the install's preview always asks.
@@ -2388,6 +2456,25 @@ TestCase {
       { "id": "classic", "displayName": "Mists of Pandaria Classic", "missing": false })])
     tryVerify(function() { return view.topPage === null }, 1000, "the page goes back once the client is here")
     compare(view.pages.length, 0)
+  }
+
+  // A client named at length (the CLI keeps a name of 200 characters) can be renamed: the
+  // label naming it is cut to the recorded reason's bound, never refused.
+  function test_a_client_named_at_length_can_be_renamed() {
+    var long = new Array(201).join("R")
+    svc.targets = [svc.targets[0], Object.assign({}, svc.targets[1], { "displayName": long })]
+    keyClick(",")
+    var sheet = findChild(view, "settings")
+    tryVerify(function() { return findChild(sheet, "sheetKeys").activeFocus })
+    for (var i = 0; i < sheet.rows.length; i++) if (sheet.rows[i].key === "name:retail") sheet.choice = i
+    keyClick(Qt.Key_Return)
+    var field = findChild(sheet, "settingEdit")
+    tryVerify(function() { return field.activeFocus })
+    compare(field.text, long)
+    field.text = "Retail"
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[svc.runs.length - 1]), json(["config_client_name", { "target": "retail", "name": "Retail" }, "Rename " + long]))
+    compare(json(words(svc.runs[svc.runs.length - 1])), json(["config", "set", "targets.retail.name", "--", "Retail"]))
   }
 
   // omad-r0to: the GitHub section (the token's state, the gh login, forgetting it, the

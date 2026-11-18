@@ -36,7 +36,7 @@ use crate::politeness::{ABOUT_RECHECK_INTERVAL, SOURCE_RECHECK_MIN_INTERVAL};
 use crate::resolve::cache::{Freshness, ReleaseCache};
 use crate::resolve::search::Popularity;
 use crate::resolve::select::{newest, select};
-use crate::resolve::updates::{Confidence, rank_confidence};
+use crate::resolve::updates::{Confidence, rank_confidence, same_release};
 use crate::rules::Family;
 use crate::sources::about::{self, Project};
 use crate::sources::changelog::{
@@ -1031,7 +1031,9 @@ impl Judged<'_> {
     /// judgment, which read its metadata; any other is judged alone, as a stable release,
     /// since how likely it is to load does not depend on its channel.
     fn listed(&self, release: Release) -> ListedRelease {
-        let newest = self.latest.filter(|l| l.release_id == release.release_id);
+        let newest = self
+            .latest
+            .filter(|l| same_release(&l.release_id, &release.release_id));
         let alone = ReleaseSet {
             r#ref: self.r.clone(),
             releases: vec![Release {
@@ -1277,6 +1279,66 @@ mod tests {
                 argv[5].clone()
             });
             assert_eq!(got, want.map_err(str::to_owned), "{limit:?}");
+        }
+    }
+
+    /// The newest listed release keeps `latest`'s judgment whatever case either id spells
+    /// its ref in; an older one is judged alone; each keeps the listing's id.
+    #[test]
+    fn the_newest_listed_release_keeps_latest_s_judgment_in_any_spelling() {
+        let d = DiscoveredTarget {
+            target: crate::engine::testing::target(&PathBuf::from("/c/retail")),
+            default_id: "retail".into(),
+            qualifier: "test".into(),
+            source: crate::discover::DiscoverySource::Scan,
+            not_launched_since: None,
+        };
+        let id = d.target.id.clone();
+        let targets = [&d];
+        let facts = FactIndex::default();
+        let latest = Latest {
+            version: "v2".into(),
+            release_id: "gh:O/R@v2".into(),
+            channel: Channel::Stable,
+            flavors: Vec::new(),
+            targets: vec![id.clone()],
+            compat: [(id.clone(), LoadHint::Declared)].into(),
+            asset_urls: None,
+        };
+        let r: Ref = "gh:o/r".parse().unwrap();
+        let judged = Judged {
+            r: &r,
+            targets: &targets,
+            facts: &facts,
+            families: &[],
+            latest: Some(&latest),
+        };
+        let release = |tag: &str| Release {
+            release_id: format!("gh:o/r@{tag}"),
+            version: tag.into(),
+            channel: Channel::Stable,
+            published_at: None,
+            assets: Vec::new(),
+            changelog_url: None,
+            notes: None,
+            name_hint: None,
+            revision: None,
+        };
+        let alone = |tag: &str| {
+            let set = ReleaseSet {
+                r#ref: r.clone(),
+                releases: vec![release(tag)],
+            };
+            judge(&set, &d.target, &facts, &[])
+        };
+        assert_ne!(alone("v2"), LoadHint::Declared, "alone it says otherwise");
+        for (tag, want) in [("v2", LoadHint::Declared), ("v1", alone("v1"))] {
+            let listed = judged.listed(release(tag));
+            assert_eq!(
+                (listed.release_id.as_str(), listed.compat[&id]),
+                (format!("gh:o/r@{tag}").as_str(), want),
+                "{tag}"
+            );
         }
     }
 }

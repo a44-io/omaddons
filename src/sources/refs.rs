@@ -101,7 +101,7 @@ pub fn parse_user_ref(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
 
 /// `input` with a bare link's scheme in lowercase (`HTTPS://…` and `Http://…` are
 /// `https://…` and `http://…`: a URL's scheme ignores case); any other input as it is.
-fn lowercase_scheme(input: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn lowercase_scheme(input: &str) -> std::borrow::Cow<'_, str> {
     for scheme in ["https://", "http://"] {
         if let (Some(head), Some(rest)) = (input.get(..scheme.len()), input.get(scheme.len()..))
             && head != scheme

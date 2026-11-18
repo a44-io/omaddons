@@ -3,7 +3,9 @@
 //! The query string and request headers are never logged, which strips tokens, API
 //! keys and signed URL parameters in one rule. Lines are appended through an fsx
 //! untracked session; above `NET_LOG_MAX_BYTES` the file rotates to `net.log.1`, keeping
-//! one previous file.
+//! one previous file. A rotation moves only the file it measured, so of two processes
+//! rotating at once, the second appends to the fresh file: it neither fails nor moves
+//! that file over the history the first just rotated.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,7 +16,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
-use crate::fsx::{Op, RenameMode, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
+use crate::fsx::{
+    Expect, FileId, FsxError, MutateOpts, Op, Predicate, RenameMode, ScopeTable, WriteSession,
+    Writer, ensure_dir_all, mutate, mutate_with,
+};
 use crate::limits::NET_LOG_MAX_BYTES;
 use crate::state::paths::Paths;
 
@@ -112,13 +117,18 @@ impl NetLog {
         if let Some(dir) = self.inner.path.parent() {
             ensure_dir_all(&mut session, dir)?;
         }
+        let measured = FileId::of(&self.inner.path);
         let size = fs::metadata(&self.inner.path).map_or(0, |m| m.len());
         if size > self.inner.max_bytes {
-            let rotate = Op::Rename {
-                to: &self.inner.previous,
-                mode: RenameMode::Replace,
-            };
-            mutate(&mut session, &self.inner.path, rotate)?;
+            // Debug-build seam where a test lets another writer rotate first (DEC-7).
+            crate::fsx::failpoint::hit("net.log.measured").map_err(|err| {
+                Error::io(
+                    &self.inner.path,
+                    &err,
+                    Suggestion::command(["omaddons", "status"]),
+                )
+            })?;
+            self.rotate(&mut session, measured)?;
         }
         mutate(
             &mut session,
@@ -126,6 +136,34 @@ impl NetLog {
             Op::AppendFile { content: &line },
         )?;
         Ok(())
+    }
+
+    /// Moves the file `measured` to `net.log.1`, and only that file: fsx checks its
+    /// identity right before the rename. Another omaddons process, which this one's lock
+    /// does not hold back, may have rotated it since it was measured: then it is gone, or
+    /// a fresh file stands in its place, and that rotation is done. Any other refusal or
+    /// failure stands.
+    fn rotate(&self, session: &mut WriteSession<'_>, measured: Option<FileId>) -> Result<()> {
+        let rotate = Op::Rename {
+            to: &self.inner.previous,
+            mode: RenameMode::Replace,
+        };
+        let opts = MutateOpts {
+            expect: Some(Expect::Present(Predicate {
+                identity: measured,
+                ..Predicate::default()
+            })),
+            ..MutateOpts::default()
+        };
+        match mutate_with(session, &self.inner.path, rotate, opts) {
+            Ok(_) => Ok(()),
+            Err(FsxError::Precondition(_))
+                if !FileId::same(FileId::of(&self.inner.path), measured) =>
+            {
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Logs a git subprocess as `via: "git"`, `method: "GIT"`.
@@ -305,6 +343,60 @@ mod tests {
             files.iter().all(|f| f == "net.log" || f == "net.log.1"),
             "{files:?}"
         );
+    }
+
+    /// Another writer (another process: its own lock) rotates the file between this
+    /// writer's measure and its rename. Paused at that point, this writer then finds the
+    /// file it measured gone, or a fresh one in its place: either way that rotation is
+    /// done, so it appends, never fails, and never moves the fresh file over the history.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn two_writers_rotating_at_once_never_fail_or_lose_history() {
+        let lines = |path: &Path| fs::read_to_string(path).unwrap_or_default().lines().count();
+        for fresh_in_place in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = paths(dir.path());
+            let this = NetLog::with_max_bytes(&p, 300).unwrap();
+            let other = NetLog::with_max_bytes(&p, 300).unwrap();
+            for i in 0..2 {
+                this.append(&entry(&format!("/{i}"))).unwrap();
+            }
+            assert!(fs::metadata(p.net_log()).unwrap().len() > 300);
+            let markers = tempfile::tempdir().unwrap();
+            let at = markers.path().to_path_buf();
+            let paused = {
+                let this = this.clone();
+                std::thread::spawn(move || {
+                    crate::fsx::with_spec_in(&at, "net.log.measured=pause@1", || {
+                        this.append(&entry("/paused"))
+                    })
+                })
+            };
+            let reached = markers.path().join("net.log.measured.reached");
+            while !reached.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            if fresh_in_place {
+                // The other rotates and appends its own line to a fresh file.
+                other.append(&entry("/other")).unwrap();
+            } else {
+                // The other has rotated and not appended yet.
+                fs::rename(p.net_log(), p.net_log_previous()).unwrap();
+            }
+            fs::write(markers.path().join("net.log.measured.resume"), "").unwrap();
+            let appended = paused.join().unwrap();
+            assert!(appended.is_ok(), "{fresh_in_place}: {appended:?}");
+            assert_eq!(
+                lines(&p.net_log_previous()),
+                2,
+                "{fresh_in_place}: the history rotated stays"
+            );
+            assert_eq!(
+                lines(&p.net_log()),
+                if fresh_in_place { 2 } else { 1 },
+                "{fresh_in_place}"
+            );
+        }
     }
 
     #[test]

@@ -298,10 +298,17 @@ impl BackupRef {
     pub fn wtf(&self) -> PathBuf {
         self.dir.join("WTF")
     }
+
+    /// The client whose backups it is listed among: its directory is
+    /// `<client>/Interface/.omaddons/backups/<id>`.
+    pub fn client(&self) -> Option<ClientPaths> {
+        self.dir.ancestors().nth(4).map(ClientPaths::new)
+    }
 }
 
 /// Whether `meta` counts as a checkpoint (M3-D31): captured here (not imported or
-/// recovered), whole, and observed stable. Scheduling and the stale hint read its
+/// recovered), whole, observed stable, and never found damaged, since a damaged backup
+/// no longer holds what it captured. Scheduling and the stale hint read its
 /// `captured_at`, never a directory's age.
 pub fn qualifying(meta: &BackupMeta) -> bool {
     matches!(
@@ -309,6 +316,7 @@ pub fn qualifying(meta: &BackupMeta) -> bool {
         BackupKind::Manual | BackupKind::Auto | BackupKind::BeforeRestore
     ) && !meta.partial
         && meta.consistency == Consistency::Stable
+        && meta.integrity != Integrity::Damaged
         && meta.source.is_none()
 }
 
@@ -741,6 +749,15 @@ mod tests {
         }));
         assert!(!qualifying(&BackupMeta {
             consistency: Consistency::BestEffort,
+            ..base.clone()
+        }));
+        // Found damaged, it no longer holds what it captured.
+        assert!(!qualifying(&BackupMeta {
+            integrity: Integrity::Damaged,
+            ..base.clone()
+        }));
+        assert!(qualifying(&BackupMeta {
+            integrity: Integrity::Verified,
             ..base.clone()
         }));
     }

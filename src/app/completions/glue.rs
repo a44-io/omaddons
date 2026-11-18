@@ -11,10 +11,13 @@
 //! counted at the path reached. `-t` (or `--from`, for `copy`'s addons) names the client
 //! whose addons or backups it offers.
 //!
-//! bash: a function that falls back to clap's `_omaddons`, registered after it. zsh:
-//! clap's `_omaddons` renamed `_omaddons_static`, and a new `_omaddons` that falls back
-//! to it, so the file's `#compdef` and its last lines work as before. fish: rules whose
-//! condition is the same walk. elvish and PowerShell stay static.
+//! bash: a function that falls back to clap's `_omaddons`, registered after it. bash
+//! inserts what it is offered as it is, so a value holding a character the shell reads
+//! (a space, a parenthesis) is quoted as one shell word; ids and a failure-mode list
+//! (`a,b`) stay as they are. zsh: clap's `_omaddons` renamed `_omaddons_static`, and a
+//! new `_omaddons` that falls back to it, so the file's `#compdef` and its last lines work
+//! as before. fish: rules whose condition is the same walk. elvish and PowerShell stay
+//! static.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -305,7 +308,7 @@ fn sh_walk_body(tree: &Tree, out: &mut String) {
                         {from}) from=${{word#*=}} ;;
                     esac
                     continue ;;
-                -t?*) target=${{word#-t}}; continue ;;
+                -t?*) target=${{word#-t}}; target=${{target#=}}; continue ;;
                 -*)
                     case $word in
                         {}) value_of=$word ;;
@@ -433,8 +436,11 @@ fn bash(tree: &Tree) -> String {
         "    if [[ -n $kind && $cur != [/.~]* ]]; then
         client=$target
         [[ $cmdpath == {FROM_PATH} ]] && client=$from
-        mapfile -t COMPREPLY < <(omaddons {WORD} \"$kind\" ${{client:+\"--target=$client\"}} \"--prefix=$cur\" 2>/dev/null)
+        mapfile -t COMPREPLY < <(omaddons {WORD} \"$kind\" ${{client:+\"--target=$client\"}} \"--prefix=${{cur//\\\\/}}\" 2>/dev/null)
         if (( ${{#COMPREPLY[@]}} )); then
+            for i in \"${{!COMPREPLY[@]}}\"; do
+                [[ ${{COMPREPLY[i]}} == *[![:alnum:]_.,:@%+=/-]* ]] && printf -v 'COMPREPLY[i]' '%q' \"${{COMPREPLY[i]}}\"
+            done
             [[ -n $eq ]] && COMPREPLY=(\"${{COMPREPLY[@]/#/$eq}}\")
             return 0
         fi
@@ -522,7 +528,7 @@ fn fish(tree: &Tree) -> String {
                 end
                 continue
             else if string match -qr -- '^-t.' $word
-                set target (string sub -s 3 -- $word)
+                set target (string replace -r -- '^=' '' (string sub -s 3 -- $word))
                 continue
             else if string match -q -- '-*' $word
                 if contains -- $word {}

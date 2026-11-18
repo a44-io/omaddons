@@ -1782,7 +1782,7 @@ function __fish_omaddons_slot --description 'What omaddons completes at the curs
                 end
                 continue
             else if string match -qr -- '^-t.' $word
-                set target (string sub -s 3 -- $word)
+                set target (string replace -r -- '^=' '' (string sub -s 3 -- $word))
                 continue
             else if string match -q -- '-*' $word
                 if contains -- $word --actor --addon --before --budget --by --channel --dir --file --flavor --format --from --if-match --keep --last-by --limit --name --older-than --only --progress --reason --ref --release --revision --run --saved-variables --section --severity --since --skip --source --target --to --tx --version -t

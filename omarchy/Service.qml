@@ -229,7 +229,7 @@ Item {
   // before an open asks for another (Model.FULL_SCAN_MAX_AGE_MS).
   property double lastFullScanAt: 0
   property int fullScanMaxAgeMs: Model.FULL_SCAN_MAX_AGE_MS
-  // An open waits for its cached status, then asks for the rest (afterOpen).
+  // An open waits for a status to answer, then asks for the rest (afterOpen).
   property bool openFollowUp: false
   // The addresses of the windows that may be WoW's, from their `openwindow`: their
   // `closewindow` names only the address (1n2p.38). The newest WINDOW_MEMORY.
@@ -331,19 +331,19 @@ Item {
     if (!any) resultHovered = false
     armResultHold()
     // The open (1n2p.38): the cached status first, in milliseconds; the shown view asks
-    // its own read next (PanelView); once the status answers, quietly, what the frame
-    // needs that was never read and a full scan when one is due (afterOpen). A view
-    // never visited reads nothing.
+    // its own read next (PanelView); once a status answers (this one, or a refresh's that
+    // took its place), quietly, what the frame needs that was never read and a full scan
+    // when one is due (afterOpen). A view never visited reads nothing.
     if (opened) {
       openFollowUp = true
       request({ "resource": "status", "template": "status", "label": "Open panel" })
     }
   }
 
-  // After an open's cached status: Lua errors (the first-run card asks whether a client
-  // records them) and the list (Search and addon pages mark what is installed) when
-  // never read, then a full scan when Model.fullScanDue says so, all in the background,
-  // behind the shown view's read.
+  // After the first status an open sees: Lua errors (the first-run card asks whether a
+  // client records them) and the list (Search and addon pages mark what is installed)
+  // when never read, then a full scan when Model.fullScanDue says so, all in the
+  // background, behind the shown view's read.
   function afterOpen(commandsNow) {
     openFollowUp = false
     // Never in place of the shown view's own read of the same data (one per key).
@@ -601,10 +601,11 @@ Item {
   }
 
   // A view's Try again (Model.viewState's actions): its data read again now, whatever
-  // its age.
+  // its age. Issues' data is `status`: the cached one, asked again.
   function readAgain(view) {
     var resource = Model.VIEW_RESOURCES[String(view || "")]
     if (!resource || resource === "search") return false
+    if (resource === "status") return refresh()
     var next = {}
     for (var key in staleReads) next[key] = staleReads[key]
     next[resource] = true
@@ -1386,7 +1387,9 @@ Item {
       refreshBar()
       if (outcome === "ok" && r.template === "status_full") lastFullScanAt = Date.now()
       if (outcome === "ok") statusApplied()
-      if (openFollowUp && r.label === "Open panel") afterOpen(model.commands)
+      // The first status that answers after an open, whichever asked it: a refresh may
+      // have taken the open's place in the queue, or answered while it waited.
+      if (openFollowUp) afterOpen(model.commands)
       return
     }
     // malformed, oversized, timeout, cancelled or stuck: no answer to show. The card says

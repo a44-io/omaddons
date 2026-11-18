@@ -85,15 +85,94 @@ pub fn report(
     check(target, record, index.as_ref(), mode)
 }
 
-/// `omaddons install <addon> -t <id> --reinstall`: puts back what drifted.
+/// `omaddons install <addon> -t <id> --reinstall`: puts back what drifted. An addon named
+/// like a flag (`-Foo`) comes last, after `--`.
 pub fn reinstall_hint(addon: &str, target: &str) -> CommandHint {
     CommandHint::new(
         Action::Reinstall,
-        ["omaddons", "install", addon, "-t", target, "--reinstall"],
+        crate::cli::with_operands(
+            &["omaddons", "install"],
+            &[addon],
+            &["-t", target, "--reinstall"],
+        ),
     )
 }
 
 /// Whether an addon needs the repair: its files changed or a folder is gone.
 pub const fn needs_reinstall(state: DriftState) -> bool {
     matches!(state, DriftState::Modified | DriftState::Missing)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+    use crate::app::issues::Remediation;
+    use crate::cli::{Cli, Command};
+
+    /// The repair names its addon as the parser reads it, a name like a flag after `--`,
+    /// which is then never a forced repair; an ordinary name keeps its usual place.
+    #[test]
+    fn the_reinstall_hint_parses_as_a_reinstall_of_its_addon() {
+        for (addon, argv) in [
+            (
+                "Details",
+                &[
+                    "omaddons",
+                    "install",
+                    "Details",
+                    "-t",
+                    "retail",
+                    "--reinstall",
+                ][..],
+            ),
+            (
+                "--force",
+                &[
+                    "omaddons",
+                    "install",
+                    "-t",
+                    "retail",
+                    "--reinstall",
+                    "--",
+                    "--force",
+                ],
+            ),
+            (
+                "-Foo",
+                &[
+                    "omaddons",
+                    "install",
+                    "-t",
+                    "retail",
+                    "--reinstall",
+                    "--",
+                    "-Foo",
+                ],
+            ),
+        ] {
+            let hint = reinstall_hint(addon, "retail");
+            assert_eq!(hint.argv(), argv, "{addon}");
+            let parsed = Cli::try_parse_from(hint.argv());
+            let Ok(Cli {
+                command: Some(Command::Install(args)),
+                ..
+            }) = parsed
+            else {
+                panic!("{addon}: {parsed:?}"); // ubs:ignore — the test's own failure
+            };
+            assert_eq!(
+                (args.refs, args.reinstall, args.force),
+                (vec![addon.to_owned()], true, false),
+                "{addon}"
+            );
+            let remediation = Remediation {
+                command: Some(hint.argv().join(" ")),
+                argv: Some(hint.argv().to_vec()),
+                destructive: false,
+            };
+            assert!(!remediation.forced(), "{addon}");
+        }
+    }
 }

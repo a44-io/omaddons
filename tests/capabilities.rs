@@ -388,6 +388,27 @@ fn a_broken_config_still_answers() {
     );
 }
 
+/// A limit that counts characters is published in `chars`.
+#[test]
+fn character_limits_are_published_in_chars() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    let (data, _) = data_with(&log, &env, &[]);
+    for name in [
+        "SEARCH_SUMMARY_MAX_CHARS",
+        "CHANGELOG_MAX_CHARS",
+        "SOURCE_TEXT_MAX_CHARS",
+        "TOC_TEXT_MAX_CHARS",
+        "REASON_MAX_CHARS",
+    ] {
+        log.assert_eq(
+            name,
+            &entry(&data, "limits", "name", name)["unit"],
+            &json!("chars"),
+        );
+    }
+}
+
 #[test]
 fn effective_values_carry_their_source() {
     let log = tlog!();

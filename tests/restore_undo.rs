@@ -98,6 +98,62 @@ fn an_older_undo_that_would_restore_settings_waits_for_a_later_restore() {
     assert_eq!(fs::read_to_string(&sv).unwrap(), "-- played");
 }
 
+/// Undoing a partial restore puts only SavedVariables back, so `--saved-variables keep`
+/// would leave it nothing to undo, and undo refuses it as a usage error: no refusal of
+/// that undo offers it. A later whole restore is named to undo first, alone; and a copy
+/// in the partial restore's snapshot that no longer matches its manifest leaves the
+/// settings as they are.
+#[test]
+fn the_refusals_of_undoing_a_partial_restore_never_offer_keeping_settings() {
+    let home = Home::new(&["wow"]);
+    let sv = settings(&home);
+    fs::create_dir_all(sv.parent().unwrap()).unwrap();
+    install(&home);
+    fs::write(&sv, "-- backed up").unwrap();
+    let id = made(&run(&home, &["backup", "create", "-t", "retail"]).expect(0));
+    fs::write(&sv, "-- played").unwrap();
+    let tx = |envelope: Value| envelope["data"]["tx"].as_str().unwrap().to_owned();
+    let partial = tx(run(
+        &home,
+        &["backup", "restore", &id, "-t", "retail", "--addon", "Foo"],
+    )
+    .expect(0));
+    assert_eq!(fs::read_to_string(&sv).unwrap(), "-- backed up");
+    fs::write(&sv, "-- played again").unwrap();
+    let whole = tx(run(&home, &["backup", "restore", &id, "-t", "retail"]).expect(0));
+
+    let r = run(&home, &["undo", &partial]);
+    let envelope = r.expect(4);
+    let error = &envelope["error"];
+    assert_eq!(error["code"], "undo_conflict", "{}", r.context());
+    assert_eq!(error["fix_argv"], json!(["omaddons", "undo", whole]));
+    assert_eq!(error["alternatives"], json!([]), "{}", r.context());
+    let r = run(&home, &["undo", &partial, "--saved-variables", "keep"]);
+    assert_eq!(r.expect(2)["error"]["code"], "usage", "{}", r.context());
+
+    // The whole restore undone, the partial restore's snapshot copy is damaged.
+    run(&home, &["undo", &whole]).expect(0);
+    let snapshots = home
+        .client("_retail_")
+        .join("Interface/.omaddons/snapshots");
+    let snapshot = [format!("{partial}.wtf"), partial.clone()]
+        .iter()
+        .map(|name| snapshots.join(name))
+        .find(|dir| dir.is_dir())
+        .unwrap();
+    let copy = snapshot.join(ACCOUNT).join("Foo.lua");
+    assert_eq!(fs::read_to_string(&copy).unwrap(), "-- played");
+    fs::write(&copy, "-- damaged").unwrap();
+    let r = run(&home, &["undo", &partial]);
+    let envelope = r.expect(1);
+    let error = &envelope["error"];
+    assert_eq!(error["code"], "state_corrupt", "{}", r.context());
+    assert_eq!(error["details"]["reason"], "snapshot_mismatch");
+    assert_eq!(error["fix_argv"], Value::Null, "{}", r.context());
+    assert_eq!(error["alternatives"], json!([]));
+    assert_eq!(fs::read_to_string(&sv).unwrap(), "-- played again");
+}
+
 #[test]
 fn the_undo_of_a_restore_counts_the_play_since_and_its_undo_restores_again() {
     let home = Home::new(&["wow"]);

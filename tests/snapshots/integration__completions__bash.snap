@@ -3447,7 +3447,7 @@ _omaddons_dynamic() {
                         --from) from=${word#*=} ;;
                     esac
                     continue ;;
-                -t?*) target=${word#-t}; continue ;;
+                -t?*) target=${word#-t}; target=${target#=}; continue ;;
                 -*)
                     case $word in
                         --actor|--addon|--before|--budget|--by|--channel|--dir|--file|--flavor|--format|--from|--if-match|--keep|--last-by|--limit|--name|--older-than|--only|--progress|--reason|--ref|--release|--revision|--run|--saved-variables|--section|--severity|--since|--skip|--source|--target|--to|--tx|--version|-t) value_of=$word ;;
@@ -3579,8 +3579,11 @@ _omaddons_dynamic() {
     if [[ -n $kind && $cur != [/.~]* ]]; then
         client=$target
         [[ $cmdpath == copy ]] && client=$from
-        mapfile -t COMPREPLY < <(omaddons __complete "$kind" ${client:+"--target=$client"} "--prefix=$cur" 2>/dev/null)
+        mapfile -t COMPREPLY < <(omaddons __complete "$kind" ${client:+"--target=$client"} "--prefix=${cur//\\/}" 2>/dev/null)
         if (( ${#COMPREPLY[@]} )); then
+            for i in "${!COMPREPLY[@]}"; do
+                [[ ${COMPREPLY[i]} == *[![:alnum:]_.,:@%+=/-]* ]] && printf -v 'COMPREPLY[i]' '%q' "${COMPREPLY[i]}"
+            done
             [[ -n $eq ]] && COMPREPLY=("${COMPREPLY[@]/#/$eq}")
             return 0
         fi

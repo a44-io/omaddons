@@ -138,14 +138,15 @@ impl Diagnosis {
 /// What a run looked at: the checks that ran to their end and the clients they covered.
 /// `--since` calls an earlier instance resolved only when the run looked for it and did
 /// not find it; one outside its tiers, `--only`, `--skip`, `--severity` or `-t`, or whose
-/// check was skipped, cut short or crashed, was not looked for, so its absence says
-/// nothing.
+/// check was skipped, cut short, crashed or never reached its client (gone), was not
+/// looked for, so its absence says nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Looked {
     /// The failure modes whose check ran to its end.
     ran: BTreeSet<&'static str>,
     scope: Scope,
-    /// The checks that ran but were skipped for one client, by its key.
+    /// The checks that ran but were skipped for one client, or never reached it, by its
+    /// key.
     skipped_for: BTreeSet<(&'static str, TargetKey)>,
     /// `--severity`: findings past it are left out of the report.
     max_severity: Option<Severity>,
@@ -153,7 +154,7 @@ pub struct Looked {
 
 impl Looked {
     /// A run whose checks `ran` to their end over `scope`, `skipped_for` the clients a
-    /// check was skipped for.
+    /// check was skipped for or never reached.
     pub(crate) fn new(
         ran: impl IntoIterator<Item = &'static str>,
         scope: Scope,
@@ -552,9 +553,19 @@ pub fn detect(
     skipped.extend(target_skips(view, &part));
     // A check skipped for an input no failure describes (a cache or a client's AddOns
     // that cannot be listed) is never reported clean: it is incomplete, naming what it
-    // could not read (omad-4h0d.12). A layer whose failure is a finding of its own (a
-    // config, a state file) stands for its skips, as before.
-    let explained: BTreeSet<_> = view.failures().iter().map(|f| f.layer).collect();
+    // could not read (omad-4h0d.12). A layer whose failure is a finding of the report (a
+    // config, a state file) stands for its skips, as before; one the report leaves out
+    // (named by `--skip`, or about a client outside `-t`) explains nothing.
+    let explained: BTreeSet<_> = view
+        .failures()
+        .iter()
+        .filter(|f| {
+            !selection.skips(f.fm)
+                && f.target
+                    .is_none_or(|key| part.scope.includes_client(Some(key), ""))
+        })
+        .map(|f| f.layer)
+        .collect();
     for skip in &skipped {
         if skip.reason.layer().is_some_and(|l| !explained.contains(&l)) {
             incomplete += 1;
@@ -567,12 +578,27 @@ pub fn detect(
         .filter(|f| part.scope.includes(f.target.as_ref()))
         .collect();
     with_fixer_remediations(registry, selection, &mut findings);
+    // A registered client whose directory is gone, as discovery found it (never loaded
+    // here for this).
+    let vanished: Vec<TargetKey> = if view.loaded_layers().contains(&Layer::Discovery) {
+        view.world()
+            .map(|world| world.resolved.missing.iter().map(|e| e.key).collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let passed_over = part
+        .run
+        .iter()
+        .filter(|row| passes_over_vanished(row))
+        .flat_map(|row| vanished.iter().map(move |key| (row.id, *key)));
     let looked = Looked::new(
         ran,
         part.scope.clone(),
         skipped
             .iter()
-            .filter_map(|s| Some((s.id, s.target.as_ref()?.key?))),
+            .filter_map(|s| Some((s.id, s.target.as_ref()?.key?)))
+            .chain(passed_over),
     );
     Ok(Diagnosis {
         findings,
@@ -584,6 +610,15 @@ pub fn detect(
         duration_ms: u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX),
         looked,
     })
+}
+
+/// Whether `row`'s check never looks at a registered client whose directory is gone:
+/// those that walk the discovered clients, and `ownership-transferred`, which leaves such
+/// a client to `target-vanished`. `target-vanished` looks at exactly those clients, and a
+/// check that reads only records reads theirs too.
+fn passes_over_vanished(row: &FailureMode) -> bool {
+    row.id == ids::OWNERSHIP_TRANSFERRED
+        || (row.requires.contains(&Layer::Discovery) && row.id != ids::TARGET_VANISHED)
 }
 
 /// The fixer of `finding`'s failure mode, when it has one.
@@ -1248,6 +1283,291 @@ mod tests {
             [ids::CONFIG_PARSE_ERROR],
             "the layer's own finding"
         );
+    }
+
+    /// The four rows that read a client's inventory.
+    const INVENTORY_ROWS: [&str; 4] = [
+        ids::CASE_COLLISION,
+        ids::OUT_OF_DATE_TOC,
+        ids::OWNERSHIP_CONFLICT,
+        ids::WRONG_FLAVOR,
+    ];
+
+    /// `(detector, client id)` of each `check-incomplete` saying its input could not be
+    /// read.
+    fn unreadable_checks(diagnosis: &Diagnosis) -> Vec<(Option<&'static str>, Option<String>)> {
+        diagnosis
+            .findings
+            .iter()
+            .filter(|f| f.id == ids::CHECK_INCOMPLETE && f.evidence.reason == Some("unreadable"))
+            .map(|f| (f.evidence.detector, f.target.as_ref().map(|t| t.id.clone())))
+            .collect()
+    }
+
+    /// Retail and retail@wine share one AddOns directory, and retail@wine's record does
+    /// not decode: retail's inventory cannot be classified, so the inventory rows are
+    /// skipped for it. With `-t retail` the record's failure is out of scope and not
+    /// shown, so each skip is a `check-incomplete` of its own and the run is never
+    /// healthy; without `-t` the failure is shown and stands for its skips.
+    #[test]
+    fn a_skip_explained_only_by_an_out_of_scope_failure_is_incomplete() {
+        use crate::doctor::view::tests::{
+            K, K2, client, key, records_of, registry_bytes, world_of,
+        };
+        use crate::doctor::view::{LayerFailure, LayerState, Preloaded};
+
+        let h = home();
+        // Named as findings name them: by the registry.
+        fs::write(
+            h.paths.registry_file(),
+            registry_bytes(&[(K, "retail"), (K2, "retail@wine")]),
+        )
+        .unwrap();
+        let first = h.paths.home().join("Games/wow/_retail_");
+        let addons = first.join("Interface/AddOns");
+        fs::create_dir_all(addons.join("Foo")).unwrap();
+        fs::write(addons.join("Foo/Foo.toc"), b"## Interface: 120105\n").unwrap();
+        let second = h.paths.home().join("Games/wow1/_retail_");
+        fs::create_dir_all(second.join("Interface")).unwrap();
+        std::os::unix::fs::symlink(&addons, second.join("Interface/AddOns")).unwrap();
+        let view = || {
+            DoctorView::preloaded(
+                h.paths.clone(),
+                Preloaded {
+                    records: Some(LayerState::Available(records_of(vec![
+                        (K, true),
+                        (K2, false),
+                    ]))),
+                    world: Some(LayerState::Available(world_of(
+                        &h.paths,
+                        vec![
+                            client("retail", &first, Some(K)),
+                            client("retail@wine", &second, Some(K2)),
+                        ],
+                    ))),
+                    failures: vec![LayerFailure {
+                        layer: Layer::Records,
+                        fm: ids::STATE_CORRUPT,
+                        target: Some(key(K2)),
+                        path: h.paths.target_record(&key(K2)),
+                        evidence: Evidence::default(),
+                        title: "retail@wine's record does not decode".to_owned(),
+                    }],
+                    ..Preloaded::default()
+                },
+            )
+        };
+        let selection = |target: Option<&str>| Selection {
+            target: target.map(str::to_owned),
+            ..Selection::only(&INVENTORY_ROWS)
+        };
+        let run = |target: Option<&str>| {
+            detect(
+                registry::failure_modes(),
+                &view(),
+                &selection(target),
+                &[Tier::Default],
+                Budgets::TierDefaults,
+            )
+            .unwrap()
+        };
+
+        let scoped = run(Some("retail"));
+        let skipped: Vec<(&str, Option<String>)> = scoped
+            .skipped
+            .iter()
+            .map(|s| (s.id, s.target.as_ref().map(|t| t.id.clone())))
+            .collect();
+        let on_retail: Vec<(&str, Option<String>)> = INVENTORY_ROWS
+            .iter()
+            .map(|id| (*id, Some("retail".to_owned())))
+            .collect();
+        assert_eq!(skipped, on_retail, "{scoped:#?}");
+        assert_eq!(
+            unreadable_checks(&scoped),
+            INVENTORY_ROWS
+                .iter()
+                .map(|id| (Some(*id), Some("retail".to_owned())))
+                .collect::<Vec<_>>(),
+            "one check-incomplete per skipped row, on retail: {scoped:#?}"
+        );
+        assert_eq!(
+            crate::doctor::report::RunState::of(&scoped.findings),
+            crate::doctor::report::RunState::DoneFindings
+        );
+
+        let whole = run(None);
+        assert!(!whole.skipped.is_empty(), "{whole:#?}");
+        assert_eq!(
+            unreadable_checks(&whole),
+            [],
+            "the shown failure stands for its skips: {whole:#?}"
+        );
+        assert!(
+            whole.findings.iter().any(|f| f.id == ids::STATE_CORRUPT),
+            "{whole:#?}"
+        );
+    }
+
+    /// A registry that does not decode skips every check that needs discovery. With its
+    /// failure named by `--skip`, nothing in the report explains those skips, so each is
+    /// a `check-incomplete`; shown, the failure stands for them.
+    #[test]
+    fn a_skip_explained_only_by_a_skipped_failure_is_incomplete() {
+        let h = home();
+        fs::write(h.paths.registry_file(), b"{").unwrap();
+        let tiers = [Tier::Cached, Tier::Quick, Tier::Default];
+        let run = |skip: Vec<super::super::selection::Pick>| {
+            detect(
+                registry::failure_modes(),
+                &view_of(&h),
+                &Selection {
+                    skip,
+                    ..Selection::all()
+                },
+                &tiers,
+                Budgets::TierDefaults,
+            )
+            .unwrap()
+        };
+        let by_registry = |diagnosis: &Diagnosis| -> Vec<&'static str> {
+            diagnosis
+                .skipped
+                .iter()
+                .filter(|s| s.reason == super::super::selection::SkipReason::RegistryUnavailable)
+                .map(|s| s.id)
+                .collect()
+        };
+
+        let hidden = run(vec![super::super::selection::Pick::Mode(
+            ids::STATE_CORRUPT,
+        )]);
+        let skipped = by_registry(&hidden);
+        assert!(!skipped.is_empty(), "{hidden:#?}");
+        assert!(
+            !hidden.findings.iter().any(|f| f.id == ids::STATE_CORRUPT),
+            "--skip hides the failure: {hidden:#?}"
+        );
+        assert_eq!(
+            unreadable_checks(&hidden),
+            skipped
+                .iter()
+                .map(|id| (Some(*id), None))
+                .collect::<Vec<_>>(),
+            "{hidden:#?}"
+        );
+        assert_eq!(
+            crate::doctor::report::RunState::of(&hidden.findings),
+            crate::doctor::report::RunState::DoneFindings
+        );
+
+        let shown = run(Vec::new());
+        assert_eq!(by_registry(&shown), skipped, "{shown:#?}");
+        assert!(
+            shown.findings.iter().any(|f| f.id == ids::STATE_CORRUPT),
+            "{shown:#?}"
+        );
+        assert_eq!(unreadable_checks(&shown), [], "{shown:#?}");
+    }
+
+    /// Retail is discovered and `gone` is registered with its directory gone. The checks
+    /// that walk the discovered clients, and `ownership-transferred`, which leaves a gone
+    /// client to `target-vanished`, never looked at `gone`: `--since` calls none of their
+    /// instances there resolved. `target-vanished` looked at it, and so did the checks
+    /// that read only its record; retail was looked at as before.
+    #[test]
+    fn a_vanished_client_was_not_looked_at_by_the_checks_that_never_reach_it() {
+        use crate::doctor::view::tests::{K, K2, client, key, world_of};
+        use crate::doctor::view::{LayerState, Preloaded};
+        use crate::state::registry::{Origin, RegistryEntry};
+
+        let h = home();
+        let mut world = world_of(
+            &h.paths,
+            vec![client(
+                "retail",
+                &h.paths.home().join("Games/wow/_retail_"),
+                Some(K),
+            )],
+        );
+        world.resolved.missing = vec![RegistryEntry {
+            key: key(K2),
+            id: "gone".to_owned(),
+            install_root: h.paths.home().join("gone"),
+            client_dir: h.paths.home().join("gone/_retail_"),
+            flavor_dir: Some("_retail_".to_owned()),
+            product: Some("wow".to_owned()),
+            qualifier: "test".to_owned(),
+            origin: Origin::Discovered,
+            registered_at: "2026-10-14T12:00:00Z".parse().unwrap(),
+        }];
+        let view = DoctorView::preloaded(
+            h.paths.clone(),
+            Preloaded {
+                world: Some(LayerState::Available(world)),
+                ..Preloaded::default()
+            },
+        );
+        let rows = [
+            ids::RECORD_FOLDER_MISSING,
+            ids::MANAGED_FILES_MODIFIED,
+            ids::SNAPSHOTS_PAST_RETENTION,
+            ids::OWNERSHIP_TRANSFERRED,
+            ids::TARGET_VANISHED,
+            ids::STATE_VERSION_NEWER,
+        ];
+        let diagnosis = detect(
+            registry::failure_modes(),
+            &view,
+            &Selection::only(&rows),
+            &[Tier::Cached, Tier::Quick, Tier::Default],
+            Budgets::TierDefaults,
+        )
+        .unwrap();
+        let cases = [
+            (
+                "a walk of the discovered clients, on the gone client",
+                format!("{}@{K2}:addon=foo", ids::MANAGED_FILES_MODIFIED),
+                false,
+            ),
+            (
+                "a missing folder, on the gone client",
+                format!("{}@{K2}:addon=foo", ids::RECORD_FOLDER_MISSING),
+                false,
+            ),
+            (
+                "retention, on the gone client",
+                format!("{}@{K2}", ids::SNAPSHOTS_PAST_RETENTION),
+                false,
+            ),
+            (
+                "ownership-transferred leaves the gone client to target-vanished",
+                format!("{}@{K2}", ids::OWNERSHIP_TRANSFERRED),
+                false,
+            ),
+            (
+                "target-vanished looks at exactly the gone clients",
+                format!("{}@{K2}", ids::TARGET_VANISHED),
+                true,
+            ),
+            (
+                "a check of records reads the gone client's",
+                format!("{}@{K2}", ids::STATE_VERSION_NEWER),
+                true,
+            ),
+            (
+                "a walk of the discovered clients, on a discovered client",
+                format!("{}@{K}:addon=foo", ids::MANAGED_FILES_MODIFIED),
+                true,
+            ),
+        ];
+        for (case, instance, covered) in cases {
+            assert_eq!(
+                diagnosis.looked.covers(&instance),
+                covered,
+                "case {case}: {instance}: {diagnosis:#?}"
+            );
+        }
     }
 
     /// Finishes a run of `ulid` with a small record; returns its directory.

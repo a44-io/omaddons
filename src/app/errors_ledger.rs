@@ -1672,8 +1672,12 @@ fn judge_cluster(
         attribution: member.attribution.confidence,
         stack_folders: stack_folders(&member.entry, legacy, &client.installed.folders),
     };
+    // The folders moved since the error had occurred (the onset's `by`): such a folder no
+    // longer holds the TOC that was loaded when it appeared, even when the read that found
+    // the error came after the move.
+    let (bounds, _) = onset(&cluster.appearance);
     let since = match client.target.key {
-        Some(key) => changed_since(&read.entries, key, cluster.appearance.found.observed_at),
+        Some(key) => changed_since(&read.entries, key, bounds.by),
         None => BTreeSet::new(),
     };
     let depends = |a: &str, b: &str| client.installed.depends(a, b);

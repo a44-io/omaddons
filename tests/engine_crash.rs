@@ -1155,6 +1155,94 @@ fn a_rollback_that_died_after_undoing_an_exchange_is_finished() {
     );
 }
 
+/// A new install, a first install and an update, each crashed after its first rename,
+/// whose recovering command is killed, or fails, at its Nth rename for every N it
+/// reaches: the rollback's own, then the moves of its prune into trash, then the
+/// command's own work. Whatever it left, the command after it commits, every folder is
+/// the old one and no journal is left. One N falls between the journal's move into
+/// trash and the stage dir's: the stage is then an orphan, which the sweep takes once
+/// it is old.
+#[test]
+fn a_recovery_killed_while_it_prunes_a_rollback_is_finished_by_the_next_command() {
+    let log = tlog!();
+    for (op, action) in [Op::Install, Op::FirstInstall, Op::Update]
+        .into_iter()
+        .flat_map(|op| [(op, "abort"), (op, "error")])
+    {
+        let old = {
+            let mut s = op.scene();
+            op.prepare(&mut s);
+            support::Foo::of(&s)
+        };
+        let mut killed = Vec::new();
+        let mut finished = false;
+        for n in 1..=40 {
+            log.step(&format!(
+                "{op:?} crashed after its first rename, its recovery's rename {n} an {action}"
+            ));
+            let mut s = op.scene();
+            let args = op.prepare(&mut s);
+            let crashed = s.run(&args, "engine.swap.before_rename=abort@2");
+            assert_eq!(crashed.code, -1, "{op:?}: {}", crashed.context());
+            let journals = s.journals();
+            assert_eq!(journals.len(), 1, "{op:?}");
+            let journal = journals[0].clone();
+            let tx = journal.file_stem().unwrap().to_str().unwrap().to_owned();
+            let stage = s
+                .home
+                .client("_retail_")
+                .join("Interface/.omaddons/stage")
+                .join(&tx);
+            assert!(stage.is_dir(), "{op:?}: the crash kept its stage");
+
+            let bar = s.install_args("gh:o/bar", "bar");
+            let recovering = s.run(&bar, &format!("fsx.rename_with.before={action}@{n}"));
+            if recovering.code == 0 {
+                finished = true;
+                break;
+            }
+            let orphaned = !journal.exists() && stage.is_dir();
+            killed.push((n, journal.exists(), stage.is_dir()));
+            let context = format!(
+                "{op:?}, its recovery's rename {n} an {action}: journal {}, stage {}\n{}",
+                journal.exists(),
+                stage.is_dir(),
+                recovering.context()
+            );
+            // An addon never installed: the command commits, so it always takes the lock.
+            fs::write(
+                s.dl.join("baz.zip"),
+                zip_text(&[("Baz/Baz.toc", "## Interface: 120105\n")]),
+            )
+            .unwrap();
+            let next = s.run(&s.install_args("gh:o/baz", "baz"), "");
+            assert_eq!(next.code, 0, "{context}\n{}", next.context());
+            assert_eq!(support::Foo::of(&s), old, "{context}: rolled back");
+            assert!(s.journals().is_empty(), "{context}: {:?}", s.journals());
+            if orphaned {
+                let past = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+                fs::File::open(&stage).unwrap().set_modified(past).unwrap();
+                s.run(&s.args(&["pin", "Baz"]), "").expect(0);
+                assert!(
+                    !stage.exists(),
+                    "{context}: the aged stage outlived the sweep"
+                );
+            }
+        }
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!(
+                "{op:?} ({action}): recoveries stopped (rename, journal, stage) {killed:?}\n"
+            ),
+        );
+        assert!(finished, "{op:?} ({action}): {killed:?}");
+        assert!(
+            killed.iter().any(|(_, journal, stage)| !journal && *stage),
+            "{op:?} ({action}): none fell between the journal's move into trash and the stage's: {killed:?}"
+        );
+    }
+}
+
 #[test]
 fn a_crash_at_every_rename_of_an_install() {
     rename_matrix(&tlog!(), Op::Install);
@@ -2850,8 +2938,9 @@ mod restore_support {
     /// with its manifest); a failure is `preservation_incomplete` and names no account,
     /// realm or character. The next recovery completes: the pre-restore tree live, exactly
     /// one `recovered` backup holding the played-on tree byte for byte, under the id the
-    /// intent reserved when there was one, nothing left in the stage or the journal; two
-    /// more commands that take the lock change nothing of that.
+    /// intent reserved when there was one, no journal left, and nothing in the stage but
+    /// what a recovery stopped after its journal went left, which the sweep takes once it
+    /// is old; two more commands that take the lock change nothing of that.
     pub fn preserve_crash(log: &TestLog, engine: &str) -> Preserving {
         let label = format!("a played-on restore recovered with {engine:?}, then by the binary");
         log.step(&label);
@@ -2928,11 +3017,17 @@ mod restore_support {
                 context("not the id the intent reserved")
             );
         }
+        // A recovery stopped after its journal's move into trash leaves its stage dir: an
+        // orphan, which the sweep takes once it is old.
+        let stage_left = !listed(&r.stage_root()).is_empty();
         assert!(
-            listed(&r.stage_root()).is_empty(),
+            !stage_left || (stopped && !with_journal),
             "{}",
             context("stage left")
         );
+        if stage_left {
+            r.age_leftovers();
+        }
         for args in [["pin", "Bar"], ["unpin", "Bar"]] {
             r.s.run(&r.s.args(&args), "").expect(0);
             assert_eq!(
@@ -2943,6 +3038,11 @@ mod restore_support {
             );
             assert_eq!(r.s.wtf(), Some(pre.clone()));
         }
+        assert!(
+            listed(&r.stage_root()).is_empty(),
+            "{}",
+            context("aged stage left")
+        );
         Preserving {
             stopped,
             intent: intent.is_some(),
@@ -4415,8 +4515,9 @@ mod addon_support {
     /// is `preservation_incomplete` (or the walk's own error) and names no account, realm
     /// or character. The next recovery completes: the game's file live, the other files
     /// rolled back, exactly one partial `recovered` backup holding the pre-restore file,
-    /// under the id the intent reserved when there was one, nothing left in the stage or
-    /// the journal; two more commands that take the lock change nothing of that.
+    /// under the id the intent reserved when there was one, no journal left, and nothing in
+    /// the stage but what a recovery stopped after its journal went left, which the sweep
+    /// takes once it is old; two more commands that take the lock change nothing of that.
     pub fn preserve_crash(log: &TestLog, engine: &str) -> Preserving {
         let label = format!(
             "a partial restore the game wrote over, recovered with {engine:?}, then by the binary"
@@ -4547,11 +4648,17 @@ mod addon_support {
                 "{rolled}"
             );
         }
+        // A recovery stopped after its journal's move into trash leaves its stage dir: an
+        // orphan, which the sweep takes once it is old.
+        let stage_left = !listed(&a.r.stage_root()).is_empty();
         assert!(
-            listed(&a.r.stage_root()).is_empty(),
+            !stage_left || (stopped && !with_journal),
             "{}",
             context("stage left")
         );
+        if stage_left {
+            a.r.age_leftovers();
+        }
         for args in [["pin", "Bar"], ["unpin", "Bar"]] {
             s.run(&s.args(&args), "").expect(0);
             assert_eq!(
@@ -4562,6 +4669,11 @@ mod addon_support {
             );
             assert_eq!(a.foo(), now);
         }
+        assert!(
+            listed(&a.r.stage_root()).is_empty(),
+            "{}",
+            context("aged stage left")
+        );
         Preserving {
             stopped,
             intent: intent.is_some(),
@@ -5051,11 +5163,17 @@ mod across_support {
                 context("not the id the intent reserved")
             );
         }
+        // A recovery stopped after its journal's move into trash leaves its stage dir: an
+        // orphan, which the sweep takes once it is old.
+        let stage_left = !listed(&r.stage_root()).is_empty();
         assert!(
-            listed(&r.stage_root()).is_empty(),
+            !stage_left || (stopped && !with_journal),
             "{}",
             context("stage left")
         );
+        if stage_left {
+            r.age_leftovers();
+        }
         for args in [["pin", "Bar"], ["unpin", "Bar"]] {
             r.s.run(&r.s.args(&args), "").expect(0);
             assert_eq!(
@@ -5065,6 +5183,11 @@ mod across_support {
                 context("a later recovery changed it")
             );
         }
+        assert!(
+            listed(&r.stage_root()).is_empty(),
+            "{}",
+            context("aged stage left")
+        );
         restore_support::Preserving {
             stopped,
             intent: intent.is_some(),

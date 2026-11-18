@@ -406,6 +406,55 @@ fn an_extra_root_at_a_flavor_folder_finds_its_battlenet_root() {
     );
 }
 
+/// Only the `_<x>_` folders of a Battle.net root are its clients: a custom client unpacked
+/// beside them, named by an extra root or by a launcher's exe, is found as itself, beside
+/// the root's own targets.
+#[test]
+fn a_custom_client_inside_a_battlenet_root_is_found_by_an_extra_root_or_a_launcher() {
+    let env = TestEnv::new();
+    let bnet = BattlenetRoot::at(env.root().join("bnet"))
+        .product("wow")
+        .build();
+    let custom = CustomRoot::at(bnet.join("WotLK 3.3.5a"))
+        .version(3, 3, 5, 12340)
+        .build();
+    let by_extra_root = DiscoveryInput {
+        extra_roots: vec![bnet.clone(), custom.clone()],
+        ..input(&env)
+    };
+    let d = discover(&by_extra_root, &RulesTable::builtin());
+    assert_eq!(
+        rows(&d, env.root()),
+        [
+            row("bnet/_retail_", "retail", "bnet", "extra_root"),
+            row("bnet/WotLK 3.3.5a", "wotlk", "wotlk-3-3-5a", "extra_root"),
+        ],
+        "{}",
+        serde_json::to_string_pretty(&d).unwrap()
+    );
+
+    let by_launcher = DiscoveryInput {
+        extra_roots: vec![bnet.clone()],
+        launcher_hints: vec![LauncherHint {
+            launcher: "lutris".into(),
+            flatpak: false,
+            prefix: None,
+            exe: Some(custom.join("Wow.exe")),
+        }],
+        ..input(&env)
+    };
+    let d = discover(&by_launcher, &RulesTable::builtin());
+    assert_eq!(
+        rows(&d, env.root()),
+        [
+            row("bnet/_retail_", "retail", "bnet", "extra_root"),
+            row("bnet/WotLK 3.3.5a", "wotlk", "lutris", "launcher"),
+        ],
+        "{}",
+        serde_json::to_string_pretty(&d).unwrap()
+    );
+}
+
 #[test]
 fn an_empty_home_finds_nothing() {
     let env = TestEnv::new();

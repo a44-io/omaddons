@@ -2602,7 +2602,7 @@ _omaddons() {
                         --from) from=${word#*=} ;;
                     esac
                     continue ;;
-                -t?*) target=${word#-t}; continue ;;
+                -t?*) target=${word#-t}; target=${target#=}; continue ;;
                 -*)
                     case $word in
                         --actor|--addon|--before|--budget|--by|--channel|--dir|--file|--flavor|--format|--from|--if-match|--keep|--last-by|--limit|--name|--older-than|--only|--progress|--reason|--ref|--release|--revision|--run|--saved-variables|--section|--severity|--since|--skip|--source|--target|--to|--tx|--version|-t) value_of=$word ;;

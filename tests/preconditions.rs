@@ -1787,6 +1787,193 @@ fn a_bound_run_refused_under_the_lock_is_not_retryable() {
     }
 }
 
+/// `install` of two refs, Foo behind and Baz already at its newest release, on retail.
+fn foo_behind_baz_current(log: &common::tlog::TestLog) -> common::home::Home {
+    let home = common::home::Home::new(&["wow"]);
+    log.env(&home);
+    let mm = b::MAINLINE_AND_MISTS;
+    b::publish(&home, "foo", "Foo", "v1", mm);
+    b::publish(&home, "baz", "Baz", "v1", mm);
+    for r in ["gh:o/foo", "gh:o/baz"] {
+        log.run(&home, &["install", r, "-t", "retail", "--json"])
+            .ok();
+    }
+    b::publish(&home, "foo", "Foo", "v2", mm);
+    b::publish(&home, "bar", "Bar", "v1", mm);
+    home
+}
+
+#[test]
+fn a_bound_install_refused_under_the_lock_fails_beside_an_unchanged_addon() {
+    let log = common::tlog::tlog!();
+    let home = foo_behind_baz_current(&log);
+    let args = ["install", "gh:o/foo", "gh:o/baz", "-t", "retail"];
+    log.step("preview: Foo updated, Baz unchanged");
+    let (preview, token) = b::preview(&log, &home, "install", &args);
+    let statuses: Vec<(Value, Value)> = preview.data()["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|i| (i["request"].clone(), i["status"].clone()))
+        .collect();
+    log.assert_eq(
+        "(request, status) per item",
+        &statuses,
+        &vec![
+            (json!("gh:o/foo"), json!("updated")),
+            (json!("gh:o/baz"), json!("unchanged")),
+        ],
+    );
+
+    log.step("the bound run stops before its lock");
+    let pause = Pause::new(home.env.root());
+    let child = log
+        .cmd(&home, &b::bound(&args, &token))
+        .failpoints("engine.snapshot.prestaged=pause")
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, "engine.snapshot.prestaged");
+    log.run(&home, &["install", "gh:o/bar", "-t", "retail", "--json"])
+        .ok();
+    let guard = b::guard(&log, &home, "install");
+
+    log.step("the bound run goes on");
+    log.resume(&pause, "engine.snapshot.prestaged");
+    let ran = child.wait();
+    b::assert_stale(&log, &ran, &["targets"], &b::preview_argv(&args));
+    let items: Vec<(Value, Value, Value)> = ran.envelope()["error"]["details"]["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|i| {
+            (
+                i["target"].clone(),
+                i["request"].clone(),
+                i["error"]["code"].clone(),
+            )
+        })
+        .collect();
+    log.assert_eq(
+        "details.items: (target, request, code)",
+        &items,
+        &vec![(json!("retail"), json!("gh:o/foo"), json!("plan_stale"))],
+    );
+    guard.unchanged(&log);
+}
+
+#[test]
+fn an_unbound_install_whose_commit_fails_beside_an_unchanged_addon_is_partial() {
+    let log = common::tlog::tlog!();
+    let home = foo_behind_baz_current(&log);
+    let guard = b::guard(&log, &home, "install");
+    log.step("the commit fails under the lock");
+    let ran = log
+        .cmd(
+            &home,
+            &["install", "gh:o/foo", "gh:o/baz", "-t", "retail", "--json"],
+        )
+        .failpoints("engine.lock.acquired=error")
+        .run();
+    ran.ok();
+    let statuses: Vec<(Value, Value)> = ran.data()["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|i| (i["request"].clone(), i["status"].clone()))
+        .collect();
+    log.assert_eq(
+        "(partial, tx, items)",
+        &(&ran.envelope()["partial"], &ran.data()["tx"], statuses),
+        &(
+            &json!(true),
+            &Value::Null,
+            vec![
+                (json!("gh:o/foo"), json!("failed")),
+                (json!("gh:o/baz"), json!("unchanged")),
+            ],
+        ),
+    );
+    guard.unchanged(&log);
+}
+
+/// A bound install whose flags leave another record than its preview showed (another
+/// channel, a pin, any-flavor) is refused as `selection`, though its folder work is the
+/// preview's; with the preview's own arguments it commits.
+#[test]
+fn a_bound_install_that_records_what_its_preview_did_not_show_is_stale() {
+    let log = common::tlog::tlog!();
+    let home = common::home::Home::new(&["wow"]);
+    log.env(&home);
+    let mm = b::MAINLINE_AND_MISTS;
+    b::publish(&home, "foo", "Foo", "v1", mm);
+    log.run(&home, &["install", "gh:o/foo", "-t", "retail", "--json"])
+        .ok();
+    b::publish(&home, "foo", "Foo", "v2", mm);
+    // The REST listing the beta channel reads: both releases, stable.
+    let listed: Vec<Value> = ["v2", "v1"]
+        .iter()
+        .map(|tag| {
+            let download = format!("https://github.com/o/foo/releases/download/{tag}");
+            json!({
+                "tag_name": tag,
+                "prerelease": false,
+                "draft": false,
+                "published_at": "2026-10-20T00:00:00Z",
+                "assets": [
+                    {"name": "release.json", "browser_download_url": format!("{download}/release.json")},
+                    {"name": "Foo.zip", "browser_download_url": format!("{download}/Foo.zip")},
+                ],
+            })
+        })
+        .collect();
+    common::http::fixture(
+        &home.http,
+        "rest-listing-foo",
+        "https://api.github.com/repos/o/foo/releases?per_page=20",
+        200,
+        &[("x-ratelimit-remaining", "59")],
+        Some(&Value::from(listed).to_string()),
+    );
+    let args = ["install", "gh:o/foo", "-t", "retail"];
+    log.step("preview: Foo v1 to v2 on stable, unpinned");
+    let (_, token) = b::preview(&log, &home, "install", &args);
+    let guard = b::guard(&log, &home, "install");
+    for extra in [
+        &["--channel", "beta"][..],
+        &["--version", "v2"],
+        &["--any-flavor"],
+    ] {
+        let mut with: Vec<&str> = args.to_vec();
+        with.extend_from_slice(extra);
+        log.step(&format!("bound with {}", extra.join(" ")));
+        let preview = b::preview(&log, &home, &extra.join(" "), &with).0;
+        log.assert_eq(
+            "its own preview updates Foo to v2 too",
+            &preview.data()["items"][0]["to_version"],
+            &json!("v2"),
+        );
+        let ran = log.run(&home, &b::bound(&with, &token));
+        let preview_argv: Vec<String> = b::preview_argv(&with);
+        b::assert_stale_with(&log, &ran, "selection", &preview_argv);
+        guard.unchanged(&log);
+    }
+    log.step("bound with the preview's own arguments");
+    let ran = log.run(&home, &b::bound(&args, &token));
+    ran.ok();
+    let record = common::state::record(&home, "retail");
+    let foo = &record.addons["foo"];
+    log.assert_eq(
+        "Foo: (version, channel, pinned, any_flavor)",
+        &(
+            foo.version.as_str(),
+            foo.channel,
+            foo.pinned,
+            foo.any_flavor,
+        ),
+        &("v2", omaddons::model::Channel::Stable, false, false),
+    );
+}
+
 #[test]
 fn two_previews_of_an_unchanged_home_agree() {
     let log = common::tlog::tlog!();

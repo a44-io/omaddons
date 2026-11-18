@@ -462,22 +462,65 @@ impl Config {
     }
 }
 
+/// A dotted key's segments. A key with no quote in it is split on every `.`, so every
+/// documented key, and every name without a dot, means what it always did. A key with a
+/// quote is read as a TOML dotted key, so `client_rules."mainline-12.0.7".interface_floor`
+/// is three segments. `None` when it does not read as one.
+pub fn key_segments(key: &str) -> Option<Vec<String>> {
+    if !key.contains(['"', '\'']) {
+        return Some(key.split('.').map(str::to_owned).collect());
+    }
+    let keys = toml_edit::Key::parse(key).ok()?;
+    Some(keys.iter().map(|k| k.get().to_owned()).collect())
+}
+
+/// The key [`key_segments`] reads back as `segments`: joined with dots as they are when no
+/// segment holds a dot or a quote, else with each segment written as TOML writes a key,
+/// quoted where it needs it (`client_rules."mainline-12.0.7".interface_floor`).
+pub fn key_name<S: AsRef<str>>(segments: &[S]) -> String {
+    let quoted = segments
+        .iter()
+        .any(|s| s.as_ref().contains(['.', '"', '\'']));
+    let names: Vec<String> = segments
+        .iter()
+        .map(|s| {
+            if quoted {
+                toml_edit::Key::new(s.as_ref()).display_repr().into_owned()
+            } else {
+                s.as_ref().to_owned()
+            }
+        })
+        .collect();
+    names.join(".")
+}
+
 /// The spec a dotted key matches.
 pub fn spec_for(key: &str) -> Option<&'static KeySpec> {
-    let parts: Vec<&str> = key.split('.').collect();
+    let parts = key_segments(key)?;
     KEYS.iter().find(|spec| {
         let pattern: Vec<&str> = spec.key.split('.').collect();
         pattern.len() == parts.len()
             // ubs:ignore — comparing config key segments, not secrets
-            && pattern.iter().zip(&parts).all(|(p, k)| *p == "*" || p == k)
+            && pattern.iter().zip(&parts).all(|(p, k)| *p == "*" || *p == k)
             && (spec.kind != KeyKind::RulesField
-                || parts.last().is_some_and(|f| RULES_FIELDS.contains(f)))
+                || parts
+                    .last()
+                    .is_some_and(|f| RULES_FIELDS.contains(&f.as_str())))
     })
 }
 
 /// The closest documented key within edit distance 2, filling `*` segments from `key`.
 pub fn closest_key(key: &str) -> Option<String> {
-    let parts: Vec<&str> = key.split('.').collect();
+    let parts = key_segments(key)?;
+    let given = key_name(&parts);
+    // ubs:ignore — filling config key segments, not comparing secrets
+    let fill = |(p, k): (&&str, &String)| {
+        if *p == "*" {
+            k.clone()
+        } else {
+            (*p).to_owned()
+        }
+    };
     let mut candidates: Vec<String> = Vec::new();
     for spec in KEYS {
         let pattern: Vec<&str> = spec.key.split('.').collect();
@@ -486,28 +529,22 @@ pub fn closest_key(key: &str) -> Option<String> {
         }
         if spec.kind == KeyKind::RulesField {
             for field in RULES_FIELDS {
-                let mut c: Vec<&str> = pattern[..pattern.len() - 1]
+                let mut c: Vec<String> = pattern[..pattern.len() - 1]
                     .iter()
                     .zip(&parts)
-                    // ubs:ignore — filling config key segments, not comparing secrets
-                    .map(|(p, k)| if *p == "*" { *k } else { *p })
+                    .map(fill)
                     .collect();
-                c.push(field);
-                candidates.push(c.join("."));
+                c.push((*field).to_owned());
+                candidates.push(key_name(&c));
             }
             continue;
         }
-        let filled: Vec<&str> = pattern
-            .iter()
-            .zip(&parts)
-            // ubs:ignore — filling config key segments, not comparing secrets
-            .map(|(p, k)| if *p == "*" { *k } else { *p })
-            .collect();
-        candidates.push(filled.join("."));
+        let filled: Vec<String> = pattern.iter().zip(&parts).map(fill).collect();
+        candidates.push(key_name(&filled));
     }
     candidates
         .into_iter()
-        .map(|c| (crate::cli::levenshtein(key, &c), c))
+        .map(|c| (crate::cli::levenshtein(&given, &c), c))
         .filter(|(d, _)| *d <= 2)
         .min()
         .map(|(_, c)| c)
@@ -806,17 +843,19 @@ fn unknown_keys(raw: &toml::Table, path: &Path) -> Vec<Warning> {
             ("limits" | "sources" | "targets" | "client_rules", toml::Value::Table(t)) => {
                 for (sub, inner) in t {
                     match (key.as_str(), inner) {
-                        ("limits", _) => check(&format!("limits.{sub}"), &mut unknown),
+                        ("limits", _) => {
+                            check(&key_name(&["limits", sub.as_str()]), &mut unknown);
+                        }
                         (_, toml::Value::Table(fields)) => {
                             for field in fields.keys() {
-                                check(&format!("{key}.{sub}.{field}"), &mut unknown);
+                                check(&key_name(&[key, sub, field]), &mut unknown);
                             }
                         }
-                        _ => check(&format!("{key}.{sub}"), &mut unknown),
+                        _ => check(&key_name(&[key, sub]), &mut unknown),
                     }
                 }
             }
-            _ => check(key, &mut unknown),
+            _ => check(&key_name(&[key]), &mut unknown),
         }
     }
     unknown
@@ -1106,7 +1145,7 @@ pub fn set_value(text: &str, path: &Path, key: &str, raw: &str) -> Result<String
             edit_fix(path),
         )
     })?;
-    let segments: Vec<&str> = key.split('.').collect();
+    let segments = key_segments(key).unwrap_or_default();
     let Some((leaf, tables)) = segments.split_last() else {
         return Err(bad_value("empty key"));
     };
@@ -1313,11 +1352,12 @@ fn toml_value(raw: &str) -> toml_edit::Value {
         .unwrap_or_else(|| toml_edit::Value::from(raw))
 }
 
-/// The value at a dotted key in a raw table, if set.
+/// The value at a dotted key ([`key_segments`]) in a raw table, if set.
 pub fn lookup<'a>(raw: &'a toml::Table, key: &str) -> Option<&'a toml::Value> {
-    let mut parts = key.split('.');
-    let first = raw.get(parts.next()?)?;
-    parts.try_fold(first, |value, part| value.as_table()?.get(part))
+    let parts = key_segments(key)?;
+    let (first, rest) = parts.split_first()?;
+    rest.iter()
+        .try_fold(raw.get(first)?, |value, part| value.as_table()?.get(part))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2285,6 +2325,53 @@ max = 11_599
             assert_eq!(err.code, ErrorCode::Usage, "{key} {value}");
             assert!(err.message.contains("it takes"), "{}", err.message);
         }
+    }
+
+    /// A row or target id with a dot in its name is one segment, quoted as TOML quotes
+    /// it: the file is quiet about its known fields, and `config` reads and sets them.
+    #[test]
+    fn a_dotted_row_or_target_id_is_one_quoted_segment() {
+        let text = "[client_rules.\"mainline-12.0.7\"]\ninterface_floor = 120100\n\n[targets.\"main.alt\"]\nlabel = \"x\"\n";
+        assert_eq!(unknown_in(text), Vec::<String>::new());
+        assert_eq!(
+            unknown_in("[client_rules.\"mainline-12.0.7\"]\nmulti_tocs = true\n"),
+            [
+                "client_rules.\"mainline-12.0.7\".multi_tocs; did you mean client_rules.\"mainline-12.0.7\".multi_toc?"
+            ]
+        );
+        let key = "client_rules.\"mainline-12.0.7\".interface_floor";
+        assert_eq!(spec_for(key).map(|s| s.key), Some("client_rules.*.*"));
+        assert_eq!(
+            spec_for("targets.'main.alt'.label").map(|s| s.key),
+            Some("targets.*.label")
+        );
+        let raw: toml::Table = toml::from_str(text).unwrap();
+        assert_eq!(lookup(&raw, key), Some(&toml::Value::Integer(120_100)));
+        assert_eq!(
+            lookup(&raw, "targets.\"main.alt\".label"),
+            Some(&toml::Value::String("x".into()))
+        );
+        assert_eq!(
+            closest_key("client_rules.\"mainline-12.0.7\".multi_tocs").as_deref(),
+            Some("client_rules.\"mainline-12.0.7\".multi_toc")
+        );
+        let path = Path::new("/c/omaddons/config.toml");
+        for before in ["", text] {
+            let written = set_value(before, path, key, "120200").unwrap();
+            assert!(
+                written.contains("[client_rules.\"mainline-12.0.7\"]"),
+                "{written}"
+            );
+            let raw: toml::Table = toml::from_str(&written).unwrap();
+            assert_eq!(lookup(&raw, key), Some(&toml::Value::Integer(120_200)));
+            assert_eq!(unknown_in(&written), Vec::<String>::new());
+        }
+        // A key with no quotes still splits on every dot.
+        assert_eq!(
+            spec_for("targets.main.alt.label"),
+            None,
+            "an unquoted dotted id is four segments"
+        );
     }
 
     /// RG-51: `update_min_age_hours` takes 0 to 48 and fails past them as

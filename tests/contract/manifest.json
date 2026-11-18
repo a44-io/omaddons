@@ -3863,6 +3863,7 @@
     "file plan intent<command=skip>.version": {"kind":"file_position","nullable":true,"required":true,"types":["string"]},
     "file plan intent<command=skip>.while_running": {"kind":"file_position","nullable":false,"required":true,"types":["boolean"]},
     "file plan intent<command=sync>": {"kind":"file_variant"},
+    "file plan intent<command=sync>.base": {"kind":"file_position","nullable":true,"required":false,"types":["string"]},
     "file plan intent<command=sync>.default_file": {"kind":"file_position","nullable":false,"required":true,"types":["boolean"]},
     "file plan intent<command=sync>.file": {"kind":"file_position","nullable":false,"required":true,"types":["string"]},
     "file plan intent<command=sync>.locked": {"kind":"file_position","nullable":false,"required":true,"types":["boolean"]},

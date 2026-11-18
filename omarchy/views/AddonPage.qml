@@ -82,13 +82,19 @@ Item {
   }
 
   // The read, once the frame has handed the page its addon (its props come after the
-  // page is made, one by one: callLater asks once for the last of them).
+  // page is made, one by one: callLater asks once for the last of them). A page the frame
+  // hands another addon (a dependency's, and back) starts as a new one: Versions closed,
+  // notes folded.
   onQueryChanged: Qt.callLater(root.ask)
   onSvcChanged: Qt.callLater(root.ask)
   Component.onCompleted: Qt.callLater(root.ask)
   Component.onDestruction: if (svc) svc.clearAddonInfo()
   function ask() {
     if (!svc || query === "" || askedFor === query) return
+    if (askedFor !== "") {
+      versionsFor = ""
+      notesOpen = ({})
+    }
     askedFor = query
     copied = ""
     svc.readAddonInfo(query)

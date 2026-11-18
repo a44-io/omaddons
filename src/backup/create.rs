@@ -111,7 +111,7 @@ pub fn create(
         // file's first copy, and once every entry is copied, per attempt.
         let _ = match step {
             Step::Copied(_, 1) => fsx::failpoint::hit(&format!("backup.capture.copied.{attempt}")),
-            Step::Copied(..) => Ok(()),
+            Step::Stamped(..) | Step::Copied(..) => Ok(()),
             Step::Done => fsx::failpoint::hit(&format!("backup.capture.done.{attempt}")),
         };
     })
@@ -705,6 +705,31 @@ mod tests {
             fs::read_to_string(created.dir.join(format!("WTF/{SV}/A.lua"))).unwrap(),
             "ADB = { changed = true }\n"
         );
+        assert_eq!(f.published().len(), 1);
+        f.assert_no_leftovers();
+    }
+
+    /// A file that vanishes between its stamp and its clone on the first attempt is a
+    /// change like any other: the second attempt publishes a stable capture without it.
+    #[test]
+    fn a_file_gone_before_its_clone_on_the_first_attempt_is_retried() {
+        let f = Fixture::new();
+        let rel = format!("{SV}/A.lua");
+        let a = f.wtf().join(&rel);
+        let mut attempts = Vec::new();
+        let created = f
+            .create(&f.request(), &mut |attempt, step| {
+                if step == Step::Stamped(&rel, 1) {
+                    attempts.push(attempt);
+                    if attempt == 1 {
+                        fs::remove_file(&a).unwrap();
+                    }
+                }
+            })
+            .unwrap();
+        assert_eq!(attempts, [1], "the second attempt never meets it");
+        assert_eq!(created.meta.consistency, Consistency::Stable);
+        assert!(!created.dir.join("WTF").join(&rel).exists());
         assert_eq!(f.published().len(), 1);
         f.assert_no_leftovers();
     }

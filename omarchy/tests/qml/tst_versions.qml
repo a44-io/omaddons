@@ -280,6 +280,37 @@ TestCase {
     compare(ran("info").length, reads, "read once while the page is open")
   }
 
+  // ---- another addon's page over this one
+
+  // A dependency's page reuses the page's item (the frame hands it the new props): it
+  // opens with its Versions closed and its notes folded, as a new page does, and asks no
+  // releases; back on Foo's page, its Versions are closed too, as on a new page.
+  function test_another_addons_page_opens_with_its_versions_closed() {
+    var answers = scene("versions-list-beta")
+    var page = openFoo(answers)
+    openVersions(page, answers)
+    // The scene's notes are one line each: the fold a toggle of v2's leaves.
+    page.notesOpen = { "v2": true }
+    var releases = ran("info").filter(function(l) { return words(l.command).indexOf("--releases") !== -1 }).length
+    frame.openAddon("LibFoo", "")
+    settle(answers)
+    compare(frame.current, page, "the same item, given the dependency's props")
+    compare(page.name, "LibFoo")
+    compare(page.page.versions.open, false)
+    compare(json(page.notesOpen), json({}))
+    compare(ran("info").filter(function(l) { return words(l.command).indexOf("--releases") !== -1 }).length, releases,
+      "no releases read for a Versions never opened")
+    verify(frame.pop())
+    settle(answers)
+    compare(frame.current, page)
+    compare(page.name, "Foo")
+    compare(page.page.versions.open, false)
+  }
+
+  function json(value) {
+    return JSON.stringify(value)
+  }
+
   function test_the_undo_of_its_last_update_comes_first_and_previews() {
     var answers = scene("versions-list-fixed")
     answers.history = the("versions-history")

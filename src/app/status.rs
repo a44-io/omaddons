@@ -1793,10 +1793,8 @@ fn recommendations(
         commands.push(omarchy_status::reinstall_hint());
     }
     for t in targets.iter().filter(|t| !t.orphan_names.is_empty()) {
-        let argv = ["omaddons", "remove"]
-            .into_iter()
-            .chain(t.orphan_names.iter().map(String::as_str))
-            .chain(["-t", t.id.as_str()]);
+        let argv =
+            crate::cli::with_operands(&["omaddons", "remove"], &t.orphan_names, &["-t", &t.id]);
         commands.push(CommandHint::new(Action::RemoveOrphans, argv));
     }
     commands.extend(fixes);
@@ -2243,6 +2241,30 @@ mod tests {
         );
         let none = target("retail", 0, &[], 0);
         assert!(recommendations(&[none], false, false).0.is_empty());
+    }
+
+    /// An orphan named like a flag comes after `--`, with the others, so the removal
+    /// parses as the removal of exactly those addons.
+    #[test]
+    fn an_orphan_named_like_a_flag_is_removed_after_the_flags() {
+        use clap::Parser;
+        let mut retail = target("retail", 0, &[], 0);
+        retail.orphans = 2;
+        retail.orphan_names = vec!["-Ace".into(), "BigWigs".into()];
+        let (commands, _) = recommendations(&[retail], false, false);
+        assert_eq!(actions(&commands), ["remove_orphans"]);
+        assert_eq!(
+            commands[0].argv(),
+            [
+                "omaddons", "remove", "-t", "retail", "--", "-Ace", "BigWigs"
+            ]
+        );
+        match crate::cli::Cli::try_parse_from(commands[0].argv()).map(|cli| cli.command) {
+            Ok(Some(crate::cli::Command::Remove(args))) => {
+                assert_eq!(args.addons, ["-Ace", "BigWigs"]);
+            }
+            other => panic!("{other:?}"), // ubs:ignore — the test's own failure
+        }
     }
 
     #[test]

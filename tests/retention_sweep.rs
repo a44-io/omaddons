@@ -356,6 +356,81 @@ fn a_failed_pass_names_the_client_and_the_next_command_converges() {
     assert!(stamp(&home).is_file(), "stamped");
 }
 
+/// A pass over era that read the history before an undo there deferred its
+/// SavedVariables restore deletes nothing of the snapshot that restore needs: judged
+/// again when it deletes, the snapshot is protected, and the follow-up finds it. A
+/// retail install pauses in its pass, after the read and before it judges era; the undo
+/// of an era install past the window commits while era runs; the pass resumes.
+#[cfg(debug_assertions)]
+#[test]
+fn a_pass_keeps_the_snapshot_an_undo_deferred_during_it_still_needs() {
+    let log = tlog!();
+    let mut home = Home::new(&["wow", "wow_classic_era"]);
+    let sv = home
+        .client("_classic_era_")
+        .join(common::privacy::ACCOUNT)
+        .join("Baz.lua");
+    fs::create_dir_all(sv.parent().unwrap()).unwrap();
+    fs::write(&sv, "-- before").unwrap();
+    log.step("Baz installed on era and played, then Qux; Baz's install aged past the window");
+    let installed = json(
+        &log,
+        &home,
+        &["install", &zip(&home, "Baz", "11509"), "-t", "era"],
+    );
+    installed.ok();
+    let baz = installed.data()["tx"].as_str().unwrap().to_owned();
+    fs::write(&sv, "-- played").unwrap();
+    json(
+        &log,
+        &home,
+        &["install", &zip(&home, "Qux", "11509"), "-t", "era"],
+    )
+    .ok();
+    let txs = [baz.clone()];
+    age_lines(&log, &home, &txs, &[8 * DAY]);
+
+    log.step("install on retail, its pass paused before it judges era");
+    let pause = common::pause::Pause::new(home.env.root());
+    let bar = zip(&home, "Bar", "120105");
+    let argv = ["install", bar.as_str(), "-t", "retail"];
+    let child = home.spawn(
+        &argv,
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.retention.sweep=pause"),
+            pause.env(),
+        ],
+    );
+    pause.reached("engine.retention.sweep");
+
+    log.step("undo Baz's install while era runs: its SavedVariables restore deferred");
+    home.client_running("_classic_era_", "WowClassic.exe");
+    let undone = json(&log, &home, &["undo", &baz, "--while-running"]);
+    undone.ok();
+    let deferred = undone.envelope()["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["code"] == "saved_variables_deferred");
+    assert!(deferred, "{}", undone.envelope());
+    assert_eq!(fs::read_to_string(&sv).unwrap(), "-- played");
+
+    log.step("the pass resumes");
+    pause.resume("engine.retention.sweep");
+    let done = common::home::wait(child, &argv);
+    assert_eq!(done.code, 0, "{}", done.context());
+    log.assert_eq(
+        "Baz's install keeps its snapshots",
+        &snapshots(&home, &txs),
+        &txs.to_vec(),
+    );
+
+    log.step("the follow-up, era stopped");
+    home.nothing_running();
+    json(&log, &home, &["undo", &baz, "--saved-variables", "restore"]).ok();
+    assert_eq!(fs::read_to_string(&sv).unwrap(), "-- before");
+}
+
 /// Twelve ages past the window, newest first: 8 days, then an hour older each.
 fn old_ages() -> Vec<i64> {
     (0..12).map(|i| 8 * DAY + i * HOUR).collect()

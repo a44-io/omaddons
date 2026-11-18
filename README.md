@@ -656,7 +656,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 **A browser download.** `--file ZIP` installs an archive you downloaded as the release of one ref. `--file` also takes an unpacked folder (one you develop in), identified by a hash of its listing (paths, sizes and modification times, `.git` aside), as for a `file:` folder: unchanged is `unchanged`, edited updates, `--reinstall` installs it regardless. `update` and `outdated` never replace it from upstream (`static`).
 
-**Same name, another ref.** An addon is installed from one ref at a time. Another local archive over a local install (`./Bar-2.2.0.zip` over `./Bar-2.1.0.zip`) is the same addon, `updated`. Any other ref (another repository, or `--file` under a ref, over a local install) is a takeover, refused with `ownership_conflict`: the fix adds `--force` (the item is then `updated`, with `ownership_transferred`, and `undo` restores the original), the alternative removes the installed one. Two refs in one command that would be the same addon conflict within the transaction (`ownership_conflict`, `details.within_transaction`), which `--force` does not settle.
+**Same name, another ref.** An addon is installed from one ref at a time. Another local archive over a local install (`./Bar-2.2.0.zip` over `./Bar-2.1.0.zip`) is the same addon, `updated`. Any other ref (another repository, or `--file` under a ref, over a local install) is a takeover, refused with `ownership_conflict`: the fix adds `--force` (the item is then `updated`, with `ownership_transferred`, and `undo` restores the original), the alternative removes the installed one. `sync --prune` takes that alternative itself when an `addons.toml` entry moves to another source: the entry's ref replaces the installed addon as one update (`updated`, with `ownership_transferred`), and a plain `sync` still refuses it. Two refs in one command that would be the same addon conflict within the transaction (`ownership_conflict`, `details.within_transaction`), which `--force` does not settle.
 
 `gh:` and `git:` refs of one repository are different refs. To move an addon to another source on purpose, `omaddons adopt <folder> --ref <ref>` re-points it in place.
 
@@ -1100,6 +1100,8 @@ It installs what is missing; installs a pinned entry's version, pinned; switches
 - every addon an entry names or may name (duplicates and ambiguous names keep every addon they could mean; a missing local path keeps the addon installed from it);
 - every addon a `dependency = true` lock names, and every addon a kept one requires, through any chain, including what this run's installs require.
 
+An entry moved to another source, whose addon keeps its name, replaces the installed one instead: one update in the same transaction, reported on the entry's item with `ownership_transferred` and taking the entry's pin and channel, never a removal of its own. Without `--prune`, that entry is refused as a takeover (`ownership_conflict`), as `install` refuses it.
+
 It touches only clients the file has a section for (others report `no_section`), and reads records, never unmanaged folders. A `[target."<id>"]` section naming no known client could be a typo that empties a client, so `--prune` refuses the whole file (`desired_state_invalid`, `reason: "unknown_target_section"`, fix `omaddons targets`). An empty section (`addons = []`) removes every managed addon there: try `--dry-run` first.
 
 ### `export`
@@ -1278,7 +1280,7 @@ A backup is `<client>/Interface/.omaddons/backups/<id>/`: `backup.json` (what it
 - `reflinked`: `all`, `some` or `none` of its files share data with the live `WTF/`; `consistency`: `stable` or `best_effort`;
 - `integrity`: `metadata_only` (paths, kinds and sizes checked, no content hash ever compared), `verified` (files matched their hashes when last checked, `verified_at`) or `damaged` (`restorable: false`). `baseline`: `capture` (`backup create --verify`), `import` or `later` (a first [`backup verify`](#backup-verify) without earlier hashes, proving only that nothing changed since), shown as `verified (capture)`, `verified (import)` or `verified (later)`, never "verified" alone;
 - `restorable`: `backup.json` reads and names its own directory, `manifest.json` exists, not damaged, and the client's `WTF/` was inside the client dir;
-- `qualifying`: a whole, stable capture made here, counting as a checkpoint (never imported, recovered or best-effort);
+- `qualifying`: a whole, stable capture made here, counting as a checkpoint (never imported, recovered, best-effort or damaged);
 - `busy`: a restore, export or verify holds its directory lock;
 - with `-v`, `addons [{name, folders, version}]`.
 
@@ -2036,6 +2038,7 @@ omaddons config get running_policy
 omaddons config set default_channel beta
 omaddons config set git_hosts '["codeberg.org"]' # arrays and tables take TOML syntax
 omaddons config set limits.snapshot_max_bytes 4GiB
+omaddons config set 'client_rules."mainline-12.0.7".interface_floor' 120100 # quote a name with a dot, as TOML does
 omaddons config path
 ```
 
@@ -2684,7 +2687,7 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 | `discovery_truncated` | discovery hit its directory budget; add the client with `targets add` |
 | `target_key_duplicate` | two clients carry the same marker (a copied install) |
 | `catalog_override_invalid` | a `catalog.d` file was skipped |
-| `ownership_transferred` | `--force` moved a folder from one addon to another |
+| `ownership_transferred` | `--force` moved a folder from one addon to another, or `sync --prune` replaced an addon whose entry names another source |
 | `credential_file_mode` | a credential file (config.toml's `{ file = … }` credential, or the token `auth github set` stores) readable by other users; fix `chmod 600 <file>` |
 | `addon_pinned` | a pinned addon left at its release; fix `omaddons unpin <addon> -t <id>`; the message adds that `--version` moves the pin |
 | `release_skipped` | a release [skipped](#skip-addon-and-unskip-addon) on its client was passed over (`update` of a named addon, `install` without `--version`); fix `omaddons unskip <addon> --release <id> -t <id>` (with `--revision` where the release has one) offers that one release again, clearing no other mark |
@@ -2918,7 +2921,7 @@ With `auto_backup` on (`daily`, the default), each client gets two kinds of chec
 
 Both are skipped, as a success with a reason, in these cases:
 
-- **Nothing changed** (`unchanged`): `WTF/`, entry by entry (path, kind, size and time), is what the newest checkpoint holds. A checkpoint is a whole, stable `manual`, `auto` or `before_restore` backup made here.
+- **Nothing changed** (`unchanged`): `WTF/`, entry by entry (path, kind, size and time), is what the newest checkpoint holds. A checkpoint is a whole, stable `manual`, `auto` or `before_restore` backup made here, never one found damaged.
 - **Clones only** (`no_reflink`): `daily` backs up only by cloning, so it costs no space at first; where the filesystem cannot clone (ext4, tmpfs, NTFS) it makes none. `auto.capability` and `auto.last` record each attempt that reached a clone; an `unsupported` stands for its local day only. `status` keeps recommending `backup create` while no checkpoint is recent, so such a client is never silently unprotected. `daily-copy` byte-copies too, within `limits.backup_copy_max_mb`, pruning older automatic copies first.
 - **Space first** (`space_low`): below `limits.backup_min_free_mb` free, eligible automatic backups are pruned oldest first (never your own, the newest checkpoint, or one younger than a day); if that is not enough, the backup is skipped with `backup_space_low`.
 - **One at a time** (`in_progress`): a second concurrent attempt on one client finds the first's lock on `backups/` and skips.

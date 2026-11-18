@@ -728,12 +728,15 @@ function binaryOf(opts) {
   return opts.binary
 }
 
-// `--reason`: "<button label> (bar widget)".
+// `--reason`: "<button label> (bar widget)". A label is one line; past LABEL_MAX_CHARS it
+// is cut to that many, ending in "…" (a client's own name may run to 200 characters, and
+// a label that names it still runs).
 function reasonOf(opts) {
   var label = opts.label
-  if (typeof label !== "string" || label === "" || label.length > LABEL_MAX_CHARS || /[\r\n]/.test(label)) {
-    throw refuse("bad_label", "a button label is one line of 1 to " + LABEL_MAX_CHARS + " characters")
+  if (typeof label !== "string" || label === "" || /[\r\n]/.test(label)) {
+    throw refuse("bad_label", "a button label is one line, never empty")
   }
+  if (label.length > LABEL_MAX_CHARS) label = label.slice(0, LABEL_MAX_CHARS - 1) + "…"
   return label + " (bar widget)"
 }
 

@@ -1236,6 +1236,11 @@ fn bash_completes_values_from_omaddons_files() {
             &["Bar", "Baz"],
             true,
         ),
+        // `-t=<id>` as one word (`=` taken out of COMP_WORDBREAKS) names `<id>`, as clap
+        // reads it: era has no addons, so its word falls back to clap's offers.
+        case(&["remove", "-t=retail", "B"], &["Bar", "Baz"], true),
+        case(&["remove", "-t=era", "B"], &[], true),
+        case(&["remove", "-tera", "B"], &[], true),
         case(&["update", "--target", "=", "retail", ""], &addons, true),
         case(
             &[
@@ -1305,6 +1310,97 @@ fn bash_completes_values_from_omaddons_files() {
     }
     log.json("cases", &cases);
     log.assert_eq("failing cases", &failing, &Vec::<String>::new());
+}
+
+/// bash inserts what it is offered as it is, so a managed addon name that is not one shell
+/// word (an adopted `WeakAuras (WeakAurasOptions)`, a WoWInterface `Deadly Boss Mods`) is
+/// offered quoted, as one word bash reads back as that name; a name typed with its spaces
+/// escaped still completes; a plain name or id is offered as it was.
+#[test]
+fn bash_offers_an_addon_name_that_is_not_one_word_quoted() {
+    let log = tlog!();
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let zip = dl.join("Foo.zip");
+    let toc = "## Interface: 120105\n## Version: 1\n";
+    fs::write(&zip, zip_text(&[("Foo/Foo.toc", toc)])).unwrap();
+    log.step("Foo on retail");
+    let zip = zip.display().to_string();
+    log.run(&home, &["install", &zip, "-t", "retail", "--json"])
+        .ok();
+    log.step("two more names in retail's record");
+    let record_file = paths(&home.env).target_record(&common::state::key_of(&home, "retail"));
+    let mut record: Value = serde_json::from_slice(&fs::read(&record_file).unwrap()).unwrap();
+    let foo = record["addons"]["foo"].clone();
+    assert!(foo.is_object(), "{record}");
+    let names = ["WeakAuras (WeakAurasOptions)", "Deadly Boss Mods"];
+    for name in names {
+        let mut addon = foo.clone();
+        addon["name"] = json!(name);
+        record["addons"][name.to_ascii_lowercase()] = addon;
+    }
+    fs::write(&record_file, serde_json::to_vec(&record).unwrap()).unwrap();
+
+    let script = script_of(&log, &home.env, "bash");
+    let dir = home.env.root().join("bash-completion");
+    let cwd = home.env.root().join("bash-completion-cwd");
+    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    let file = dir.join("omaddons.bash");
+    fs::write(&file, &script).unwrap();
+    let weak = r"WeakAuras\ \(WeakAurasOptions\)";
+    let deadly = r"Deadly\ Boss\ Mods";
+    let mut cases = vec![
+        case(
+            &["update", "-t", "retail", ""],
+            &[deadly, "Foo", weak],
+            true,
+        ),
+        case(&["update", "-t", "retail", "W"], &[weak], true),
+        case(&["update", "-t", "retail", r"Deadly\ B"], &[deadly], true),
+        case(&["update", "-t", "retail", "F"], &["Foo"], true),
+        case(&["errors", "--addon", "Dead"], &[deadly], true),
+        case(&["-t", "r"], &["retail"], true),
+    ];
+    log.step("complete");
+    let words: Vec<Vec<String>> = cases.iter().map(|c| c.words.clone()).collect();
+    let (run, offers) = shells::bash_complete(&file, &words, &cwd, Some(&home.env));
+    log.json("bash completion", &run);
+    let mut failing = Vec::new();
+    for (case, offered) in cases.iter_mut().zip(offers) {
+        case.offered = offered;
+        if case.offered != case.expected {
+            failing.push(format!(
+                "{:?}: expected exactly {:?}, got {:?}",
+                case.words, case.expected, case.offered
+            ));
+        }
+    }
+    log.json("cases", &cases);
+    log.assert_eq("failing cases", &failing, &Vec::<String>::new());
+
+    log.step("bash reads each offered word back as the name");
+    let bash = shells::find("bash").unwrap();
+    for (word, name) in [(weak, names[0]), (deadly, names[1])] {
+        let read = std::process::Command::new(&bash) // ubs:ignore — bash, found on PATH
+            .args([
+                "--norc",
+                "--noprofile",
+                "-c",
+                "eval \"set -- $1\"; printf '%s|%s' \"$#\" \"$1\"",
+                "_",
+                word,
+            ])
+            .env_clear()
+            .output()
+            .unwrap();
+        log.assert_eq(
+            word,
+            &String::from_utf8_lossy(&read.stdout).into_owned(),
+            &format!("1|{name}"),
+        );
+    }
 }
 
 /// A shell's `--version`, for the log.
@@ -1408,6 +1504,9 @@ fn zsh_completes_values_from_omaddons_files() {
         (&["status", "--target="], offer(&clients, "--target=")),
         (&["remove", "-t", "retail", ""], offer(&addons, "")),
         (&["remove", "-tretail", ""], offer(&addons, "")),
+        (&["remove", "-t=retail", ""], offer(&addons, "")),
+        // era has no addons: its own, never every client's.
+        (&["remove", "-t=era", "B"], fallback.clone()),
         (&["update", "--target=retail", ""], offer(&addons, "")),
         (&["pin", ""], offer(&addons, "")),
         (
@@ -1516,6 +1615,9 @@ fn fish_completes_values_from_omaddons_files() {
         ),
         (&["remove", "-t", "retail", ""], &addons),
         (&["remove", "-tretail", ""], &addons),
+        (&["remove", "-t=retail", ""], &addons),
+        // era has no addons: its own, never every client's.
+        (&["remove", "-t=era", "B"], &[]),
         (&["remove", "-t", "retail", "Foo", "B"], &["Bar", "Baz"]),
         (&["update", "--target=retail", ""], &addons),
         (&["pin", ""], &addons),

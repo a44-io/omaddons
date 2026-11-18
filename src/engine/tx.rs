@@ -3173,6 +3173,61 @@ mod tests {
         assert_eq!(foo.release_id, updated, "the update stands");
     }
 
+    /// The `required_by` bookkeeping folded into an update outlives the update: when a
+    /// commit between planning and the lock installs that very release, or pins the
+    /// addon, the addon that now requires it is still on its record.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn bookkeeping_folded_into_an_update_survives_a_concurrent_commit_of_it() {
+        for meanwhile in ["the same release", "a pin"] {
+            let scene = TxScene::new();
+            let notes = |n: &str| format!("## Interface: 120105\n## Notes: {n}\n");
+            let x1 = scene.zip("x1.zip", &[("X/X.toc", &notes("1"))]);
+            let y1 = scene.zip("y1.zip", &[("Y/Y.toc", &notes("1"))]);
+            let done = scene
+                .run(vec![
+                    scene.install("gh:o/x", &x1),
+                    scene.install("gh:o/y", &y1),
+                ])
+                .unwrap();
+            assert!(done.failures.is_empty(), "{:?}", done.failures);
+            let x2 = scene.zip("x2.zip", &[("X/X.toc", &notes("2"))]);
+            // Y's new release requires X.
+            let requires_x = format!("{}## Dependencies: X\n", notes("2"));
+            let y2 = scene.zip("y2.zip", &[("Y/Y.toc", &requires_x)]);
+            let pause = Pause::new();
+            std::thread::scope(|s| {
+                let slow = s.spawn(|| {
+                    failpoint::with_spec_in(pause.dir(), "engine.plan.done=pause", || {
+                        scene.run(vec![
+                            scene.install("gh:o/x", &x2),
+                            scene.install("gh:o/y", &y2),
+                        ])
+                    })
+                });
+                pause.reached("engine.plan.done");
+                let concurrent = match meanwhile {
+                    "a pin" => scene.edit("X", RecordEdit::SetPinned(true)),
+                    _ => scene.install("gh:o/x", &x2),
+                };
+                let done = scene.run(vec![concurrent]).unwrap();
+                assert!(done.failures.is_empty(), "{meanwhile}: {:?}", done.failures);
+                pause.resume("engine.plan.done");
+                let slow = slow.join().unwrap().unwrap();
+                assert!(slow.failures.is_empty(), "{meanwhile}: {:?}", slow.failures);
+            });
+            let record = scene.record();
+            assert_eq!(record.addons["x"].required_by, ["Y"], "{meanwhile}");
+            assert_eq!(record.addons["x"].pinned, meanwhile == "a pin");
+            assert!(
+                std::fs::read_to_string(scene.client.addons().join("Y/Y.toc"))
+                    .unwrap()
+                    .contains("## Dependencies: X"),
+                "{meanwhile}: Y's update committed"
+            );
+        }
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     fn a_concurrent_update_breaking_a_pin_guard_is_plan_stale() {

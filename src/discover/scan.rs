@@ -168,13 +168,18 @@ impl Scanner {
             };
             // A flavor folder reached directly (e.g. an extra root) looks like a custom
             // root; its parent is the Battle.net root. Reached through a link, the
-            // parent is the target's.
+            // parent is the target's. Only a `_<x>_` folder is a flavor folder: another
+            // client folder inside a Battle.net root is judged on its own (omad-4h0d.19).
             let real = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
             if has_client_exe(&entries)
-                && let Some(parent) = [dir.parent(), real.parent()]
+                && let Some(parent) = [dir.as_path(), real.as_path()]
                     .into_iter()
-                    .flatten()
-                    .find(|p| p.join(".build.info").is_file())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(super::battlenet::is_flavor_name)
+                    })
+                    .find_map(|p| p.parent().filter(|pp| pp.join(".build.info").is_file()))
             {
                 self.visited.insert(id, usize::MAX);
                 found.push((parent.to_path_buf(), RootKind::Battlenet));
@@ -308,6 +313,30 @@ mod tests {
         let mut scan = Scanner::new(ScanLimits::default());
         assert_eq!(
             scan.walk(&games.join("retail"), Base::Root),
+            [(bnet.clone(), RootKind::Battlenet)]
+        );
+    }
+
+    /// Only a `_<x>_` folder of a Battle.net root is its flavor folder: another client
+    /// folder beside them, reached directly, is a custom root of its own.
+    #[test]
+    fn a_custom_folder_inside_a_battlenet_root_is_its_own_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let bnet = dir.path().join("World of Warcraft");
+        fs::create_dir_all(bnet.join("_retail_/Interface/AddOns")).unwrap();
+        fs::write(bnet.join("_retail_/Wow.exe"), "").unwrap();
+        fs::write(bnet.join(".build.info"), "").unwrap();
+        let custom = bnet.join("WotLK 3.3.5a");
+        fs::create_dir_all(custom.join("Interface/AddOns")).unwrap();
+        fs::write(custom.join("Wow.exe"), "").unwrap();
+        let mut scan = Scanner::new(ScanLimits::default());
+        assert_eq!(
+            scan.walk(&custom, Base::Root),
+            [(custom.clone(), RootKind::Custom)]
+        );
+        let mut scan = Scanner::new(ScanLimits::default());
+        assert_eq!(
+            scan.walk(&bnet.join("_retail_"), Base::Root),
             [(bnet.clone(), RootKind::Battlenet)]
         );
     }

@@ -584,11 +584,16 @@ fn sorted_dirs(dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// The WoW root an exe belongs to: the Battle.net root above its flavor folder, else
-/// its directory when that is a root.
+/// The WoW root an exe belongs to: the Battle.net root above its flavor folder (named
+/// `_<x>_`), else its directory when that is a root. Any other folder inside a Battle.net
+/// root is judged on its own (omad-4h0d.19).
 fn root_of_exe(exe: &Path) -> Option<(PathBuf, RootKind)> {
     let dir = exe.parent()?;
     if let Some(parent) = dir.parent()
+        && dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(battlenet::is_flavor_name)
         && battlenet::is_battlenet_root(parent)
     {
         return Some((parent.to_path_buf(), RootKind::Battlenet));
@@ -896,5 +901,27 @@ mod tests {
             "in route order, each root once"
         );
         assert_eq!(roots.0.len(), 2, "two roots kept");
+    }
+
+    /// A launcher's exe in a `_<x>_` folder is its Battle.net root's; one in another
+    /// folder of that root is a custom client of its own.
+    #[test]
+    fn an_exe_belongs_to_its_battlenet_root_only_from_a_flavor_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let bnet = dir.path().join("World of Warcraft");
+        fs::create_dir_all(bnet.join("_retail_/Interface/AddOns")).unwrap();
+        fs::write(bnet.join("_retail_/Wow.exe"), "").unwrap();
+        fs::write(bnet.join(".build.info"), "").unwrap();
+        let custom = bnet.join("WotLK 3.3.5a");
+        fs::create_dir_all(custom.join("Interface/AddOns")).unwrap();
+        fs::write(custom.join("Wow.exe"), "").unwrap();
+        assert_eq!(
+            root_of_exe(&custom.join("Wow.exe")),
+            Some((custom.clone(), RootKind::Custom))
+        );
+        assert_eq!(
+            root_of_exe(&bnet.join("_retail_/Wow.exe")),
+            Some((bnet.clone(), RootKind::Battlenet))
+        );
     }
 }

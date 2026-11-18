@@ -214,7 +214,8 @@ fn values(paths: &Paths, args: &Args) -> Vec<String> {
         .collect()
 }
 
-/// A value a shell can take as one word of one line: not empty, no control character.
+/// A value a script can take as one line: not empty, no control character. It is printed
+/// as it is; each script quotes it as one word of its shell.
 fn offerable(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_control)
 }

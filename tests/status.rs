@@ -625,6 +625,59 @@ fn a_deleted_client_is_missing() {
     assert_eq!(envelope["error"]["fix_argv"], serde_json::json!(rm));
 }
 
+/// An addon whose folder starts with '-' is put back by a reinstall that names it after
+/// `--`: the recommendation and the issue's remediation parse as that reinstall, and run.
+#[test]
+fn a_missing_addon_named_like_a_flag_is_reinstalled_as_recommended() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let zip = dl.join("dash.zip");
+    fs::write(&zip, zip_text(&[("-Foo/-Foo.toc", &toc("120105", &[]))])).unwrap();
+    let path = zip.display().to_string();
+    let installed = home.run(&["install", &path, "-t", "retail"]);
+    assert_eq!(installed.code, 0, "{}", installed.context());
+    fs::remove_dir_all(home.addons("_retail_").join("-Foo")).unwrap();
+
+    let envelope = home.run(&["status"]).expect(0);
+    let want = serde_json::json!([
+        "omaddons",
+        "install",
+        "-t",
+        "retail",
+        "--reinstall",
+        "--",
+        "-Foo"
+    ]);
+    let hint = envelope["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["action"] == "reinstall")
+        .map(|c| c["argv"].clone());
+    assert_eq!(hint.as_ref(), Some(&want), "{envelope:#}");
+    let remediations: Vec<&Value> = envelope["data"]["targets"][0]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["addon"] == "-Foo")
+        .map(|i| &i["remediation"]["argv"])
+        .collect();
+    assert_eq!(remediations, [&want], "{envelope:#}");
+
+    let argv: Vec<String> = serde_json::from_value(want).unwrap();
+    let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let ran = home.run(&args);
+    assert_eq!(ran.code, 0, "{}", ran.context());
+    assert!(home.addons("_retail_").join("-Foo/-Foo.toc").is_file());
+    let after = home.run(&["status"]).expect(0);
+    assert_eq!(
+        after["data"]["targets"][0]["drift"],
+        serde_json::json!([]),
+        "{after:#}"
+    );
+}
+
 /// The `target_addons_shared` warnings of a `status` envelope.
 fn shared_warnings(envelope: &Value) -> Vec<String> {
     envelope["warnings"]

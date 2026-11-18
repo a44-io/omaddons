@@ -1893,16 +1893,18 @@ fn recover_parsed(
             })
         }
     };
-    let mut victims = Vec::new();
+    // The journal goes first: a rollback's steps are placed by what is at their paths,
+    // most of them in the stage dir, so a journal outliving its stage could never be
+    // recovered. A stage outliving its journal is an orphan the retention sweep takes.
+    let mut victims = vec![path.to_path_buf()];
+    if paths.inflight_lock(tx).exists() {
+        victims.push(paths.inflight_lock(tx));
+    }
     // The client side only where the journal's directory is its target's.
     if let (Some(prepared), Some(_)) = (&parsed.prepared, &scoped)
         && prepared.commit.stage_dir.exists()
     {
         victims.push(prepared.commit.stage_dir.clone());
-    }
-    victims.push(path.to_path_buf());
-    if paths.inflight_lock(tx).exists() {
-        victims.push(paths.inflight_lock(tx));
     }
     fsx::prune(
         scopes,

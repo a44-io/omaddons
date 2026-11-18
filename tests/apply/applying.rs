@@ -909,6 +909,37 @@ fn apply_install_executes_exactly_the_previewed_intent() {
     }
 }
 
+/// A pasted link whose scheme is in capitals stores its plan, the link in lowercase, and
+/// `apply` installs what the preview showed.
+#[test]
+fn apply_installs_a_link_typed_with_its_scheme_in_capitals() {
+    let log = tlog!();
+    let (home, _) = seeded(&log);
+    let p = preview(
+        &log,
+        &home,
+        &["install", "HTTPS://github.com/o/foo", "-t", "retail"],
+    );
+    log.assert_eq(
+        "the stored ref",
+        &p.plan["intent"]["refs"],
+        &json!(["https://github.com/o/foo"]),
+    );
+    log.step("apply");
+    let ran = apply(&log, &home, &p.id, &[]).run();
+    ran.ok().assert_private();
+    log.assert_eq(
+        "outcomes",
+        &outcomes(&ran),
+        &vec![("retail".to_owned(), "committed".to_owned())],
+    );
+    log.assert_eq(
+        "Foo installed",
+        &items(&ran.data()["result"]),
+        &vec![json!({"name": "Foo", "to_version": "v1", "status": "installed"})],
+    );
+}
+
 #[test]
 fn apply_runs_every_storable_command() {
     let log = tlog!();

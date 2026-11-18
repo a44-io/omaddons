@@ -19,7 +19,9 @@ use crate::app::outcome::SkipReason;
 use crate::cli::Context;
 use crate::doctor::fix::{BoundRepair, FixPlan};
 use crate::doctor::gc::{LatestChange, Victim};
-use crate::engine::plan::{Change, Plan, PlannedOp, PlannedRelease, PolicyDelta, TargetPlan};
+use crate::engine::plan::{
+    Change, ChangeKind, Plan, PlannedOp, PlannedRelease, PolicyDelta, TargetPlan, WorkMode,
+};
 use crate::engine::tx::UnderLock;
 use crate::engine::witness::{
     self, ApprovalWitness, Operations, RecheckAt, RecheckCost, WitnessScope,
@@ -28,7 +30,8 @@ use crate::engine::{Binding, UndoOutcome as EngineUndo};
 use crate::error::{Error, PlanStaleSource, Result, Suggestion};
 pub use crate::model::TargetRef;
 use crate::model::{
-    Actor, BackupId, FolderName, SkipIdentity, SkippedRelease, Target, TargetKey, TxId,
+    Actor, AddonReason, BackupId, Channel, FolderName, SkipIdentity, SkippedRelease, Target,
+    TargetKey, TxId,
 };
 
 /// The command paths whose runs bind to a preview; `--if-match` is a usage error on any
@@ -482,7 +485,18 @@ fn target_selection(tp: &TargetPlan) -> Value {
             c.r#ref.to_string(),
         )
     });
-    let changes: Vec<Value> = changes.into_iter().map(change_value).collect();
+    let changes: Vec<Value> = changes
+        .into_iter()
+        .map(|c| {
+            let mut value = change_value(c);
+            if let Some(marks) = record_marks(tp, c)
+                && let Value::Object(map) = &mut value
+            {
+                map.insert("record".to_owned(), marks);
+            }
+            value
+        })
+        .collect();
     let mut releases: Vec<Value> = tp.releases.iter().map(release_value).collect();
     releases.sort_by_key(|r| {
         (
@@ -537,6 +551,36 @@ fn change_value(c: &Change) -> Value {
         map.insert("policy".to_owned(), policy_value(&c.policy));
     }
     value
+}
+
+/// What an install or update leaves on its addon's record besides its release, which its
+/// `fields` do not name: the channel, pin, any-flavor mark and reason of the record after
+/// it. A plain record (stable, unpinned, its own flavor, asked for) adds nothing, so a
+/// plain change hashes exactly as before.
+fn record_marks(tp: &TargetPlan, c: &Change) -> Option<Value> {
+    if !matches!(c.kind, ChangeKind::Install | ChangeKind::Update) {
+        return None;
+    }
+    let after = tp
+        .work
+        .iter()
+        .filter(|w| w.addon == c.addon)
+        .find_map(|w| match &w.mode {
+            WorkMode::Folders(f) => f.record.as_ref(),
+            WorkMode::Records(_) => None,
+        })?;
+    let plain = after.channel == Channel::Stable
+        && !after.pinned
+        && !after.any_flavor
+        && after.reason == AddonReason::Explicit;
+    (!plain).then(|| {
+        json!({
+            "channel": after.channel,
+            "pinned": after.pinned,
+            "any_flavor": after.any_flavor,
+            "reason": after.reason,
+        })
+    })
 }
 
 /// The policy a change moves, canonical (design 7.5.6): each mark by what it selects,
@@ -1484,7 +1528,7 @@ mod tests {
         WitnessCost, WitnessRole,
     };
     use crate::error::{ErrorBody, ErrorCode, Warning, WarningCode};
-    use crate::model::{Actor, ExpectedHash, ReloadRequired, TxKind};
+    use crate::model::{Actor, AddonRecord, ExpectedHash, ReloadRequired, TxKind};
     use crate::sources::SourceId;
     use crate::state::paths::ClientPaths;
     use crate::toc::WrongFlavorReason;
@@ -1654,6 +1698,107 @@ mod tests {
                 },
             })
         );
+    }
+
+    /// An update of Foo, v1 to v2, whose work leaves `after` (a remove: `None`).
+    fn update_of_foo(kind: ChangeKind, after: Option<AddonRecord>) -> TargetPlan {
+        use crate::engine::plan::{AddonWork, DepFacts, FolderWork};
+        let mut t = tp(Some(key(KEY)), "retail", 3);
+        let mut c = change("Foo", "gh:o/foo", kind, FolderSummary::default());
+        c.from_version = Some("v1".into());
+        c.to_version = after.as_ref().map(|a| a.version.clone());
+        t.changes.push(c);
+        t.work.push(AddonWork {
+            addon: "Foo".into(),
+            mode: WorkMode::Folders(Box::new(FolderWork {
+                record: after,
+                blob: None,
+                inspected: None,
+                skipped: Vec::new(),
+                swap: Vec::new(),
+                transfers: Vec::new(),
+                degraded: Vec::new(),
+                intent: None,
+                edits: Vec::new(),
+                handed_over: Vec::new(),
+                deps: DepFacts::default(),
+                local_changes: None,
+                archive_warnings: Vec::new(),
+                input: None,
+            })),
+        });
+        t
+    }
+
+    /// Foo at v2 as a plain install leaves it: stable, unpinned, asked for.
+    fn foo_v2() -> AddonRecord {
+        AddonRecord {
+            r#ref: "gh:o/foo".parse().unwrap(),
+            name: "Foo".into(),
+            version: "v2".into(),
+            version_confidence: crate::model::VersionConfidence::Release,
+            release_id: Some("gh:o/foo@v2".into()),
+            channel: Channel::Stable,
+            pinned: false,
+            reason: AddonReason::Explicit,
+            required_by: Vec::new(),
+            folders: vec![folder("Foo")],
+            state: crate::model::AddonState::Ok,
+            installed_at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            tx_id: "01JB8Q2VA00000000000000001".parse().unwrap(),
+            blob_sha256: None,
+            revision: None,
+            left_out: Vec::new(),
+            any_flavor: false,
+            skipped_releases: Vec::new(),
+        }
+    }
+
+    /// What an install or update leaves on the record is bound: another channel, a pin,
+    /// any-flavor or another reason moves `selection`. A plain record adds nothing, so
+    /// the change hashes as before, and a remove or a records-only change never does.
+    #[test]
+    fn a_folder_change_binds_the_record_it_leaves() {
+        let selection = target_selection;
+        let plain = selection(&update_of_foo(ChangeKind::Update, Some(foo_v2())));
+        assert!(
+            plain["changes"][0].get("record").is_none(),
+            "a plain record hashes as before: {plain}"
+        );
+        let with = |edit: &dyn Fn(&mut AddonRecord)| {
+            let mut after = foo_v2();
+            edit(&mut after);
+            after
+        };
+        let records = [
+            ("beta", with(&|r| r.channel = Channel::Beta)),
+            ("alpha", with(&|r| r.channel = Channel::Alpha)),
+            ("pinned", with(&|r| r.pinned = true)),
+            ("any_flavor", with(&|r| r.any_flavor = true)),
+            ("dependency", with(&|r| r.reason = AddonReason::Dependency)),
+        ];
+        let mut seen = vec![plain.clone()];
+        for (case, after) in records {
+            for kind in [ChangeKind::Install, ChangeKind::Update] {
+                let marked = selection(&update_of_foo(kind, Some(after.clone())));
+                assert!(!seen.contains(&marked), "{case} {kind:?}: {marked}");
+                seen.push(marked);
+            }
+        }
+        let beta = |kind| {
+            let mut after = foo_v2();
+            after.channel = Channel::Beta;
+            update_of_foo(kind, Some(after))
+        };
+        assert_eq!(
+            selection(&beta(ChangeKind::Update))["changes"][0]["record"],
+            json!({"channel": "beta", "pinned": false, "any_flavor": false, "reason": "explicit"})
+        );
+        // A records-only change says what moved in `fields`, as before.
+        let edit = selection(&beta(ChangeKind::Edit));
+        assert!(edit["changes"][0].get("record").is_none(), "{edit}");
+        let remove = selection(&update_of_foo(ChangeKind::Remove, None));
+        assert!(remove["changes"][0].get("record").is_none(), "{remove}");
     }
 
     fn plan_with(targets: Vec<TargetPlan>) -> Plan {

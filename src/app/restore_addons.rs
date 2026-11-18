@@ -58,12 +58,7 @@ pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutco
         let alt = |folder: &str| with_addon(&ctx.argv, request, folder);
         let one = resolve(request, &names, record.as_ref(), &alt, &d.target.id)
             .map_err(|error| private(error, &client, &backup))?;
-        if !resolved
-            .iter()
-            .any(|r| r.addon.eq_ignore_ascii_case(&one.addon))
-        {
-            resolved.push(one);
-        }
+        merge(&mut resolved, one);
     }
     let sv: Vec<AddonSv> = resolved
         .iter()
@@ -333,6 +328,33 @@ fn resolve(
         Some(folder) => Ok(one_folder(folder, names, record)),
         None => Err(not_found(request, names, alt, target_id)),
     }
+}
+
+/// Adds `one` to `resolved`, one entry per addon name: a second request for a name already
+/// there widens that entry to every folder either names (by key, the first spelling kept),
+/// so what comes back is the union of the requests whatever their order. A whole addon's
+/// resolution (its record then or now) says what the entry is, over a folder named alone.
+fn merge(resolved: &mut Vec<Resolved>, one: Resolved) {
+    let Some(kept) = resolved
+        .iter_mut()
+        .find(|r| r.addon.eq_ignore_ascii_case(&one.addon))
+    else {
+        resolved.push(one);
+        return;
+    };
+    let other = if kept.from == FoldersFrom::Folder && one.from != FoldersFrom::Folder {
+        std::mem::replace(kept, one)
+    } else {
+        one
+    };
+    for folder in other.folders {
+        if !kept.folders.iter().any(|f| f.key() == folder.key()) {
+            kept.folders.push(folder);
+        }
+    }
+    let folders = &kept.folders;
+    kept.not_in_backup
+        .retain(|f| !folders.iter().any(|g| g.key() == f.key()));
 }
 
 /// One folder of the backup, alone: its owner's versions then and now, when known.
@@ -689,6 +711,55 @@ mod tests {
         // A folder its record names, whose settings it holds none of.
         let r = resolved("FOLDER:WeakAurasOptions", &backup, None).unwrap();
         assert_eq!(r.folders, folders(&["WeakAurasOptions"]));
+    }
+
+    /// Two requests for one addon name are one entry with every folder either names, by
+    /// key in the first spelling, the whole addon's resolution over a folder's alone.
+    #[test]
+    fn requests_for_one_addon_merge_into_the_union_of_their_folders() {
+        let wa = (
+            "WeakAuras",
+            "gh:o/WeakAuras",
+            "5",
+            &["WeakAuras", "WeakAurasOptions"][..],
+        );
+        let backup = names(&[wa], &["WeakAuras", "WeakAurasOptions", "Foo"]);
+        let whole = resolved("WeakAuras", &backup, None).unwrap();
+        let orders = [
+            ["folder:weakauras", "WeakAuras"],
+            ["WeakAuras", "folder:weakauras"],
+            ["WeakAuras", "weakauras"],
+            ["WeakAurasOptions", "folder:WeakAuras"],
+        ];
+        for requests in orders {
+            let mut merged = Vec::new();
+            for request in requests {
+                merge(&mut merged, resolved(request, &backup, None).unwrap());
+            }
+            assert_eq!(merged, std::slice::from_ref(&whole), "{requests:?}");
+        }
+        // Folders named alone join in their first spelling; another name is its own entry.
+        let mut merged = vec![resolved("folder:WeakAuras", &backup, None).unwrap()];
+        let mut extra = resolved("folder:WeakAurasOptions", &backup, None).unwrap();
+        extra.addon = "weakauras".to_owned();
+        extra.folders = folders(&["WEAKAURAS", "Extra"]);
+        merge(&mut merged, extra);
+        merge(&mut merged, resolved("folder:Foo", &backup, None).unwrap());
+        let got: Vec<(&str, FoldersFrom, Vec<FolderName>)> = merged
+            .iter()
+            .map(|r| (r.addon.as_str(), r.from, r.folders.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "WeakAuras",
+                    FoldersFrom::Folder,
+                    folders(&["WeakAuras", "Extra"])
+                ),
+                ("Foo", FoldersFrom::Folder, folders(&["Foo"])),
+            ]
+        );
     }
 
     #[test]

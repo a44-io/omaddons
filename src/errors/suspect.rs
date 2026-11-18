@@ -307,8 +307,9 @@ pub struct JudgeContext<'a> {
     /// Whether folder `a` declares folder `b` in its loaded TOC, as a required or an
     /// optional dependency, ignoring case; false for a missing folder. Read now.
     pub depends: &'a dyn Fn(&str, &str) -> bool,
-    /// Folders some transaction added, replaced or removed after the appearance was
-    /// found: what the inventory says of them now is not what ran then.
+    /// Folders some transaction added, replaced or removed after the error had occurred
+    /// (the onset's `by`): what the inventory says of them now is not what was loaded
+    /// when it appeared.
     pub changed_since: &'a BTreeSet<String>,
 }
 

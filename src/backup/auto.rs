@@ -903,6 +903,57 @@ mod tests {
         );
     }
 
+    /// A pre-change backup found damaged since is no checkpoint of today's.
+    #[test]
+    fn a_damaged_pre_change_backup_is_no_checkpoint_of_today() {
+        let mut damaged = backup(
+            BackupKind::Auto,
+            Some(Trigger::PreChange),
+            "2026-10-21T09:00:00Z",
+        );
+        if let Some(meta) = damaged.meta.as_mut() {
+            meta.integrity = Integrity::Damaged;
+            damaged.qualifying = crate::backup::qualifying(meta);
+        }
+        assert_eq!(
+            decided(Case {
+                backups: vec![damaged],
+                ..Case::default()
+            }),
+            Decision::Go(ClonePolicy::Required)
+        );
+    }
+
+    /// The live `WTF/` matching the newest capture's manifest is `unchanged` only while
+    /// that capture is a checkpoint: once found damaged, it holds nothing to rely on.
+    #[test]
+    fn a_live_tree_matching_a_damaged_backup_is_not_unchanged() {
+        use crate::backup::testing::{meta, seed};
+        let dir = tempfile::tempdir().unwrap();
+        let client = ClientPaths::new(dir.path());
+        std::fs::create_dir_all(client.wtf()).unwrap();
+        let live = std::fs::File::create(client.wtf().join("Config.wtf")).unwrap();
+        std::io::Write::write_all(&mut &live, b"SET a 1").unwrap();
+        live.set_modified(std::time::UNIX_EPOCH).unwrap();
+        let id: BackupId = "01M6Q2VA000000000000000000".parse().unwrap();
+        let stable = meta(id, "2026-10-21T09:00:00Z", BackupKind::Auto);
+        seed(&client, &stable);
+        let (backups, _) = crate::backup::list(&client);
+        assert!(
+            unchanged(&client, &backups),
+            "the manifest is the live tree"
+        );
+        seed(
+            &client,
+            &BackupMeta {
+                integrity: Integrity::Damaged,
+                ..stable
+            },
+        );
+        let (backups, _) = crate::backup::list(&client);
+        assert!(!unchanged(&client, &backups));
+    }
+
     /// Local midnight decides: a checkpoint at 23:30 in Berlin is yesterday's at 00:30
     /// there, though both are the same UTC day.
     #[test]

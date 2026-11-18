@@ -511,6 +511,39 @@ fn step_error_rolls_back() {
     assert!(!run_dir(&ran).join("undo.sh").exists());
 }
 
+/// 4b. A repair that stops after the delegation (its second step fails, and its rollback
+/// cannot finish the first's inverse): the human summary names the recovery it made and
+/// never says that nothing was changed; the JSON report lists it too.
+#[cfg(debug_assertions)]
+#[test]
+fn a_repair_stopped_after_a_recovery_names_the_recovery() {
+    let log = tlog!();
+    let home = home(&log);
+    let tx = plant::journal_pending_tx(&home, "retail");
+    plant_write(&home, "a.write", b"broken a\n");
+    plant_write(&home, "b.write", b"broken b\n");
+    log.step("repair, failing at the second step and in the first's inverse");
+    let ran = log
+        .cmd(&home, &["doctor", "fix"])
+        .env(ENV.0, ENV.1)
+        .env("OMARCHY_PATH", plant::omarchy_path(&home))
+        .failpoints("doctor.repair.step=error@2,doctor.recover.step=error")
+        .run();
+    let out = ran.stdout();
+    log.note(out);
+    assert!(!out.contains("nothing was changed"), "{out}");
+    let recovered = format!("recovered tx {tx} (rolled back)");
+    assert!(out.lines().any(|line| line == recovered), "{out}");
+    assert!(
+        ran.stderr().contains("could not finish its rollback"),
+        "{}",
+        ran.stderr()
+    );
+
+    log.step("the next change finishes the rollback");
+    run(&log, &home, &["config", "set", "check_interval_hours", "6"]).ok();
+}
+
 /// 5. A forced repair named without `--force`: refused before the lock.
 #[test]
 fn missing_force_is_refused() {

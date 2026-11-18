@@ -256,6 +256,11 @@ pub struct InstallIntent {
     /// A rollback's duties (`RequestedChange::Install.rollback`), checked again under
     /// the lock against the record as it is then.
     pub rollback: Option<RollbackOf>,
+    /// The ref of the addon of this install's name that the same transaction prunes (an
+    /// `addons.toml` entry moved to another source; [`replaced_prunes`]): the install
+    /// replaces it as an update, without `--force`, under the lock too while the record
+    /// still holds it from that ref.
+    pub replaces: Option<Ref>,
 }
 
 /// What makes an install a rollback (design 7.5.4, decision RG-D25): it goes back from
@@ -375,6 +380,7 @@ impl InstallIntent {
             any_flavor: AnyFlavorIntent::Keep,
             looked_back: None,
             rollback: None,
+            replaces: None,
         }
     }
 
@@ -504,6 +510,20 @@ pub fn carry_over(
         })
         .unwrap_or_default();
     record
+}
+
+/// The record an install leaves when it replaces `other`, an addon of its name from
+/// another ref that the same transaction prunes ([`InstallIntent::replaces`]): the
+/// fields the request gives an addon new here (`other`'s pin, channel and skip marks
+/// were decisions about its own source), with `other`'s name and the addons that
+/// require it.
+fn replacement(other: &AddonRecord, intent: &InstallIntent, chosen: &AddonRecord) -> AddonRecord {
+    let updated = carry_over(Some(other), intent, chosen);
+    AddonRecord {
+        name: updated.name,
+        required_by: updated.required_by,
+        ..carry_over(None, intent, chosen)
+    }
 }
 
 /// The skip marks of `existing` that an install lifts: those covering the release it
@@ -1728,6 +1748,40 @@ fn kept_prunes(prunes: &[String], steps: &[Step], record: &TargetRecord) -> BTre
     }
 }
 
+/// The prunes an install of this transaction replaces, by addon key: each pruned addon
+/// recorded under the name of a verified install of another ref (`steps`' builds of an
+/// addon new here), as when an `addons.toml` entry moves to another source. That install
+/// is told so ([`InstallIntent::replaces`]) and replaces the pruned addon as an update,
+/// in one work: the prune yields to it. The first such install of a name takes it; a
+/// second is refused as the same addon twice.
+fn replaced_prunes(
+    prunes: &[String],
+    steps: &mut [Step],
+    record: &TargetRecord,
+) -> BTreeSet<String> {
+    let pruned: BTreeSet<String> = prunes
+        .iter()
+        .map(|addon| TargetRecord::addon_key(addon))
+        .collect();
+    let mut replaced = BTreeSet::new();
+    for step in steps.iter_mut() {
+        let Step::Build(_, _, build) = step else {
+            continue;
+        };
+        let key = TargetRecord::addon_key(&build.template.name);
+        if build.existing.is_some() || !pruned.contains(&key) || replaced.contains(&key) {
+            continue;
+        }
+        if let Some(namesake) = record.addons.get(&key)
+            && namesake.r#ref != build.template.r#ref
+        {
+            build.intent.replaces = Some(namesake.r#ref.clone());
+            replaced.insert(key);
+        }
+    }
+    replaced
+}
+
 /// Plans `req`. Fails as a whole only for errors that apply to every change.
 pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
     let created_at = Timestamp::now();
@@ -2010,97 +2064,96 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             });
         }
         // A prune of what an install here requires changes nothing: the addon stays, and
-        // the dependency rounds find it installed.
+        // the dependency rounds find it installed. Nor does a prune of what an install
+        // here replaces under its name: that install's update removes what it no longer
+        // ships.
         if !prunes.is_empty() {
             let kept = kept_prunes(&prunes, &steps, &record);
+            let open: Vec<String> = prunes
+                .iter()
+                .filter(|addon| !kept.contains(&TargetRecord::addon_key(addon)))
+                .cloned()
+                .collect();
+            let replaced = replaced_prunes(&open, &mut steps, &record);
             for step in &mut steps {
                 if let Step::Remove(addon) = step
                     && prunes.contains(addon)
-                    && kept.contains(&TargetRecord::addon_key(addon))
+                    && [&kept, &replaced]
+                        .iter()
+                        .any(|keys| keys.contains(&TargetRecord::addon_key(addon)))
                 {
                     *step = Step::Ready(None, Some(addon.clone()), Ok(Planned::nothing()));
                 }
             }
         }
-        // Before any claim is judged: the folders an owner's own work stops shipping.
-        for step in &steps {
-            let mut view = planner.view.borrow_mut();
-            match step {
-                Step::Build(_, _, build) => {
-                    if let Some(existing) = &build.existing {
-                        for folder in build.released() {
-                            view.release(&folder, &existing.name);
+        // The addons, by key, whose folders no claim may take as handed over: their own
+        // update or remove failed after a claim of one of them was judged. The steps are
+        // judged again without their releases, so that claim is the takeover it is, as
+        // when it is judged after the failure, and never a handover the commit refuses.
+        let mut withheld: BTreeSet<String> = BTreeSet::new();
+        let (blank, judged_from) = (tp.clone(), failures.len());
+        loop {
+            // Before any claim is judged: the folders an owner's own work stops shipping.
+            *planner.view.borrow_mut() = WorkingView::default();
+            for step in &steps {
+                let mut view = planner.view.borrow_mut();
+                for (folder, owner) in step_releases(step, &record) {
+                    if !withheld.contains(&TargetRecord::addon_key(&owner)) {
+                        view.release(&folder, &owner);
+                    }
+                }
+            }
+            // Second pass, in argument order: judge each against the working view.
+            for step in steps.clone() {
+                // What the step released in the first pass, withdrawn should it fail: a
+                // failed update or remove lets go of nothing, so a later claim of one of
+                // those folders is judged as a takeover, never a silent handover.
+                let releases = step_releases(&step, &record);
+                let (r, addon, result) = match step {
+                    Step::Ready(r, addon, result) => (r, addon, result),
+                    Step::Build(r, addon, build) => {
+                        // An addon is installed from one ref at a time: a second ref of
+                        // this transaction that would be recorded under an earlier one's
+                        // name is refused before it is judged, which `--force` never
+                        // settles.
+                        let result = match namesake_in_transaction(&tp.work, &build.template) {
+                            Some(first) => Err(same_name_in_transaction(first, &build)),
+                            None => planner.build(*build).map(Planned::change),
+                        };
+                        (r, addon, result)
+                    }
+                    Step::Remove(addon) => {
+                        let result = planner.remove(&addon).map(Planned::change);
+                        (None, Some(addon), result)
+                    }
+                    Step::Edit(addon, edit) => {
+                        let result = planner.edit(&addon, &edit, &tp.work);
+                        (None, Some(addon), result)
+                    }
+                };
+                match &result {
+                    Ok(Planned::Change(p)) => claim_work(&mut planner.view.borrow_mut(), &p.work),
+                    Err(_) => {
+                        let mut view = planner.view.borrow_mut();
+                        for (folder, owner) in &releases {
+                            view.withdraw(folder, owner);
                         }
                     }
+                    Ok(_) => {}
                 }
-                Step::Remove(addon) => {
-                    if let Some(installed) = record.addons.get(&TargetRecord::addon_key(addon)) {
-                        for folder in &installed.folders {
-                            view.release(folder, &installed.name);
-                        }
-                    }
+                match result.and_then(|planned| planned.merge_into(&mut tp, &target.id)) {
+                    Ok(()) => {}
+                    Err(error) => failures.push(failure(r, addon, target, error)),
                 }
-                Step::Ready(..) | Step::Edit(..) => {}
             }
-        }
-        // Second pass, in argument order: judge each against the working view.
-        for step in steps {
-            // What the step released in the first pass, withdrawn should it fail: a
-            // failed update or remove lets go of nothing, so a later claim of one of
-            // those folders is judged as a takeover, never a silent handover.
-            let releases: Vec<(FolderName, String)> = match &step {
-                Step::Build(_, _, build) => build
-                    .existing
-                    .iter()
-                    .flat_map(|e| build.released().into_iter().map(|f| (f, e.name.clone())))
-                    .collect(),
-                Step::Remove(addon) => record
-                    .addons
-                    .get(&TargetRecord::addon_key(addon))
-                    .map(|i| {
-                        i.folders
-                            .iter()
-                            .map(|f| (f.clone(), i.name.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                Step::Ready(..) | Step::Edit(..) => Vec::new(),
-            };
-            let (r, addon, result) = match step {
-                Step::Ready(r, addon, result) => (r, addon, result),
-                Step::Build(r, addon, build) => {
-                    // An addon is installed from one ref at a time: a second ref of this
-                    // transaction that would be recorded under an earlier one's name is
-                    // refused before it is judged, which `--force` never settles.
-                    let result = match namesake_in_transaction(&tp.work, &build.template) {
-                        Some(first) => Err(same_name_in_transaction(first, &build)),
-                        None => planner.build(*build).map(Planned::change),
-                    };
-                    (r, addon, result)
-                }
-                Step::Remove(addon) => {
-                    let result = planner.remove(&addon).map(Planned::change);
-                    (None, Some(addon), result)
-                }
-                Step::Edit(addon, edit) => {
-                    let result = planner.edit(&addon, &edit, &tp.work);
-                    (None, Some(addon), result)
-                }
-            };
-            match &result {
-                Ok(Planned::Change(p)) => claim_work(&mut planner.view.borrow_mut(), &p.work),
-                Err(_) => {
-                    let mut view = planner.view.borrow_mut();
-                    for (folder, owner) in &releases {
-                        view.withdraw(folder, owner);
-                    }
-                }
-                Ok(_) => {}
+            let unagreed = unagreed_handovers(&tp.work);
+            if unagreed.is_empty() {
+                break;
             }
-            match result.and_then(|planned| planned.merge_into(&mut tp, &target.id)) {
-                Ok(()) => {}
-                Err(error) => failures.push(failure(r, addon, target, error)),
-            }
+            // Each pass withholds more addons, so this ends.
+            withheld.extend(unagreed);
+            tp = blank.clone();
+            failures.truncate(judged_from);
         }
         settle_handovers(&mut tp.work, &mut tp.changes, Some(&mut tp.ops));
         planner.dependency_rounds(&mut tp, &mut failures, &tr.dependency_locks);
@@ -3282,6 +3335,7 @@ impl TargetPlanner<'_> {
 }
 
 /// One request of a target after the first planning pass.
+#[derive(Clone)]
 enum Step {
     /// Settled (pinned, kept, failed): (ref, addon, result).
     Ready(Option<Ref>, Option<String>, Result<Planned>),
@@ -3289,6 +3343,51 @@ enum Step {
     Build(Option<Ref>, Option<String>, Box<PendingBuild>),
     Remove(String),
     Edit(String, RecordEdit),
+}
+
+/// The folders `step`'s addon stops shipping, each with that addon's recorded name: an
+/// update's drops, every folder of a remove.
+fn step_releases(step: &Step, record: &TargetRecord) -> Vec<(FolderName, String)> {
+    match step {
+        Step::Build(_, _, build) => build
+            .existing
+            .iter()
+            .flat_map(|e| build.released().into_iter().map(|f| (f, e.name.clone())))
+            .collect(),
+        Step::Remove(addon) => record
+            .addons
+            .get(&TargetRecord::addon_key(addon))
+            .map(|i| {
+                i.folders
+                    .iter()
+                    .map(|f| (f.clone(), i.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Step::Ready(..) | Step::Edit(..) => Vec::new(),
+    }
+}
+
+/// The addons, by key, that `works` take a folder from as handed over while no work of
+/// theirs removes it: their own work failed after the claim was judged, so they never
+/// let it go. Read before [`settle_handovers`] takes each removal handed over out of its
+/// work.
+fn unagreed_handovers(works: &[AddonWork]) -> BTreeSet<String> {
+    let key = |addon: &str| TargetRecord::addon_key(addon);
+    let removes = |from: &str, folder: &FolderName| {
+        works.iter().any(|w| {
+            key(&w.addon) == key(from)
+                && w.swap().iter().any(
+                    |op| matches!(op, SwapOp::Remove { live, .. } if live.key() == folder.key()),
+                )
+        })
+    };
+    works
+        .iter()
+        .flat_map(AddonWork::transfers)
+        .filter(|t| t.handover && !removes(&t.from, &t.folder))
+        .map(|t| key(&t.from))
+        .collect()
 }
 
 /// Claims in `view` the folders `work` installs, under its addon.
@@ -3574,7 +3673,9 @@ pub struct Against {
 /// archive is already inspected and staged. The install's intent and folded edits are
 /// applied again to the current record ([`carry_over`]). [`Planned::Unchanged`] when the
 /// change is no longer needed: a concurrent transaction installed the same release,
-/// removed the addon, or pinned it (with `addon_pinned`, never `plan_stale`). A refusal
+/// removed the addon, or pinned it (with `addon_pinned`, never `plan_stale`), or skipped
+/// the release. The `required_by` bookkeeping the work carries ([`bookkeeping`]) still
+/// records then, as a records-only change, unless the record has it already. A refusal
 /// is the caller's `plan_stale`.
 ///
 /// A records-only work re-checks its [`RecordGuard`]. When it fails, an adoption is
@@ -3635,8 +3736,12 @@ pub fn rejudge(
             // since planning is refused whatever else holds.
             rollback_holds(intent, &work.addon, existing, &target.id)?;
             if let Some(existing) = existing {
+                // Whatever becomes of the release, the `required_by` bookkeeping the work
+                // carries for the transaction's other works still records.
+                let bookkept = bookkeeping(folders, intent);
                 if intent.pinned_noop(existing) {
-                    return Ok(Planned::pinned(existing, &target.id));
+                    let pinned = Planned::pinned(existing, &target.id);
+                    return planner.records_only(existing, bookkept, pinned);
                 }
                 // A mark committed since planning holds too: against the record as it is
                 // now, never installing a release it covers.
@@ -3649,13 +3754,14 @@ pub fn rejudge(
                         )
                         .is_some()
                 {
-                    return Ok(Planned::skipped_release(
+                    let skipped = Planned::skipped_release(
                         existing,
                         &template.version,
                         release_id,
                         template.revision,
                         &target.id,
-                    ));
+                    );
+                    return planner.records_only(existing, bookkept, skipped);
                 }
                 // A reinstall planned against a release the record has left (a
                 // concurrent update): refused, never rolled back (`plan_stale` with the
@@ -3672,15 +3778,16 @@ pub fn rejudge(
                         Suggestion::command(["omaddons", "list", "-t", target.id.as_str()]),
                     ));
                 }
-                // Installed meanwhile: its pin, channel or reason difference still
-                // records, as a records-only change. A reinstall installs again.
+                // Installed meanwhile: its pin, channel or reason difference and its
+                // bookkeeping still record, as a records-only change. A reinstall installs
+                // again.
                 if intent.keeps_release()
                     || (!intent.reinstall
                         && existing.release_id == template.release_id
                         && existing.revision == template.revision
                         && planner.all_present(existing))
                 {
-                    return planner.current(existing, intent);
+                    return planner.current(existing, intent, bookkept);
                 }
             }
             // The archive was checked once, at plan time: its warnings come first, as
@@ -3722,6 +3829,28 @@ pub fn rejudge(
         }
         _ => planner.remove(&work.addon).map(Planned::change),
     }
+}
+
+/// The `required_by` bookkeeping a folder work carries for the transaction's other
+/// works: a resolver install's requesters, then the `required_by` edits folded into it.
+fn bookkeeping(folders: &FolderWork, intent: &InstallIntent) -> Vec<RecordEdit> {
+    let requesters = intent
+        .from_resolver()
+        .then_some(&intent.required_by_add)
+        .into_iter()
+        .flatten()
+        .map(|by| RecordEdit::AddRequiredBy(by.clone()));
+    let folded = folders
+        .edits
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                RecordEdit::AddRequiredBy(_) | RecordEdit::RemoveRequiredBy(_)
+            )
+        })
+        .cloned();
+    requesters.chain(folded).collect()
 }
 
 /// A requested change with its ref resolved against the target's record.
@@ -4111,7 +4240,8 @@ impl Planned {
     /// - a folder work absorbs the edits planned before it and replaces their work;
     /// - edits join earlier edits, under both guards.
     ///
-    /// Folding is order-independent. Two folder works for one addon stay two (M1).
+    /// Folding is order-independent. A second folder work for one addon is refused
+    /// ([`changed_twice`]): both would swap its folders and write its record.
     fn merge_into(self, tp: &mut TargetPlan, target: &str) -> Result<()> {
         let planned = match self {
             Self::Unchanged { warnings, notes } => {
@@ -4134,16 +4264,7 @@ impl Planned {
         // `changes` and `work` are pushed together, so they share indices.
         let addon = tp.work[at].addon.clone();
         match (&mut tp.work[at].mode, planned.work.mode) {
-            (WorkMode::Folders(_), mode @ WorkMode::Folders(_)) => {
-                PlannedAddon {
-                    work: AddonWork {
-                        addon: planned.work.addon,
-                        mode,
-                    },
-                    ..planned
-                }
-                .push(tp);
-            }
+            (WorkMode::Folders(_), WorkMode::Folders(_)) => return Err(changed_twice(&addon)),
             (WorkMode::Folders(folders), WorkMode::Records(records)) => {
                 folders.fold(records.edits, &addon, target)?;
             }
@@ -4175,6 +4296,18 @@ impl Planned {
         }
         Ok(())
     }
+}
+
+/// `ownership_conflict` within the transaction: `addon` already has a work that installs,
+/// updates or removes it, and a second one would swap its folders and write its record
+/// again. No `--force` settles it.
+fn changed_twice(addon: &str) -> Error {
+    Error::new(
+        ErrorCode::OwnershipConflict,
+        format!("{addon} would be changed twice in this transaction"),
+        Suggestion::text(format!("change {addon} once: in a command of its own")),
+    )
+    .details(json!({ "within_transaction": true }))
 }
 
 impl PlannedAddon {
@@ -4448,6 +4581,7 @@ impl WrongFlavorReason {
 
 /// An inspected archive cut down to the folders the target's client loads, and the
 /// folders left out.
+#[derive(Clone)]
 struct Loadable {
     inspected: Inspected,
     skipped: Vec<SkippedFolder>,
@@ -4476,6 +4610,7 @@ enum Prepared {
 }
 
 /// A verified release of an addon, not yet judged for ownership and policy.
+#[derive(Clone)]
 struct PendingBuild {
     existing: Option<AddonRecord>,
     template: AddonRecord,
@@ -4543,7 +4678,9 @@ impl TargetPlanner<'_> {
                     return Ok(Prepared::Done(Planned::pinned(existing, &self.target.id)));
                 }
                 if intent.keeps_release() || intent.pinned_setting_only(existing) {
-                    return self.current(existing, intent).map(Prepared::Done);
+                    return self
+                        .current(existing, intent, Vec::new())
+                        .map(Prepared::Done);
                 }
             }
             // Only what is installed can be installed again.
@@ -4652,7 +4789,9 @@ impl TargetPlanner<'_> {
             && existing.revision == first.revision
             && self.all_present(existing)
         {
-            return self.current(existing, intent).map(Prepared::Done);
+            return self
+                .current(existing, intent, Vec::new())
+                .map(Prepared::Done);
         }
         // A locked install whose recorded archive the cache still holds: the selected
         // release from there first, with no download (its candidates follow).
@@ -5175,27 +5314,55 @@ impl TargetPlanner<'_> {
     /// An installed addon that keeps its release. A request that would still change its
     /// `pinned`, `channel` or `reason` records that: a records-only work with one edit
     /// per field under the same-release guard (`install X --version <installed>` pins,
-    /// an install promotes a dependency). With a folder missing it is unchanged, with a
-    /// `-v` note: repairing it is a reinstall, not an edit.
-    fn current(&self, existing: &AddonRecord, intent: &InstallIntent) -> Result<Planned> {
+    /// an install promotes a dependency), then the `required_by` edits `bookkept` (a
+    /// work's [`bookkeeping`] under the lock, none at plan time). With a folder missing
+    /// only `bookkept` records, else it is unchanged, with a `-v` note: repairing it is a
+    /// reinstall, not an edit.
+    fn current(
+        &self,
+        existing: &AddonRecord,
+        intent: &InstallIntent,
+        bookkept: Vec<RecordEdit>,
+    ) -> Result<Planned> {
         let (target, name) = (&self.target.id, &existing.name);
         if !self.all_present(existing) {
-            return Ok(Planned::Unchanged {
+            let unchanged = Planned::Unchanged {
                 warnings: Vec::new(),
                 notes: vec![format!(
                     "{target}: {name} unchanged: this request keeps its release, and some of its folders are missing"
                 )],
-            });
+            };
+            return self.records_only(existing, bookkept, unchanged);
         }
-        let edits = record_edits(existing, &carry_over(Some(existing), intent, existing));
+        let mut edits = record_edits(existing, &carry_over(Some(existing), intent, existing));
+        edits.extend(bookkept);
+        self.records_only(existing, edits, Planned::nothing())
+    }
+
+    /// The records-only change of `existing` by `edits`, under their guards, with the
+    /// warnings of `unchanged`, which stands when they change nothing. A `required_by`
+    /// edit the record already has is left out ([`effective_edits`]): another commit
+    /// made it.
+    fn records_only(
+        &self,
+        existing: &AddonRecord,
+        edits: Vec<RecordEdit>,
+        unchanged: Planned,
+    ) -> Result<Planned> {
+        let (target, name) = (&self.target.id, &existing.name);
+        let edits = effective_edits(Some(existing.clone()), &edits, name, target)?;
         let guard = edits.iter().fold(RecordGuard::default(), |guard, edit| {
             guard.and(edit.guard(Some(existing)))
         });
         let after = apply_edits(Some(existing.clone()), &edits, name, target)?;
-        Ok(
-            records_change(name, Some(existing.clone()), after, edits, guard)
-                .map_or_else(Planned::nothing, Planned::change),
-        )
+        let Some(mut planned) = records_change(name, Some(existing.clone()), after, edits, guard)
+        else {
+            return Ok(unchanged);
+        };
+        if let Planned::Unchanged { warnings, .. } = unchanged {
+            planned.warnings = warnings;
+        }
+        Ok(Planned::change(planned))
     }
 
     /// Folder changes, ownership, policy and swap ops for installing the loadable
@@ -5219,8 +5386,9 @@ impl TargetPlanner<'_> {
         mut warnings: Vec<Warning>,
     ) -> Result<PlannedAddon> {
         // An addon of the same name from another ref is its record's to keep: a newer
-        // local archive of a local install replaces it as an update; any other ref takes
-        // it over only with `--force`, as an update that warns.
+        // local archive of a local install replaces it as an update; one the transaction
+        // prunes is replaced as an update that warns, and any other ref takes it over
+        // only with `--force`, as an update that warns.
         let namesake = existing
             .is_none()
             .then(|| {
@@ -5233,8 +5401,14 @@ impl TargetPlanner<'_> {
         // `--force` is for what the user named: a dependency the resolver chose is judged
         // without it, so its archive never replaces a folder it would otherwise refuse.
         let force = self.req.force && !intent.from_resolver();
+        let mut replacing = None;
         let existing = match namesake {
             Some(other) if is_local(&other.r#ref) && is_local(&template.r#ref) => Some(other),
+            Some(other) if intent.replaces.as_ref() == Some(&other.r#ref) => {
+                warnings.push(takeover_warning(other, &template.r#ref, &self.target.id));
+                replacing = Some(other);
+                Some(other)
+            }
             Some(other) if !force => {
                 return Err(takeover_refused(
                     other,
@@ -5251,7 +5425,10 @@ impl TargetPlanner<'_> {
         };
         // Against whatever `existing` holds now: the snapshot at plan time, the current
         // record under the lock. Folded edits apply after the carry-over.
-        let mut carried = carry_over(existing, intent, &template);
+        let mut carried = match replacing {
+            Some(other) => replacement(other, intent, &template),
+            None => carry_over(existing, intent, &template),
+        };
         mark_rollback(intent, existing, &mut carried, &self.target.id)?;
         let name = carried.name.clone();
         let Some(mut template) = apply_edits(Some(carried), edits, &name, &self.target.id)? else {
@@ -6314,7 +6491,9 @@ impl TargetPlanner<'_> {
                         crate::resolve::updates::older_than_found(order, installed, found)
                     });
             if !older {
-                return self.current(existing, intent).map(Prepared::Done);
+                return self
+                    .current(existing, intent, Vec::new())
+                    .map(Prepared::Done);
             }
         }
         let intent = InstallIntent {
@@ -8364,6 +8543,234 @@ mod tests {
                 moved.code,
                 ErrorCode::UnmanagedFolder,
                 "case moved: {moved:?}"
+            );
+        });
+    }
+
+    /// A claim judged before the update that drops its folder, when that update fails:
+    /// the owner never let the folder go, so no work keeps a handover from it and the
+    /// claim fails as the takeover it is, as it does when the update is judged first.
+    #[test]
+    fn a_claim_whose_releaser_fails_after_it_is_no_handover() {
+        let scene = crate::engine::testing::TxScene::new();
+        let toc = "## Interface: 120105\n";
+        let a1 = scene.zip("a1.zip", &[("A/A.toc", toc), ("Old/Old.toc", toc)]);
+        let a2 = scene.zip(
+            "a2.zip",
+            &[("A/A.toc", toc), ("ALocales/ALocales.toc", toc)],
+        );
+        let b = scene.zip("b.zip", &[("B/B.toc", toc), ("Old/Old.toc", toc)]);
+        let done = scene.run(vec![scene.install("gh:o/a", &a1)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        // A hand-made folder A's update would overwrite: the update fails.
+        crate::engine::testing::folder(&scene.client.addons().join("ALocales"), "mine");
+
+        let changes = vec![scene.install("gh:o/b", &b), scene.install("gh:o/a", &a2)];
+        with_plan(&scene, changes, |_, _, plan| {
+            let tp = &plan.targets[0];
+            let key = TargetRecord::addon_key;
+            let dangling: Vec<&Transfer> = tp
+                .work
+                .iter()
+                .flat_map(AddonWork::transfers)
+                .filter(|t| t.handover)
+                .filter(|t| !tp.work.iter().any(|w| key(&w.addon) == key(&t.from)))
+                .collect();
+            assert!(dangling.is_empty(), "{dangling:?}");
+            let failed: Vec<(Option<String>, ErrorCode)> = plan
+                .failures
+                .iter()
+                .map(|f| (f.r#ref.as_ref().map(ToString::to_string), f.error.code))
+                .collect();
+            assert_eq!(
+                failed,
+                [
+                    (Some("gh:o/b".to_owned()), ErrorCode::OwnershipConflict),
+                    (Some("gh:o/a".to_owned()), ErrorCode::UnmanagedFolder),
+                ]
+            );
+            assert_eq!(
+                plan.failures[0].error.details["folders"][0]["reason"],
+                "owned_by_another"
+            );
+            assert!(tp.work.is_empty() && tp.ops.is_empty() && tp.changes.is_empty());
+        });
+    }
+
+    /// A prune of an addon that an install of another ref takes the name of (an entry
+    /// moved to another source) yields to it: one folder work, an update of that addon to
+    /// the new ref that removes what the new archive no longer ships, and no failure. A
+    /// second folder work for that addon is refused.
+    #[test]
+    fn a_pruned_namesake_is_replaced_by_one_update() {
+        let scene = crate::engine::testing::TxScene::new();
+        let toc = "## Interface: 120105\n## Version: 1\n";
+        let old = scene.zip(
+            "old.zip",
+            &[("Foo/Foo.toc", toc), ("FooOptions/FooOptions.toc", toc)],
+        );
+        let new = scene.zip(
+            "new.zip",
+            &[("Foo/Foo.toc", "## Interface: 120105\n## Version: 2\n")],
+        );
+        let pinned = scene
+            .run(vec![scene.install_pinned("gh:o/foo", &old, "1")])
+            .unwrap();
+        assert!(pinned.failures.is_empty(), "{:?}", pinned.failures);
+        let prune = RequestedChange::Prune {
+            addon: "Foo".to_owned(),
+        };
+        with_plan(
+            &scene,
+            vec![scene.install("gh:p/foo", &new), prune],
+            |_, _, plan| {
+                assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+                let tp = &plan.targets[0];
+                assert_eq!(tp.work.len(), 1, "{:?}", tp.changes);
+                let (change, work) = (&tp.changes[0], &tp.work[0]);
+                assert_eq!(
+                    (change.kind, change.r#ref.to_string().as_str()),
+                    (ChangeKind::Update, "gh:p/foo")
+                );
+                let swap: Vec<(&str, &str)> = work
+                    .swap()
+                    .iter()
+                    .map(|op| match op {
+                        SwapOp::Add { name } => ("add", name.as_str()),
+                        SwapOp::Replace { live, .. } => ("replace", live.as_str()),
+                        SwapOp::Remove { live, .. } => ("remove", live.as_str()),
+                    })
+                    .collect();
+                assert_eq!(swap, [("replace", "Foo"), ("remove", "FooOptions")]);
+                // The request's pin, as for an addon new here.
+                let record = work.record().unwrap();
+                assert_eq!((record.name.as_str(), record.pinned), ("Foo", false));
+
+                let mut tp = tp.clone();
+                let again = PlannedAddon {
+                    change: tp.changes[0].clone(),
+                    ops: Vec::new(),
+                    release: None,
+                    reload_required: ReloadRequired::None,
+                    warnings: Vec::new(),
+                    work: tp.work[0].clone(),
+                };
+                let error = Planned::change(again)
+                    .merge_into(&mut tp, "retail")
+                    .unwrap_err();
+                assert_eq!(
+                    (error.code, &error.details["within_transaction"]),
+                    (ErrorCode::OwnershipConflict, &json!(true))
+                );
+                assert_eq!(tp.work.len(), 1);
+            },
+        );
+    }
+
+    /// An update the lock finds no longer needed (its release installed, the addon pinned
+    /// or the release skipped meanwhile) still records the `required_by` bookkeeping it
+    /// carries, as a records-only change: the edits folded into it, and a resolver
+    /// install's requesters. Its warning stays.
+    #[test]
+    fn bookkeeping_outlives_an_update_the_lock_finds_unneeded() {
+        let scene = crate::engine::testing::TxScene::new();
+        let zip = |n: &str| {
+            let toc = format!("## Interface: 120105\n## Version: {n}\n");
+            scene.zip(&format!("v{n}.zip"), &[("Foo/Foo.toc", toc.as_str())])
+        };
+        let (v1, v2) = (zip("1"), zip("2"));
+        let done = scene.run(vec![scene.install("gh:o/foo", &v1)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let requires = |by: &str| RecordEdit::AddRequiredBy(by.to_owned());
+        let changes = vec![
+            scene.install("gh:o/foo", &v2),
+            scene.edit("Foo", requires("Bar")),
+        ];
+        with_plan(&scene, changes, |req, ctx, plan| {
+            let work = &plan.targets[0].work[0];
+            let WorkMode::Folders(folders) = &work.mode else {
+                panic!("an update: {work:?}");
+            };
+            assert_eq!(folders.edits, [requires("Bar")]);
+            // The resolver's own install of Foo, for Baz.
+            let mut resolver = work.clone();
+            if let WorkMode::Folders(f) = &mut resolver.mode {
+                f.edits.clear();
+                f.intent = f.intent.clone().map(|intent| InstallIntent {
+                    reason: AddonReason::Dependency,
+                    required_by_add: BTreeSet::from(["Baz".to_owned()]),
+                    ..intent
+                });
+            }
+            let target = scene.current_target().target;
+            let judge = |work: &AddonWork| {
+                let state = TargetState::now(ctx, &target).unwrap();
+                let view = released_view(std::slice::from_ref(work));
+                let against = Against {
+                    generation: plan.targets[0].generation,
+                    bound: false,
+                };
+                rejudge(req, ctx, &target, &state, work, against, &view).unwrap()
+            };
+            let records = |planned: Planned| match planned {
+                Planned::Change(p) => match p.work.mode {
+                    WorkMode::Records(r) => {
+                        let codes: Vec<WarningCode> = p.warnings.iter().map(|w| w.code).collect();
+                        (r.edits, r.after.map(|a| a.required_by), codes)
+                    }
+                    WorkMode::Folders(_) => panic!("a folder change: {:?}", p.change),
+                },
+                Planned::Unchanged { warnings, .. } => panic!("unchanged: {warnings:?}"),
+            };
+            let skip = folders.record.as_ref().map(|template| RecordEdit::Skip {
+                release: ReleaseKey::of_record(template),
+                version: template.version.clone(),
+            });
+
+            // Meanwhile: the same release.
+            scene.run(vec![scene.install("gh:o/foo", &v2)]).unwrap();
+            assert_eq!(
+                records(judge(work)),
+                (vec![requires("Bar")], Some(vec!["Bar".to_owned()]), vec![]),
+                "current"
+            );
+            assert_eq!(
+                records(judge(&resolver)),
+                (vec![requires("Baz")], Some(vec!["Baz".to_owned()]), vec![]),
+                "the resolver's install, current"
+            );
+            // Back at v1, and then pinned there.
+            scene.run(vec![scene.install("gh:o/foo", &v1)]).unwrap();
+            let pin = scene.edit("Foo", RecordEdit::SetPinned(true));
+            scene.run(vec![pin]).unwrap();
+            assert_eq!(
+                records(judge(work)),
+                (
+                    vec![requires("Bar")],
+                    Some(vec!["Bar".to_owned()]),
+                    vec![WarningCode::AddonPinned]
+                ),
+                "pinned"
+            );
+            // Unpinned, and v2 skipped.
+            let unpin = scene.edit("Foo", RecordEdit::SetPinned(false));
+            scene
+                .run(vec![unpin, scene.edit("Foo", skip.unwrap())])
+                .unwrap();
+            assert_eq!(
+                records(judge(work)),
+                (
+                    vec![requires("Bar")],
+                    Some(vec!["Bar".to_owned()]),
+                    vec![WarningCode::ReleaseSkipped]
+                ),
+                "skipped"
+            );
+            // Bookkeeping another commit already made is not this one's.
+            scene.run(vec![scene.edit("Foo", requires("Bar"))]).unwrap();
+            assert!(
+                matches!(judge(work), Planned::Unchanged { .. }),
+                "made meanwhile"
             );
         });
     }

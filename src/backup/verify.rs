@@ -15,10 +15,11 @@ use jiff::Timestamp;
 
 use super::create::write;
 use super::export::reserve;
-use super::inventory::Ring;
+use super::inventory::{self, Ring};
 use super::tree::hash_files;
 use super::{
     BackupMeta, BackupRef, Baseline, EntryKind, Integrity, Manifest, check_structure, meta_file,
+    qualifying,
 };
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{ScopeTable, WriteSession, Writer};
@@ -238,6 +239,7 @@ pub fn damage_found(
         meta.integrity = Integrity::Damaged;
         let mut s = WriteSession::untracked(Writer::Backup, scopes, "verify");
         if write(&mut s, &meta_file(&backup.dir), &meta).is_ok() {
+            reproject(paths, backup, &meta, ring);
             doorbell::ring(paths, ring.command, ring.actor);
         }
     }
@@ -267,8 +269,26 @@ fn record(
         meta.verified_at = Some(Timestamp::now());
     }
     write(&mut s, &meta_file(&b.dir), &meta)?;
+    let ring = Ring {
+        command: req.command,
+        actor: req.actor,
+    };
+    reproject(paths, b, &meta, ring);
     doorbell::ring(paths, req.command, req.actor);
     Ok(())
+}
+
+/// Rebuilds the backup inventory of `backup`'s client when `meta`, just written, made the
+/// backup stop or start being a checkpoint (one found damaged is none). The inventory names
+/// the newest checkpoint for `status`, and validates only the ids it covers, which did not
+/// change. Best effort, as every inventory write.
+fn reproject(paths: &Paths, backup: &BackupRef, meta: &BackupMeta, ring: Ring<'_>) {
+    let was = backup.meta.as_ref().is_some_and(qualifying);
+    if was != qualifying(meta)
+        && let Some(client) = backup.client()
+    {
+        inventory::rebuild(paths, &client, &meta.target, ring);
+    }
 }
 
 #[cfg(test)]

@@ -905,6 +905,59 @@ fn set_aside_of_an_unreadable_repair_journal() {
     change_on(&log, &home, "retail", "after").ok();
 }
 
+/// A repair journal this build cannot read (a newer major format) fails every change
+/// closed. Its set-aside, undone, reactivates it; the undo of that undo sets it aside
+/// again, as the set-aside did, and changes run again.
+#[test]
+fn reactivate_then_redo_sets_aside_again_a_repair_journal_no_build_reads() {
+    let log = tlog!();
+    let home = two_clients(&log);
+    log.step("plant");
+    register(&home, "retail");
+    let tx = omaddons::model::TxId::new().to_string();
+    let journal = home.state().join(format!("journal/{tx}.repair.jsonl"));
+    fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    fs::write(
+        &journal,
+        format!("{{\"type\":\"prepared\",\"format\":\"2.0\",\"tx\":\"{tx}\"}}\n"),
+    )
+    .unwrap();
+    let refused = |log: &TestLog, name: &str| {
+        let blocked = change_on(log, &home, "retail", name);
+        assert_ne!(blocked.run.code, 0, "{name}: every change is refused");
+        let error = refusal(log, &blocked);
+        log.assert_eq(
+            "reason",
+            &error["details"]["reason"],
+            &json!("journal_too_new"),
+        );
+    };
+    refused(&log, "before");
+
+    log.step("set-aside");
+    let fixed = run(
+        &log,
+        &home,
+        &["doctor", "fix", "--only", TOO_NEW, "--force", "--yes"],
+    );
+    fixed.ok();
+    let fix_run = text(&fixed.envelope()["run_id"]).to_owned();
+    assert!(!journal.exists(), "set aside");
+
+    log.step("its undo reactivates it");
+    let undone = run(&log, &home, &["doctor", "undo", &fix_run]);
+    undone.ok();
+    let undo_run = text(&undone.envelope()["run_id"]).to_owned();
+    assert!(journal.is_file(), "reactivated");
+    refused(&log, "reactivated");
+
+    log.step("the undo of that undo sets it aside again");
+    run(&log, &home, &["doctor", "undo", &undo_run]).ok();
+    assert!(!journal.exists(), "set aside again");
+    no_provisional(&home);
+    change_on(&log, &home, "retail", "after").ok();
+}
+
 // ---------------------------------------------------------------------------------------
 // 9. Privacy.
 

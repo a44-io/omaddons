@@ -264,6 +264,8 @@ pub fn clone_tree(
 /// A point in a copy, for tests that change the source there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Step<'a> {
+    /// `rel` was stamped before its copy (attempt 1 or 2), which comes next.
+    Stamped(&'a str, u8),
     /// `rel` was copied (attempt 1 or 2), before its second stamp.
     Copied(&'a str, u8),
     /// Every entry is copied; the root's identity and the second walk come next.
@@ -451,6 +453,7 @@ fn copy_file(
         Err(e) => Err(vanished_or_io(rel, &e)),
     };
     let before = stamp()?;
+    hook(Step::Stamped(rel, 1));
     let mut kind = clone(s, src, dst, rel, opts.policy)?;
     hook(Step::Copied(rel, 1));
     let mut settled = stamp()? == before;
@@ -458,6 +461,7 @@ fn copy_file(
     let mut compared = before;
     if !settled && opts.settle {
         let again_before = stamp()?;
+        hook(Step::Stamped(rel, 2));
         compared = again_before;
         let temp = dst.with_file_name(format!(
             ".omaddons-settle-{}",
@@ -513,6 +517,16 @@ fn clone(
             Err(CloneError::NotReflinkable)
         }
         Err(FsxError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Err(CloneError::Changed {
+                path: rel.to_owned(),
+            })
+        }
+        // fsx refuses to clone a source that is no longer a regular file: it vanished or
+        // was replaced since its stamp, which is a change, as at the other three points
+        // that notice it. A refusal on the destination's side stays an I/O error.
+        Err(FsxError::Precondition(_))
+            if !std::fs::symlink_metadata(src).is_ok_and(|m| m.is_file()) =>
+        {
             Err(CloneError::Changed {
                 path: rel.to_owned(),
             })
@@ -1023,6 +1037,66 @@ mod tests {
             assert!(!shown.contains(name), "{shown}");
         }
         assert!(body.retryable);
+    }
+
+    /// A file that vanishes, or stops being a regular file, between its stamp and its clone
+    /// is a change, on the first copy and on the settle copy alike. A refusal on the
+    /// destination's side stays an I/O error.
+    #[test]
+    fn a_file_gone_between_its_stamp_and_its_clone_is_a_change() {
+        let opts = CloneOpts::capture(ClonePolicy::Preferred);
+        let changed =
+            |err: &CloneError| matches!(err, CloneError::Changed { path } if path == "Config.wtf");
+
+        let f = Fixture::new();
+        let config = f.wtf().join("Config.wtf");
+        let err = f
+            .copy_with(&f.stage("gone"), &opts, &mut |step| {
+                if step == Step::Stamped("Config.wtf", 1) {
+                    fs::remove_file(&config).unwrap();
+                }
+            })
+            .unwrap_err();
+        assert!(changed(&err), "{err:?}");
+
+        let f = Fixture::new();
+        let config = f.wtf().join("Config.wtf");
+        let err = f
+            .copy_with(&f.stage("a dir"), &opts, &mut |step| {
+                if step == Step::Stamped("Config.wtf", 1) {
+                    fs::remove_file(&config).unwrap();
+                    fs::create_dir(&config).unwrap();
+                }
+            })
+            .unwrap_err();
+        assert!(changed(&err), "{err:?}");
+
+        // The settle copy: rewritten after the first copy, gone before the second.
+        let f = Fixture::new();
+        let config = f.wtf().join("Config.wtf");
+        let err = f
+            .copy_with(&f.stage("settle"), &opts, &mut |step| match step {
+                Step::Copied("Config.wtf", 1) => fs::write(&config, "SET more 1\n").unwrap(),
+                Step::Stamped("Config.wtf", 2) => fs::remove_file(&config).unwrap(),
+                _ => {}
+            })
+            .unwrap_err();
+        assert!(changed(&err), "{err:?}");
+
+        // The destination taken meanwhile: not the source's change.
+        let f = Fixture::new();
+        let to = f.stage("taken");
+        let err = f
+            .copy_with(&to, &opts, &mut |step| {
+                if step == Step::Stamped("Config.wtf", 1) {
+                    fs::write(to.join("Config.wtf"), "").unwrap();
+                }
+            })
+            .unwrap_err();
+        assert!(
+            matches!(&err, CloneError::Io { path, .. } if path == "Config.wtf"),
+            "{err:?}"
+        );
     }
 
     #[test]

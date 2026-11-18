@@ -2194,7 +2194,8 @@ fn committed(
             })?;
         let plan = plan_undo(&read.entries, at, paths)?;
         let writes = undo_writes(&plan);
-        super::super::fence::under_lock(c.scopes, paths, None, &writes)?;
+        let subjects = set_aside_again(&plan, paths);
+        super::super::fence::under_lock_excusing(c.scopes, paths, None, &writes, &subjects)?;
         let running = running_now(ctx, c.targets);
         let verified = verify_now(plan, &read, at, c.clients, c.scopes, &running, paths)?;
         if let Some(binding) = ctx.binding {
@@ -2380,6 +2381,25 @@ fn unsettled_besides(paths: &Paths, stop: &Error) -> Result<Option<Error>> {
         )
         .details(json!({ "journal_pending": other }))
     }))
+}
+
+/// The journals `plan` moves out from under their own names when it reactivates none:
+/// the stuck journals the undo of a reactivation sets aside again, whose fences its
+/// commit lifts (a suspension, `barrier::of`), and so does the gate under the lock. An
+/// undo that reactivates a journal excuses none.
+fn set_aside_again(plan: &RepairUndoPlan, paths: &Paths) -> BTreeSet<TxId> {
+    if plan
+        .inverses
+        .iter()
+        .any(|inverse| inverse.kind == InverseKind::Activate)
+    {
+        return BTreeSet::new();
+    }
+    plan.inverses
+        .iter()
+        .filter(|inverse| inverse.kind == InverseKind::Deactivate)
+        .filter_map(|inverse| journal_file(paths, &inverse.path).map(|(tx, _)| tx))
+        .collect()
 }
 
 /// Every path the plan's inverses write, for the fences' gate under the lock.
@@ -5134,6 +5154,220 @@ mod tests {
         );
         assert!(home.paths.journal(&stuck).is_file(), "reactivated again");
         assert!(!provisional.exists(), "no provisional name left");
+    }
+
+    /// A repair journal whose `prepared` line declares a newer major format, with no
+    /// writer: recovery stops at it, and it closes every change's fences until it is set
+    /// aside.
+    fn too_new_repair_journal(home: &RepairHome) -> TxId {
+        too_new_repair_journal_as(home, TxId::new())
+    }
+
+    /// [`too_new_repair_journal`] as transaction `tx`.
+    fn too_new_repair_journal_as(home: &RepairHome, tx: TxId) -> TxId {
+        let mut prepared = repair_prepared(home, &[], &[chmod(home)]);
+        prepared.format = crate::state::store::SchemaVersion::new(
+            crate::engine::repair::journal::FORMAT.major + 1,
+            0,
+        );
+        prepared.tx = tx;
+        let mut line = serde_json::to_vec(&crate::engine::repair::journal::RepairLine::Prepared(
+            Box::new(prepared),
+        ))
+        .unwrap();
+        line.push(b'\n');
+        fs::write(home.paths.journal_repair(&tx), line).unwrap();
+        tx
+    }
+
+    /// The forced set-aside of the repair journal `tx`'s `artifacts`, each into its own
+    /// side's quarantine.
+    fn repair_set_aside(home: &RepairHome, tx: TxId, artifacts: &[PathBuf]) -> PlannedFix {
+        let mut fix = set_aside(home, tx, artifacts, Vec::new());
+        if let Fix::Suspend { journal } = &mut fix.fix {
+            journal.family = JournalFamily::Repair;
+            journal.target = None;
+        }
+        PlannedFix {
+            fm: Cow::Borrowed("fm-concurrency_primitives-journal-too-new"),
+            ..fix
+        }
+    }
+
+    /// The stuck journal a set-aside's undo reactivates may be a repair journal this
+    /// build cannot read, which closes every change's fences: the undo of that undo sets
+    /// it aside again, as the set-aside did, its commit and the gate before it lifting
+    /// exactly that journal's close.
+    #[test]
+    fn an_undo_of_a_reactivation_sets_aside_again_a_repair_journal_no_build_reads() {
+        let home = plain_home();
+        let stuck = too_new_repair_journal(&home);
+        let closed = || {
+            fence::load(&home.paths, &[home.client.client_dir().to_path_buf()])
+                .closed()
+                .and_then(|(_, stop)| stop.tx)
+        };
+        assert_eq!(closed(), Some(stuck), "every change is refused");
+        let journal = home.paths.journal_repair(&stuck);
+        let tx = repaired(
+            &home,
+            &[repair_set_aside(
+                &home,
+                stuck,
+                std::slice::from_ref(&journal),
+            )],
+        );
+        assert!(!journal.exists(), "set aside");
+        assert_eq!(
+            set_aside_again(&plan_of(&home, tx), &home.paths),
+            BTreeSet::new(),
+            "an undo that reactivates excuses nothing"
+        );
+        let reactivation = undone(&home, tx);
+        assert!(journal.is_file(), "reactivated");
+        assert_eq!(closed(), Some(stuck), "every change is refused again");
+        assert_eq!(
+            set_aside_again(
+                &plan_of(&home, reactivation.outcome.tx.unwrap()),
+                &home.paths
+            ),
+            BTreeSet::from([stuck]),
+            "its undo excuses the journal it sets aside again, and only that"
+        );
+        let redo = engine_undo(
+            &home,
+            reactivation.outcome.tx.unwrap(),
+            false,
+            vec![discovered(&home)],
+        );
+        assert!(redo.is_ok(), "the undo of the reactivation: {redo:?}");
+        assert!(!journal.exists(), "set aside again");
+        assert_eq!(closed(), None, "changes run again");
+    }
+
+    /// A repair of `fixes` on `home` stopped where `spec` panics it: its transaction, its
+    /// journal and what it did left as they were, its writer gone. Debug builds: it arms a
+    /// failpoint.
+    #[cfg(debug_assertions)]
+    fn crashed(home: &RepairHome, fixes: &[PlannedFix], spec: &str) -> TxId {
+        let rtx = RepairTx::begin(&home.paths).unwrap();
+        let tx = rtx.tx();
+        let lowered = lower(
+            &LowerCtx {
+                paths: &home.paths,
+                tx,
+                run: &home.run,
+                clients: &home.planned,
+                skill_dirs: &home.skill_dirs,
+                scopes: &home.scopes,
+                mount_id: &fsx::mount_id,
+            },
+            fixes,
+        )
+        .unwrap();
+        let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
+        let ctx = CommitCtx {
+            lock: &lock,
+            scopes: &home.scopes,
+            run: &home.run,
+            mount_id: &fsx::mount_id,
+        };
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fsx::with_spec(spec, || commit(&ctx, rtx, &lowered, &meta()))
+        }));
+        tx
+    }
+
+    /// A stuck repair journal with a client-side half (`snapshots/<tx>.repair`) fences
+    /// what it wrote below that half. The undo of its set-aside's undo moves the half
+    /// back into quarantine with the journal, crossing that journal's own fence, as the
+    /// set-aside did.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn an_undo_of_a_reactivation_moves_the_client_half_its_journal_fences() {
+        let home = plain_home();
+        // Stray quarantined into the client half, then a Stray put back by hand: the step
+        // is in neither state, and recovery stops at it.
+        let stuck = crashed(
+            &home,
+            &[quarantine(home.addons("Stray"), client_root(&home))],
+            "fsx.mutate.executed=panic@1",
+        );
+        fs::create_dir_all(home.addons("Stray")).unwrap();
+        fs::write(home.addons("Stray/Stray.toc"), "## Title: by hand\n").unwrap();
+        let half = home.client.snapshots_repair(&stuck);
+        let fenced_below_half = || {
+            fence::load(&home.paths, &[home.client.client_dir().to_path_buf()])
+                .iter()
+                .any(|f| f.stop.tx == Some(stuck) && f.path.starts_with(&half))
+        };
+        assert!(
+            fenced_below_half(),
+            "the stuck repair fences below its half"
+        );
+        let journal = home.paths.journal_repair(&stuck);
+        let tx = repaired(
+            &home,
+            &[repair_set_aside(
+                &home,
+                stuck,
+                &[journal.clone(), half.clone()],
+            )],
+        );
+        assert!(!journal.exists() && !half.exists(), "set aside");
+        let reactivation = undone(&home, tx);
+        assert!(journal.is_file() && half.is_dir(), "reactivated");
+        assert!(fenced_below_half(), "fenced again");
+        let redo = engine_undo(
+            &home,
+            reactivation.outcome.tx.unwrap(),
+            false,
+            vec![discovered(&home)],
+        );
+        assert!(redo.is_ok(), "the undo of the reactivation: {redo:?}");
+        assert!(
+            !journal.exists() && !half.exists(),
+            "set aside again, its half with it"
+        );
+    }
+
+    /// Another stuck repair journal that closes every change's fences, which the undo of
+    /// a reactivation does not move, still refuses it, whether its close is the one the
+    /// table kept or one hidden behind the excused journal's.
+    #[test]
+    fn another_stuck_repair_journal_still_blocks_the_undo_of_a_reactivation() {
+        for (case, other) in [
+            ("an older journal", "01JB8Q2VA00000000000000001"),
+            ("a newer journal", "7ZZZZZZZZZZZZZZZZZZZZZZZZZ"),
+        ] {
+            let home = plain_home();
+            let stuck = too_new_repair_journal(&home);
+            let journal = home.paths.journal_repair(&stuck);
+            let tx = repaired(
+                &home,
+                &[repair_set_aside(
+                    &home,
+                    stuck,
+                    std::slice::from_ref(&journal),
+                )],
+            );
+            let reactivation = undone(&home, tx);
+            assert!(journal.is_file(), "{case}: reactivated");
+            let other = too_new_repair_journal_as(&home, other.parse().unwrap());
+            let err = engine_undo(
+                &home,
+                reactivation.outcome.tx.unwrap(),
+                false,
+                vec![discovered(&home)],
+            )
+            .unwrap_err();
+            assert!(journal.is_file(), "{case}: nothing moved: {err:?}");
+            assert_eq!(
+                err.details["journal_pending"],
+                json!(other),
+                "{case}: refused for the other journal: {err:?}"
+            );
+        }
     }
 
     #[test]

@@ -483,7 +483,7 @@ warning_codes! {
     CatalogOverrideInvalid      = "catalog_override_invalid",
         "A catalog override file was invalid and was skipped as a whole.";
     OwnershipTransferred        = "ownership_transferred",
-        "`--force` transferred a folder or addon from its previous managed owner.";
+        "A folder or addon passed from its previous managed owner to another: `--force` transferred it, or `sync --prune` replaced an addon whose entry names another source.";
     /// A credential file other users can read.
     CredentialFileMode          = "credential_file_mode",
         "A credential file is readable by users other than its owner.";

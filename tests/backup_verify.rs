@@ -184,6 +184,47 @@ fn a_flipped_byte_in_a_verified_backup_is_damage_and_restore_refuses_it() {
     );
 }
 
+/// A backup found damaged is no checkpoint: `backup list` says so, `status` recommends a
+/// backup again, and the automatic one is made instead of skipped as `unchanged`.
+#[test]
+fn a_backup_found_damaged_is_no_checkpoint() {
+    let home = Home::new(&["wow"]);
+    run(&home, &["config", "set", "auto_backup", "daily-copy"], &[]).expect(0);
+    let id = create(&home, true);
+    let free = [("OMADDONS_FS_FREE_MB", "8192")];
+    let auto = ["backup", "create", "--auto", "-t", "retail"];
+    let skipped = run(&home, &auto, &free).expect(0);
+    assert_eq!(
+        skipped["data"]["targets"][0]["skipped"],
+        json!({"reason": "unchanged"}),
+        "{skipped:#}"
+    );
+    flip(&home, &id);
+    verify(&home, &[&id], &[]).expect(0);
+    let entry = listed(&home, &id);
+    assert_eq!(
+        (&entry["integrity"], &entry["qualifying"]),
+        (&json!("damaged"), &json!(false)),
+        "{entry:#}"
+    );
+    for cached in [&[][..], &["--cached"]] {
+        let status = run(&home, &[&["status"][..], cached].concat(), &[]).expect(0);
+        let recommended = status["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["action"] == "backup_create");
+        assert!(recommended, "{cached:?}: {status:#}");
+    }
+    let made = run(&home, &auto, &free).expect(0);
+    let t = &made["data"]["targets"][0];
+    assert_eq!(
+        (&t["skipped"], &t["backup"]["trigger"]),
+        (&Value::Null, &json!("post_session")),
+        "{made:#}"
+    );
+}
+
 /// A backup whose `WTF/` is gone is damaged, every file missing: recorded as such and
 /// never restorable, not an I/O error to retry.
 #[test]

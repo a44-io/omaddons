@@ -365,9 +365,11 @@ Item {
                     foreground: root.foreground
                     fontFamily: root.fontFamily
                     fontSize: Style.font.bodySmall
+                    // The view's own row, not `entry.modelData`: that copy turns a fix's
+                    // argv into no array, which the classifier refuses (RG-65).
                     onClicked: {
                       root.select(entry.modelData.index)
-                      root.press(entry.modelData, modelData.name)
+                      root.press(root.rows[entry.modelData.index], modelData.name)
                     }
                   }
                 }

@@ -237,67 +237,80 @@ fn a_dropped_folder_is_handed_over_in_either_order_and_undone_byte_for_byte() {
     }
 }
 
-/// An update that would drop a folder, but fails, lets go of nothing: a later request
-/// in the same run shipping that folder is a takeover the owner never agreed to, refused
-/// at plan time as its own item, never a silent handover the commit then refuses.
+/// An update that would drop a folder, but fails, lets go of nothing: a request in the
+/// same run shipping that folder, before or after it, is a takeover the owner never
+/// agreed to, refused at plan time as its own item, never a silent handover the commit
+/// then refuses. The preview and the run agree in either argument order.
 #[test]
 fn a_failed_update_hands_over_nothing() {
-    let mut home = Home::new(&["wow"]);
-    let (a1, a2) = (
-        Rel::new("A", "v1", &["A", "Old"]),
-        Rel::new("A", "v2", &["A", "ALocales"]),
-    );
-    home.installed_behind(A, ("v1", &a1.assets()), ("v2", &a2.assets()), &["retail"]);
-    let b = Rel::new("B", "v1", &["B", "Old"]);
-    gh_release(&home.http, B, "v1", &b.assets());
-    // A hand-made folder the update would overwrite: A's update fails.
-    let addons = home.addons("_retail_");
-    std::fs::create_dir_all(addons.join("ALocales")).unwrap();
-    std::fs::write(
-        addons.join("ALocales/ALocales.toc"),
-        "## Interface: 120105\n",
-    )
-    .unwrap();
-    let before = tree_hash(&addons);
-    // The preview says so too: B is never shown taking the folder.
-    let preview = home.run(&["install", "gh:o/a", "gh:o/b", "-t", "retail", "--dry-run"]);
-    let previewed = preview.expect(4);
-    assert_eq!(
-        previewed["error"]["details"]["items"][1]["error"]["code"],
-        "ownership_conflict",
-        "{}",
-        preview.context()
-    );
-    let r = home.run(&["install", "gh:o/a", "gh:o/b", "-t", "retail"]);
-    let envelope = r.expect(4);
-    let codes: Vec<(String, String)> = envelope["error"]["details"]["items"]
-        .as_array()
-        .unwrap_or(&Vec::new())
-        .iter()
-        .map(|i| {
-            (
-                i["request"].as_str().unwrap_or_default().to_owned(),
-                i["error"]["code"].as_str().unwrap_or_default().to_owned(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        codes,
-        [
-            ("gh:o/a".to_owned(), "unmanaged_folder".to_owned()),
-            ("gh:o/b".to_owned(), "ownership_conflict".to_owned()),
-        ],
-        "{}",
-        r.context()
-    );
-    assert_eq!(tree_hash(&addons), before, "nothing moved");
-    let record = common::state::record(&home, "retail");
-    assert!(
-        record.addons["a"]
-            .folders
-            .iter()
-            .any(|f| f.as_str() == "Old")
-    );
+    for order in [["gh:o/a", "gh:o/b"], ["gh:o/b", "gh:o/a"]] {
+        let mut home = Home::new(&["wow"]);
+        let (a1, a2) = (
+            Rel::new("A", "v1", &["A", "Old"]),
+            Rel::new("A", "v2", &["A", "ALocales"]),
+        );
+        home.installed_behind(A, ("v1", &a1.assets()), ("v2", &a2.assets()), &["retail"]);
+        let b = Rel::new("B", "v1", &["B", "Old"]);
+        gh_release(&home.http, B, "v1", &b.assets());
+        // A hand-made folder the update would overwrite: A's update fails.
+        let addons = home.addons("_retail_");
+        std::fs::create_dir_all(addons.join("ALocales")).unwrap();
+        std::fs::write(
+            addons.join("ALocales/ALocales.toc"),
+            "## Interface: 120105\n",
+        )
+        .unwrap();
+        let before = tree_hash(&addons);
+        let code = |request: &str| match request {
+            "gh:o/a" => (request.to_owned(), "unmanaged_folder".to_owned()),
+            _ => (request.to_owned(), "ownership_conflict".to_owned()),
+        };
+        let expected: Vec<(String, String)> = order.iter().map(|r| code(r)).collect();
+        let run = ["install", order[0], order[1], "-t", "retail"];
+        let mut preview = run.to_vec();
+        preview.push("--dry-run");
+        // The preview says so too: B is never shown taking the folder.
+        for (what, args) in [("preview", preview.as_slice()), ("run", run.as_slice())] {
+            let r = home.run(args);
+            let envelope = r.expect(4);
+            let codes: Vec<(String, String)> = envelope["error"]["details"]["items"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .map(|i| {
+                    (
+                        i["request"].as_str().unwrap_or_default().to_owned(),
+                        i["error"]["code"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect();
+            assert_eq!(codes, expected, "{order:?} {what}\n{}", r.context());
+            let refused = envelope["error"]["details"]["items"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .find(|i| i["request"] == "gh:o/b")
+                .map(|i| i["error"].clone())
+                .unwrap_or_default();
+            assert_eq!(
+                (
+                    &refused["message"],
+                    &refused["fix_argv"].as_array().unwrap().last()
+                ),
+                (&json!("Old belongs to A"), &Some(&json!("--force"))),
+                "{order:?} {what}: B is refused as a takeover of A's folder\n{}",
+                r.context()
+            );
+        }
+        assert_eq!(tree_hash(&addons), before, "{order:?}: nothing moved");
+        let record = common::state::record(&home, "retail");
+        assert!(
+            record.addons["a"]
+                .folders
+                .iter()
+                .any(|f| f.as_str() == "Old")
+        );
+    }
 }
 
 #[test]

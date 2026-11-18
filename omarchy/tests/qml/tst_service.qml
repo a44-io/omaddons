@@ -368,6 +368,20 @@ TestCase {
     compare(service.lastError, null)
   }
 
+  // Issues reads nothing of its own: its Try again, after a status that failed, asks the
+  // cached status again at once, and the answer replaces the failed state.
+  function test_try_again_on_issues_reads_status_again() {
+    answer(lastRun("status"), failure("status", "state_corrupt", "config.toml does not parse"))
+    compare(service.outcomes.status, "failed")
+    var before = runs("status").length
+    verify(service.readAgain("issues"))
+    compare(runs("status").length, before + 1)
+    compare(words(lastRun("status").command), ["status", "--cached", "-v"])
+    answer(lastRun("status"), statusEnvelope(0))
+    compare(service.outcomes.status, "ok")
+    verify(service.summary !== null)
+  }
+
   function test_an_oversized_stdout_is_discarded() {
     var launch = lastRun("status")
     launch.process.finish(0, "x".repeat(Model.WIDGET_OUTPUT_MAX_BYTES + 1))
@@ -1608,6 +1622,36 @@ TestCase {
     answer(lastRun("status"), statusEnvelope(0))
     wait(20)
     compare(ProcessRegistry.launches.slice(before).map(function(l) { return words(l.command) }), [["status", "--cached", "-v"]])
+  }
+
+  // An open whose cached status waited behind a read, and which a refresh (the doorbell,
+  // the poll) replaced in the queue: the first status that answers is still followed by
+  // the open's quiet reads and its scan, once.
+  function test_an_open_whose_status_a_refresh_replaced_still_reads_the_rest() {
+    ready(0)
+    service.readBackups()
+    var slow = lastRun("backup")
+    compare(words(slow.command), ["backup", "list", "--limit", "50"])
+    var statuses = runs("status").length
+    service.setPanelOpen("bar@DP-1", true)
+    service.refresh()
+    compare(runs("status").length, statuses, "the open's status waits behind the read")
+    answer(slow, envelope("backup list", { "targets": [] }))
+    var status = lastRun("status")
+    compare(runs("status").length, statuses + 1)
+    compare(status.command.slice(4), ["--reason", "Refresh (bar widget)", "status", "--cached", "-v"], "the refresh's status took the open's place")
+    answer(status, statusEnvelope(0))
+    var errors = lastRun("errors")
+    verify(errors !== null, "the open's errors read follows its status")
+    compare(words(errors.command), ["errors", "--limit", "10"])
+    answer(errors, envelope("errors", { "targets": [] }))
+    compare(words(lastRun("list").command), ["list", "-v"])
+    answer(lastRun("list"), envelope("list", { "targets": [] }))
+    var full = lastRun("status")
+    compare(words(full.command), ["status", "-v"], "the scan, none having been made")
+    answer(full, statusEnvelope(0))
+    verify(!service.openFollowUp)
+    compare(runs("status").length, statuses + 2, "once per open")
   }
 
   function test_a_view_reads_when_old_or_stale_and_a_doorbell_rereads_the_open_one() {

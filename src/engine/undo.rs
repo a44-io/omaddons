@@ -681,7 +681,9 @@ struct Planned {
     index: IndexChanges,
     changes: Vec<Change>,
     sv: SvPlan,
-    /// The SavedVariables follow-up of a deferred undo: no folder changes.
+    /// Only SavedVariables are left to restore, so keeping them would leave nothing to
+    /// undo: the follow-up of a deferred undo (no folder changes), or the undo of a
+    /// transaction that put only SavedVariables back.
     sv_only: bool,
     /// The folders whose SavedVariables the undo snapshots: those of the files the
     /// reverted transaction's manifest lists, the only ones it can write. A records-only
@@ -996,7 +998,7 @@ fn plan(
         index,
         changes,
         sv,
-        sv_only: sv_only.is_some(),
+        sv_only: sv_only.is_some() || settings_only(reverted),
         sv_folders,
         reload_required: judged.reload_required,
         warnings,
@@ -1429,16 +1431,18 @@ pub(crate) fn check_conflicts_in(
             let refusal = undo_first(reverted, newest, message, &restored, &wtf, &|_| {
                 BTreeSet::new()
             });
-            // A follow-up restores SavedVariables only: keeping them leaves nothing.
-            return Err(match sv_only {
-                Some(_) => refusal,
-                None => refusal.alternative(Suggestion::command([
+            // A follow-up restores SavedVariables only, and so does the undo of a
+            // transaction that put only them back: keeping them leaves nothing.
+            return Err(if sv_only.is_some() || settings_only(reverted) {
+                refusal
+            } else {
+                refusal.alternative(Suggestion::command([
                     "omaddons".to_owned(),
                     "undo".to_owned(),
                     reverted.tx.to_string(),
                     "--saved-variables".to_owned(),
                     "keep".to_owned(),
-                ])),
+                ]))
             });
         }
     }
@@ -1555,7 +1559,8 @@ fn touched_by(line: &UnreadableLine, target: TargetKey) -> Touched {
 /// history line this build cannot read, newer than `entries[at]` (`reverted`), may have
 /// touched what the undo writes back: one of its folders (refused outright), or, when
 /// the undo `restores` SavedVariables, any of them (refused, with `--saved-variables
-/// keep` as the alternative). A conflict the history hides is never assumed away.
+/// keep` as the alternative unless `reverted` put only SavedVariables back). A conflict
+/// the history hides is never assumed away.
 fn check_unreadable(
     unreadable: &[UnreadableLine],
     at: usize,
@@ -1611,8 +1616,9 @@ fn unreadable_conflict(reverted: &HistoryEntry, count: usize, overlap: bool) -> 
         "reason": "history_unreadable",
         "lines": count,
     }));
-    // Keeping the SavedVariables avoids the conflict only when no folder is in question.
-    if overlap {
+    // Keeping the SavedVariables avoids the conflict only when no folder is in question,
+    // and leaves something to undo only when it changed more than SavedVariables.
+    if overlap || settings_only(reverted) {
         conflict
     } else {
         conflict.alternative(Suggestion::command([
@@ -2904,6 +2910,68 @@ mod tests {
         // The restore was undone: nothing stands in the way.
         let undone = undo_line(key, restore.tx, None);
         assert_eq!(first(&[install, restore, undone], 0, None, true), None);
+    }
+
+    /// Undoing a transaction that put only SavedVariables back (a partial restore, or the
+    /// undo of one) before a later whole restore names that restore first, and offers no
+    /// `--saved-variables keep`: keeping them would leave nothing to undo.
+    #[test]
+    fn undoing_settings_only_before_a_restore_offers_no_keep() {
+        let key = TargetKey::new();
+        let partial = line(key, TxKind::Restore, &[(FolderOp::SavedVariables, "Foo")]);
+        let undone = HistoryEntry {
+            reverts: Some(partial.tx),
+            sv_restored: Some(1),
+            ..line(key, TxKind::Undo, &[(FolderOp::SavedVariables, "Foo")])
+        };
+        let restore = restore_line(key);
+        for reverted in [partial, undone] {
+            let entries = [reverted.clone(), restore.clone()];
+            let err = check_conflicts(&entries, 0, None, true).unwrap_err();
+            assert_eq!(err.code, ErrorCode::UndoConflict, "{reverted:?}");
+            assert_eq!(err.fix.argv().unwrap()[2], restore.tx.to_string());
+            assert!(err.alternatives.is_empty(), "{:?}", err.alternatives);
+        }
+    }
+
+    /// M3-D28 rule 5 for SavedVariables only: a newer line this build cannot read, on
+    /// other folders, refuses undoing a transaction whose SavedVariables it restores. An
+    /// install's undo may keep them instead; a partial restore's has nothing else to undo.
+    #[test]
+    fn an_unreadable_line_on_other_folders_offers_keep_only_where_folders_are_left() {
+        let key = TargetKey::new();
+        let unreadable = [UnreadableLine {
+            after: 1,
+            raw: serde_json::json!({
+                "schema_version": 99,
+                "target": key.to_string(),
+                "ops": [{ "folder": "Other" }],
+            })
+            .to_string(),
+        }];
+        let install = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
+        let err = check_unreadable(&unreadable, 0, &install, true).unwrap_err();
+        assert_eq!(err.details["reason"], "history_unreadable");
+        let keep = err.alternatives[0].argv().unwrap();
+        assert_eq!(
+            keep[2..],
+            [
+                install.tx.to_string(),
+                "--saved-variables".into(),
+                "keep".into()
+            ]
+        );
+
+        let partial = line(key, TxKind::Restore, &[(FolderOp::SavedVariables, "Foo")]);
+        let err = check_unreadable(&unreadable, 0, &partial, true).unwrap_err();
+        assert_eq!(
+            (err.code, &err.details["reason"]),
+            (
+                ErrorCode::UndoConflict,
+                &serde_json::json!("history_unreadable")
+            )
+        );
+        assert!(err.alternatives.is_empty(), "{:?}", err.alternatives);
     }
 
     /// M3-D28 rule 3: a partial restore of a folder's SavedVariables conflicts as a write

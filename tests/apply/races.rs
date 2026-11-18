@@ -566,6 +566,70 @@ fn race_interference_reports_committed_and_stale() {
     log.assert_unchanged("Y addons", &y_addons);
 }
 
+/// An install plan naming Foo, behind, and Baz, already current: another commit on the
+/// client before `apply` takes the lock refuses it whole, as a bound `install` is, though
+/// Baz had nothing to do.
+#[test]
+fn race_an_install_plan_refused_under_the_lock_fails_beside_an_unchanged_addon() {
+    use crate::common::binding as b;
+    let log = tlog!();
+    let home = crate::common::home::Home::new(&["wow"]);
+    log.env(&home);
+    let mm = b::MAINLINE_AND_MISTS;
+    b::publish(&home, "foo", "Foo", "v1", mm);
+    b::publish(&home, "baz", "Baz", "v1", mm);
+    for r in ["gh:o/foo", "gh:o/baz"] {
+        cmd(&log, &home, &["install", r, "-t", "retail"]).run().ok();
+    }
+    b::publish(&home, "foo", "Foo", "v2", mm);
+    b::publish(&home, "bar", "Bar", "v1", mm);
+    log.step("preview: Foo updated, Baz unchanged");
+    let preview = cmd(
+        &log,
+        &home,
+        &[
+            "install",
+            "gh:o/foo",
+            "gh:o/baz",
+            "-t",
+            "retail",
+            "--dry-run",
+        ],
+    )
+    .run();
+    preview.ok().assert_private();
+    let p = plan_id(&preview);
+
+    log.step("apply stops before its lock; another install commits");
+    let pause = Pause::new(home.env.root());
+    let child = cmd(&log, &home, &["apply", &p])
+        .failpoints("engine.snapshot.prestaged=pause")
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, "engine.snapshot.prestaged");
+    cmd(&log, &home, &["install", "gh:o/bar", "-t", "retail"])
+        .run()
+        .ok();
+    let guard = b::guard(&log, &home, "apply");
+
+    log.step("apply goes on");
+    log.resume(&pause, "engine.snapshot.prestaged");
+    let ran = child.wait();
+    ran.fails(1, "plan_stale").assert_private();
+    let error = &ran.envelope()["error"];
+    log.assert_eq(
+        "(retryable, details.changed)",
+        &(&error["retryable"], &error["details"]["changed"]),
+        &(&json!(false), &json!(["targets"])),
+    );
+    guard.unchanged(&log);
+    log.assert_eq(
+        "no history line carries the plan",
+        &history_txs_for(&log, &home, &p),
+        &Vec::new(),
+    );
+}
+
 #[test]
 fn lease_timeout_is_locked_with_the_holder() {
     let log = tlog!();

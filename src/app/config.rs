@@ -17,7 +17,7 @@ use crate::fsx::{Content, GlobalLock, Op, WriteSession, Writer, ensure_dir_all, 
 use crate::limits::EffectiveLimits;
 use crate::output::{Outcome, Style};
 use crate::politeness::DEFAULT_CHECK_INTERVAL;
-use crate::state::config::{Config, KEYS, closest_key, lookup, set_value, spec_for};
+use crate::state::config::{Config, KEYS, closest_key, key_name, lookup, set_value, spec_for};
 use crate::state::paths::Paths;
 
 /// `config`'s actions.
@@ -214,7 +214,7 @@ pub fn list() -> Result<Done<ConfigData>> {
         };
         for (name, inner) in table {
             for (field, v) in inner.as_table().into_iter().flatten() {
-                let key = format!("{section}.{name}.{field}");
+                let key = key_name(&[section, name, field]);
                 if spec_for(&key).is_some() {
                     settings.push(Setting {
                         name: key,

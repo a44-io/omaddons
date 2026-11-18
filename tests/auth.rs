@@ -569,3 +569,44 @@ fn a_dry_run_set_or_clear_writes_nothing_and_says_what_would_be() {
         human.context()
     );
 }
+
+/// A config.toml that does not parse refuses `set` and `clear` before the token is
+/// touched: the credentials file and the history stay as they were.
+#[test]
+fn a_broken_config_refuses_set_and_clear_before_anything_is_written() {
+    let home = Home::new(&["wow"]);
+    let set = argv(&["auth", "github", "set"]);
+    let stored = home.exec_input(&set, &[], format!("{TOKEN}\n").as_bytes());
+    assert_eq!(stored.code, 0, "{}", stored.context());
+    fs::write(
+        home.env.config().join("omaddons/config.toml"),
+        "default_channel = \"stable\"\n[sources\n",
+    )
+    .unwrap();
+    let file = credentials(&home).join("github");
+    let history = home.state().join("history.jsonl");
+    let read = || {
+        (
+            fs::read_to_string(&file).unwrap(),
+            fs::read_to_string(&history).unwrap(),
+        )
+    };
+    let before = read();
+    let refused = |run: &common::home::Run| {
+        let e = envelope(run);
+        assert_eq!(
+            (run.code, &e["error"]["code"]),
+            (1, &json!("state_corrupt")),
+            "{}",
+            run.context()
+        );
+        assert_eq!(
+            read(),
+            before,
+            "{}: the credentials file and the history are unchanged",
+            run.context()
+        );
+    };
+    refused(&home.exec_input(&set, &[], b"ghp_OTHERc4n4ry0123456789\n"));
+    refused(&home.exec(&argv(&["auth", "github", "clear"])));
+}

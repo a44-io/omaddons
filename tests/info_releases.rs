@@ -61,29 +61,38 @@ const RELEASES: [Rel; 3] = [
 /// Serves every release's `release.json` and zip, `v2` as the latest, and the REST
 /// listing naming all three.
 fn publish(scenario: &Path) {
-    let mut listed = Vec::new();
     for r in &RELEASES {
         let interfaces: Vec<String> = r.flavors.iter().map(|(_, i)| i.to_string()).collect();
         let text = toc(&interfaces.join(", "), &[&format!("## Version: {}", r.tag)]);
         let assets: [Asset<'_>; 1] = [(r.zip, r.flavors, vec![("Foo/Foo.toc", text.as_str())])];
         gh_release_v(scenario, FOO, r.tag, &assets);
-        let download = format!("{FOO}/releases/download/{}", r.tag);
-        listed.push(json!({
-            "tag_name": r.tag,
-            "prerelease": r.prerelease,
-            "draft": false,
-            "published_at": format!("2026-11-01T{:02}:{:02}:00Z", r.minutes / 60, r.minutes % 60),
-            "assets": [
-                {"name": "release.json", "browser_download_url": format!("{download}/release.json")},
-                {"name": r.zip, "browser_download_url": format!("{download}/{}", r.zip)},
-            ],
-        }));
     }
     gh_latest(scenario, FOO, "v2");
+    listing(scenario, "o/foo");
+}
+
+/// GitHub's REST listing of every release, served for `repo` as it is spelled there.
+fn listing(scenario: &Path, repo: &str) {
+    let listed: Vec<Value> = RELEASES
+        .iter()
+        .map(|r| {
+            let download = format!("{FOO}/releases/download/{}", r.tag);
+            json!({
+                "tag_name": r.tag,
+                "prerelease": r.prerelease,
+                "draft": false,
+                "published_at": format!("2026-11-01T{:02}:{:02}:00Z", r.minutes / 60, r.minutes % 60),
+                "assets": [
+                    {"name": "release.json", "browser_download_url": format!("{download}/release.json")},
+                    {"name": r.zip, "browser_download_url": format!("{download}/{}", r.zip)},
+                ],
+            })
+        })
+        .collect();
     fixture(
         scenario,
-        "rest-listing",
-        "https://api.github.com/repos/o/foo/releases?per_page=20",
+        &format!("rest-listing-{}", repo.replace('/', "-")),
+        &format!("https://api.github.com/repos/{repo}/releases?per_page=20"),
         200,
         &[("x-ratelimit-remaining", "59")],
         Some(&Value::from(listed).to_string()),
@@ -241,6 +250,47 @@ fn github_releases_are_listed_from_one_request_judged_per_client_and_installable
         &json!({"reason": "offline"}),
     );
     log.assert_eq("no request", &net_log(&home).len(), &before);
+}
+
+/// The release memo holds the latest under the spelling that first asked for it; a ref
+/// typed in another case lists its releases under its own, and the newest still keeps
+/// latest's judgment.
+#[test]
+fn the_newest_release_keeps_latest_s_judgment_whatever_case_the_ref_is_typed_in() {
+    let log = tlog!();
+    log.step("home: the memo filled by gh:o/foo");
+    let home = Home::new(&["wow", "wow_classic"]);
+    publish(&home.http);
+    listing(&home.http, "O/Foo");
+    json(&log, &home, &["info", REF]).ok();
+
+    log.step("info gh:O/Foo --releases, inside the memo's window");
+    let ran = json(&log, &home, &["info", "gh:O/Foo", "--releases"]);
+    ran.ok();
+    let data = ran.data();
+    log.json("releases", &data["releases"]);
+    let newest = data["releases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["channel"] == "stable")
+        .cloned()
+        .unwrap_or(Value::Null);
+    log.assert_eq(
+        "(latest's id, the newest stable row's id)",
+        &(&data["latest"]["release_id"], &newest["release_id"]),
+        &(&json!("gh:o/foo@v2"), &json!("gh:O/Foo@v2")),
+    );
+    log.assert_eq(
+        "the newest stable row keeps latest's judgment",
+        &newest["compat"],
+        &data["latest"]["compat"],
+    );
+    log.assert_eq(
+        "latest's judgment",
+        &data["latest"]["compat"],
+        &json!({"classic": "declared", "retail": "declared"}),
+    );
 }
 
 #[test]

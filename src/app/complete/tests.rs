@@ -437,6 +437,26 @@ fn a_record_that_cannot_be_read_adds_no_name() {
     assert_eq!(fixture.complete(&["addon"]), strings(&["WeakAuras"]));
 }
 
+/// A name that is not one shell word is printed as it is: each script quotes for its own
+/// shell, and zsh and fish quote what they are handed.
+#[test]
+fn a_name_with_spaces_or_parentheses_is_printed_raw() {
+    let fixture = Fixture::new();
+    let keys = fixture.register(&["retail"]);
+    fixture.record(
+        keys[0],
+        &["WeakAuras (WeakAurasOptions)", "Deadly Boss Mods", "Foo"],
+    );
+    assert_eq!(
+        fixture.complete(&["addon"]),
+        strings(&["Deadly Boss Mods", "Foo", "WeakAuras (WeakAurasOptions)"])
+    );
+    assert_eq!(
+        fixture.complete(&["addon", "--prefix=Deadly B"]),
+        strings(&["Deadly Boss Mods"])
+    );
+}
+
 #[test]
 fn a_value_with_a_control_character_is_never_offered() {
     let fixture = Fixture::new();

@@ -370,6 +370,52 @@ fn config_feeds_discovery() {
     assert_eq!(targets["data"]["targets"][0]["label"], "Main");
 }
 
+/// The README's `[client_rules."mainline-12.0.7"]`, and a target id with a dot, are one
+/// quoted segment of a key: quiet on load, listed under a name `config get` takes back,
+/// and read and set by that name.
+#[test]
+fn a_dotted_row_or_target_id_is_read_listed_and_set_quoted() {
+    let env = TestEnv::new();
+    let prefix = Prefix::new(&env, "battlenet");
+    BattlenetRoot::at(prefix.wow_root()).product("wow").build();
+    let key = "client_rules.\"mainline-12.0.7\".interface_floor";
+    let (code, envelope) = run(&env, &["config", "set", key, "120100"]);
+    assert_eq!(code, 0, "{envelope}");
+    assert!(
+        fs::read_to_string(config_file(&env))
+            .unwrap()
+            .contains("[client_rules.\"mainline-12.0.7\"]")
+    );
+    let (code, got) = run(&env, &["config", "get", key]);
+    assert_eq!((code, &got["data"]["value"]), (0, &json!(120_100)), "{got}");
+    let (_, listed) = run(&env, &["config"]);
+    assert_eq!(setting(&listed, key)["value"], 120_100, "{listed}");
+
+    let (code, renamed) = run(&env, &["targets", "rename", "retail", "main.alt"]);
+    assert_eq!(code, 0, "{renamed}");
+    let label = "targets.\"main.alt\".label";
+    let (code, envelope) = run(&env, &["config", "set", label, "Main"]);
+    assert_eq!(code, 0, "{envelope}");
+    let (_, listed) = run(&env, &["config"]);
+    assert_eq!(setting(&listed, label)["value"], "Main", "{listed}");
+    let (_, got) = run(&env, &["config", "get", label]);
+    assert_eq!(got["data"]["value"], "Main", "{got}");
+
+    let (code, targets) = run(&env, &["targets"]);
+    assert_eq!(code, 0, "{targets}");
+    assert_eq!(targets["data"]["targets"][0]["label"], "Main", "{targets}");
+    for envelope in [&targets, &run(&env, &["status"]).1] {
+        assert!(
+            envelope["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|w| w["code"] != "config_unknown_key"),
+            "{envelope}"
+        );
+    }
+}
+
 #[test]
 fn set_waits_for_the_lock() {
     let env = TestEnv::new();

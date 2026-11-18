@@ -2,6 +2,8 @@
 //! the exact fix. Every refusal comes before the run starts and creates nothing; a run
 //! records itself in `<state>/doctor/runs/<run>/` and changes nothing else.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -11,7 +13,7 @@ use serde::Deserialize;
 
 use crate::cli::{Context, fix_argv, fix_argv_with_value};
 use crate::contract::actions::Action;
-use crate::doctor::budget::{self, Budget, parse_budget};
+use crate::doctor::budget::{Budget, parse_budget};
 use crate::doctor::delegate::{DelegatedOutcome, JournalDelegate, RecoveryOutcome};
 use crate::doctor::exit::Exit;
 use crate::doctor::explain::{self, ExplainReport};
@@ -1018,11 +1020,16 @@ impl DoctorOutcome for FixRun {
         if let Some(undo) = &r.undo_command {
             last.push_str(&format!(" · undo: {undo}"));
         }
+        let delegated = r.delegated.as_deref().unwrap_or_default();
+        let pruned = r.prunes.as_deref().unwrap_or_default();
         let stopped = matches!(r.state, RunState::Refusing | RunState::LockLost)
             || (r.state == RunState::DoneFailed
                 && r.summary.backups_restored == 0
                 && r.summary.actions_failed == 0);
-        if stopped {
+        // A stop after the recoveries, the prunes or the repair's start leaves what they
+        // did standing: its lines follow, as a finished run's do.
+        let ran = !delegated.is_empty() || !pruned.is_empty() || r.tx.is_some();
+        if stopped && !ran {
             writeln!(
                 w,
                 "{} · nothing was changed",
@@ -1108,9 +1115,13 @@ impl DoctorOutcome for FixRun {
             return writeln!(w, "{last}");
         }
         let actions = r.actions.as_deref().unwrap_or_default();
-        let delegated = r.delegated.as_deref().unwrap_or_default();
-        let pruned = r.prunes.as_deref().unwrap_or_default();
-        if r.state == RunState::DoneFailed {
+        if stopped {
+            writeln!(
+                w,
+                "{} · stopped before its repair committed",
+                style.bold("omaddons doctor fix")
+            )?;
+        } else if r.state == RunState::DoneFailed {
             // What the delegation finished before the repair stands (its lines follow).
             let changed = if delegated.is_empty() && pruned.is_empty() {
                 "; nothing was changed"
@@ -1416,7 +1427,12 @@ fn read_since(
         // An undo run. Named by its id, there is nothing to compare with; as `latest`, the
         // newest run that reported findings is meant.
         let newest = (given == "latest")
-            .then(|| comparable_runs(paths, 1).into_iter().next())
+            .then(|| {
+                comparable_runs(paths, 1)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next()
+            })
             .flatten();
         let Some(newest) = newest else {
             return Err(since_not_found(paths, given, argv, how));
@@ -1492,7 +1508,8 @@ impl SinceArg {
 }
 
 /// `not_found` for the run `given`: the newest finished run that reported findings is the
-/// fix, the next two the alternatives; with none, the fix names no run.
+/// fix, the next two the alternatives; with none, or when the runs could not all be
+/// listed, the fix names no run.
 fn since_not_found(paths: &Paths, given: &str, argv: &[String], how: SinceArg) -> Error {
     let newest = comparable_runs(paths, 3);
     let why = match DoctorRunId::parse(given) {
@@ -1502,13 +1519,20 @@ fn since_not_found(paths: &Paths, given: &str, argv: &[String], how: SinceArg) -
         Some(run) if paths.doctor_run(&run).is_dir() => {
             format!("doctor run {given} was interrupted: it has no report")
         }
+        _ if given == "latest" && newest.is_none() => {
+            "the doctor's runs could not all be listed in time, so the newest that reported findings is not known".to_owned()
+        }
         _ if given == "latest" && fs::read_link(paths.doctor_latest()).is_ok() => {
             "no doctor run that reports findings has finished yet: only undo runs have".to_owned()
         }
         _ if given == "latest" => "no doctor run has finished yet".to_owned(),
         _ => format!("no doctor run {given}"),
     };
-    let named: Vec<String> = newest.iter().map(|run| run.as_str().to_owned()).collect();
+    let named: Vec<String> = newest
+        .unwrap_or_default()
+        .iter()
+        .map(|run| run.as_str().to_owned())
+        .collect();
     let fix = how.retarget(argv, given, named.first().map(String::as_str));
     let mut error = Error::new(ErrorCode::NotFound, why, Suggestion::command(fix));
     for other in named.iter().skip(1) {
@@ -1522,27 +1546,62 @@ fn since_not_found(paths: &Paths, given: &str, argv: &[String], how: SinceArg) -
 
 /// The newest `limit` finished runs `--since` can compare with: those whose report lists
 /// findings (a diagnose or a fix; an undo's lists none, and one that does not decode
-/// cannot be compared), newest first, within the doctor's scan bound. Reports are read
-/// newest first, only until `limit` are found.
-fn comparable_runs(paths: &Paths, limit: usize) -> Vec<DoctorRunId> {
-    let mut budget = Budget::new(Duration::from_secs(1), DOCTOR_SCAN_MAX_ENTRIES);
-    let Ok(listing) = budget::list_dir(&paths.doctor_runs_dir(), &mut budget) else {
-        return Vec::new();
-    };
-    let mut runs: Vec<DoctorRunId> = listing
-        .entries
-        .iter()
-        .filter_map(|(name, _)| name.to_str().and_then(DoctorRunId::parse))
-        .collect();
-    runs.sort();
-    runs.reverse();
-    runs.into_iter()
-        .filter(|run| {
-            let report = paths.doctor_run(run).join(REPORT_FILE);
-            report.is_file() && read_report(&report).is_ok_and(|r| r.findings.is_some())
-        })
-        .take(limit)
-        .collect()
+/// cannot be compared), newest first. Every run's name is read and the newest are kept,
+/// within the doctor's scan bound; reports are read newest first, only until `limit` are
+/// found. `None` when the names could not all be read in time: the runs read are then not
+/// known to be the newest.
+fn comparable_runs(paths: &Paths, limit: usize) -> Option<Vec<DoctorRunId>> {
+    comparable_runs_within(
+        paths,
+        limit,
+        Duration::from_secs(1),
+        DOCTOR_SCAN_MAX_ENTRIES,
+    )
+}
+
+/// [`comparable_runs`] within `deadline`, keeping at most `max_entries` run names.
+fn comparable_runs_within(
+    paths: &Paths,
+    limit: usize,
+    deadline: Duration,
+    max_entries: u64,
+) -> Option<Vec<DoctorRunId>> {
+    let budget = Budget::new(deadline, max_entries);
+    let keep = usize::try_from(max_entries).unwrap_or(usize::MAX);
+    // A min-heap of the newest run ids so far: the oldest leaves first.
+    let mut newest: BinaryHeap<Reverse<DoctorRunId>> = BinaryHeap::new();
+    // A directory that cannot be read holds no run to compare with.
+    if let Ok(entries) = fs::read_dir(paths.doctor_runs_dir()) {
+        for entry in entries {
+            if budget.expired() {
+                return None;
+            }
+            let Some(run) = entry
+                .ok()?
+                .file_name()
+                .to_str()
+                .and_then(DoctorRunId::parse)
+            else {
+                continue;
+            };
+            newest.push(Reverse(run));
+            if newest.len() > keep {
+                newest.pop();
+            }
+        }
+    }
+    Some(
+        newest
+            .into_sorted_vec()
+            .into_iter()
+            .map(|Reverse(run)| run)
+            .filter(|run| {
+                let report = paths.doctor_run(run).join(REPORT_FILE);
+                report.is_file() && read_report(&report).is_ok_and(|r| r.findings.is_some())
+            })
+            .take(limit)
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -1642,6 +1701,144 @@ mod tests {
         );
     }
 
+    /// A real `doctor fix` run that ended in `state` with nothing committed or rolled
+    /// back, after the recoveries `delegated` and the prunes `prunes`, its repair started
+    /// as `tx` when it was.
+    fn stopped_fix(
+        state: RunState,
+        delegated: Vec<DelegatedOutcome>,
+        prunes: Vec<crate::doctor::report::PruneDone>,
+        tx: Option<crate::model::TxId>,
+    ) -> String {
+        let paths = Paths::with_roots("/h", "/h/.config", "/h/.local/state", "/h/.cache");
+        let at: jiff::Timestamp = "2026-10-30T18:00:00Z".parse().unwrap();
+        let report = FixReport {
+            doctor_contract_version: report::DOCTOR_CONTRACT_VERSION,
+            run_id: DoctorRunId::parse(OLD).unwrap(),
+            run_dir: paths
+                .doctor_run(&DoctorRunId::parse(OLD).unwrap())
+                .display()
+                .to_string(),
+            started_at: at,
+            finished_at: at,
+            state,
+            dry_run: false,
+            tx,
+            summary: report::FixSummary {
+                findings: report::summary(&[], &[], 0),
+                findings_before: 0,
+                findings_after: Some(0),
+                actions_taken: 0,
+                actions_failed: 0,
+                bytes_to_back_up: 0,
+                bytes_backed_up: 0,
+                backups_restored: 0,
+            },
+            findings: Vec::new(),
+            skipped: Vec::new(),
+            actions: Some(Vec::new()),
+            delegated: Some(delegated),
+            prunes: Some(prunes),
+            actions_planned: None,
+            delegated_planned: None,
+            prunes_planned: None,
+            precondition: None,
+            actions_jsonl_path: None,
+            backups_dir: None,
+            undo_command: None,
+            undo_argv: None,
+            next_steps: Vec::new(),
+        };
+        let run = FixRun {
+            outcome: FixOutcome {
+                report,
+                exit: Exit::IoError,
+                error: None,
+                warnings: Vec::new(),
+                commands: Vec::new(),
+                notes: Vec::new(),
+                suspended: Vec::new(),
+            },
+            roots: Roots::of(&paths, None),
+            verbose: false,
+        };
+        let mut out = Vec::new();
+        run.render_human(&mut out, &Style::default()).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// A fix whose repair stopped after its recoveries, its prunes or its own start says
+    /// what ran, never that nothing was changed; one that stopped before anything ran
+    /// still does.
+    #[test]
+    fn a_stopped_fix_names_what_ran_before_it_stopped() {
+        use crate::doctor::registry::ids;
+        use crate::doctor::report::{PruneDone, PruneOutcome};
+        use crate::engine::repair_action::JournalFamily;
+        let tx: crate::model::TxId = "01JB8Q2VA00000000000000009".parse().unwrap();
+        let repair: crate::model::TxId = "01JB8Q2VA0000000000000000R".parse().unwrap();
+        let recovered = || DelegatedOutcome {
+            fm: ids::JOURNAL_PENDING,
+            tx,
+            family: JournalFamily::Folder,
+            outcome: RecoveryOutcome::RolledForward,
+            reason: None,
+        };
+        let pruned = || PruneDone {
+            fm: ids::SNAPSHOTS_PAST_RETENTION,
+            target: "retail".to_owned(),
+            key: "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT".parse().unwrap(),
+            outcome: PruneOutcome::Pruned,
+            pruned: vec![tx],
+            reason: None,
+        };
+        let recovery = format!("recovered tx {tx} (rolled forward) · undo: omaddons undo {tx}");
+        let cases: Vec<(&str, String, Vec<&str>, String)> = vec![
+            (
+                "a recovery, then a failed commit",
+                stopped_fix(RunState::DoneFailed, vec![recovered()], Vec::new(), None),
+                vec![recovery.as_str()],
+                format!("run {OLD}"),
+            ),
+            (
+                "a recovery, then a refused commit",
+                stopped_fix(RunState::Refusing, vec![recovered()], Vec::new(), None),
+                vec![recovery.as_str()],
+                format!("run {OLD}"),
+            ),
+            (
+                "prunes only",
+                stopped_fix(RunState::DoneFailed, Vec::new(), vec![pruned()], None),
+                vec!["pruned 1 undo snapshot on retail (retention)"],
+                format!("run {OLD}"),
+            ),
+            (
+                "a repair that started, its rollback unfinished",
+                stopped_fix(RunState::DoneFailed, Vec::new(), Vec::new(), Some(repair)),
+                Vec::new(),
+                format!("run {OLD} · tx {repair}"),
+            ),
+        ];
+        for (case, out, lines, last) in &cases {
+            assert!(!out.contains("nothing was changed"), "case {case}:\n{out}");
+            for line in lines {
+                assert!(
+                    out.lines().any(|l| l == *line),
+                    "case {case}: {line}\n{out}"
+                );
+            }
+            assert_eq!(out.lines().last(), Some(last.as_str()), "case {case}");
+        }
+        for state in [RunState::Refusing, RunState::LockLost, RunState::DoneFailed] {
+            let out = stopped_fix(state, Vec::new(), Vec::new(), None);
+            assert_eq!(
+                out,
+                format!("omaddons doctor fix · nothing was changed\nrun {OLD}\n"),
+                "{state:?}"
+            );
+        }
+    }
+
     const OLD: &str = "2026-10-30T18-00-00Z__01M8S7XQKZ0000000000000AAA";
     const NEW: &str = "2026-10-30T19-00-00Z__01M8S7XQKZ0000000000000BBB";
     const BROKEN: &str = "2026-10-30T20-00-00Z__01M8S7XQKZ0000000000000CCC";
@@ -1683,6 +1880,46 @@ mod tests {
         }
         std::os::unix::fs::symlink(format!("runs/{NEW}"), paths.doctor_latest()).unwrap();
         (dir, paths)
+    }
+
+    /// More runs than the scan bound (lowered here to three): the newest run that
+    /// reported findings is still found, past a newer undo run and the stage names that
+    /// sort first. A listing the deadline cut short names no run as the newest.
+    #[test]
+    fn comparable_runs_are_the_newest_past_the_scan_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths::with_roots(
+            &home,
+            home.join(".config"),
+            home.join(".local/state"),
+            home.join(".cache"),
+        );
+        let id = |n: u32| {
+            DoctorRunId::parse(&format!(
+                "2026-10-30T1{n}-00-00Z__01M8S7XQKZ0000000000000AAA"
+            ))
+            .unwrap()
+        };
+        let report = |run: &DoctorRunId, text: &str| {
+            let dir = paths.doctor_run(run);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(REPORT_FILE), text).unwrap();
+        };
+        let findings = r#"{"schema_version":"1.0","findings":[]}"#;
+        for n in 0..6 {
+            report(&id(n), findings);
+            fs::create_dir_all(paths.doctor_run_stage(&id(n))).unwrap();
+        }
+        // The newest run is an undo's: it reported no findings.
+        report(&id(6), r#"{"schema_version":"1.0","state":"DONE_OK"}"#);
+        let newest = |deadline| comparable_runs_within(&paths, 2, deadline, 3);
+        assert_eq!(
+            newest(Duration::from_secs(60)),
+            Some(vec![id(5), id(4)]),
+            "the newest that reported findings, newest first"
+        );
+        assert_eq!(newest(Duration::ZERO), None, "not known to be the newest");
     }
 
     #[test]

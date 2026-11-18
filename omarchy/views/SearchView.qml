@@ -107,6 +107,13 @@ Item {
     return !!answer && answer.selection.query === query && answer.selection.target === target
   }
 
+  // Whether the search running or queued is for `query` on `target`: the service's newest
+  // (Service.searchFor stops an older one for another query or client).
+  function searchingFor(query, target) {
+    var selection = svc ? svc.searchSelection : null
+    return searching && !!selection && selection.query === query && selection.target === target
+  }
+
   // The shown query, searched again for the scope now chosen (after the pause, so
   // stepping through clients with `t` searches once).
   function followScope() {
@@ -115,7 +122,7 @@ Item {
       askCatalog()
       return
     }
-    if (asked === "" || Model.searchLink(field.text) || answers(asked, filter) || searching) return
+    if (asked === "" || Model.searchLink(field.text) || answers(asked, filter) || searchingFor(asked, filter)) return
     pending = asked
     debounce.restart()
   }
@@ -150,12 +157,12 @@ Item {
   }
 
   // `query` searched now, unless it is the one the shown answer (or the running search)
-  // is for already.
+  // is for already, on this client.
   function searchQuery(query) {
     debounce.stop()
     var q = String(query || "").trim()
     if (q === "" || Model.searchLink(q) || !svc) return false
-    if (q === asked && (answers(q, filter) || searching)) return false
+    if (q === asked && (answers(q, filter) || searchingFor(q, filter))) return false
     asked = q
     svc.searchFor(q, filter)
     return true

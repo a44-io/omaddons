@@ -538,6 +538,44 @@ mod tests {
         );
     }
 
+    /// A backup found damaged is no checkpoint: neither a rebuild nor a recorded addition
+    /// names it the newest qualifying one.
+    #[test]
+    fn latest_qualifying_skips_a_damaged_backup() {
+        let f = fixture();
+        let older = meta(
+            id("01M6Q2VA000000000000000000"),
+            "2026-10-18T21:15:00Z",
+            BackupKind::Manual,
+        );
+        seed(&f.client, &older);
+        let damaged = BackupMeta {
+            integrity: super::super::Integrity::Damaged,
+            ..meta(
+                id("01M6Q2VB000000000000000000"),
+                "2026-10-20T18:02:00Z",
+                BackupKind::Auto,
+            )
+        };
+        seed(&f.client, &damaged);
+        let rebuilt = rebuild(&f.paths, &f.client, &f.key).inventory;
+        assert_eq!(rebuilt.latest.as_ref().unwrap().id, damaged.id);
+        assert_eq!(rebuilt.latest_qualifying.as_ref().unwrap().id, older.id);
+
+        let g = fixture();
+        seed(&g.client, &older);
+        rebuild(&g.paths, &g.client, &g.key);
+        seed(&g.client, &damaged);
+        let recorded = record(
+            &g.paths,
+            &g.client,
+            &g.key,
+            Change::Added(Box::new(damaged.clone())),
+        )
+        .inventory;
+        assert_eq!(recorded.latest_qualifying.as_ref().unwrap().id, older.id);
+    }
+
     #[test]
     fn a_rebuild_carries_auto_over_and_record_applies_one_change() {
         let f = fixture();

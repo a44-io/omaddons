@@ -456,6 +456,49 @@ fn the_folders_are_those_the_addon_owned_when_the_backup_was_taken() {
     );
 }
 
+/// A folder named beside the addon named like it restores what the addon alone restores,
+/// in either order; a repeated addon is one entry; the folder alone is itself.
+#[test]
+fn a_folder_beside_its_addon_restores_the_whole_addon_in_either_order() {
+    let s = Scene::new();
+    let backed_up = files_of(&s.wtf, &["WeakAuras.lua", "WeakAurasOptions.lua"]);
+    s.play();
+    let alone = s.restore(&["WeakAuras"], &["--dry-run"], &[]).expect(0);
+    let orders: [&[&str]; 3] = [
+        &["folder:WeakAuras", "WeakAuras"],
+        &["WeakAuras", "folder:WeakAuras"],
+        &["WeakAuras", "WeakAuras"],
+    ];
+    for addons in orders {
+        let dry = s.restore(addons, &["--dry-run"], &[]).expect(0);
+        assert_eq!(
+            (&dry["data"]["addons"], &dry["data"]["precondition"]),
+            (&alone["data"]["addons"], &alone["data"]["precondition"]),
+            "{addons:?}: {dry:#}"
+        );
+    }
+    let options = s
+        .restore(&["folder:WeakAurasOptions"], &["--dry-run"], &[])
+        .expect(0);
+    assert_eq!(
+        (
+            &options["data"]["addons"][0]["folders"],
+            &options["data"]["addons"][0]["folders_from"]
+        ),
+        (&json!(["WeakAurasOptions"]), &json!("folder")),
+        "{options:#}"
+    );
+    for addons in &orders[..2] {
+        s.play();
+        s.restore(addons, &[], &[]).expect(0);
+        assert_eq!(
+            files_of(&s.wtf, &["WeakAuras.lua", "WeakAurasOptions.lua"]),
+            backed_up,
+            "{addons:?}: both folders' settings come back"
+        );
+    }
+}
+
 /// A capture-time folder another addon owns now is refused rather than broadened, with
 /// each folder alone as an alternative; an unknown name offers the backup's folders. Each
 /// alternative runs.
