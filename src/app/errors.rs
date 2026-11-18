@@ -1395,7 +1395,17 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
                 "errors memo: not written: one projected from a newer ledger is on disk".to_owned()
             });
         } else {
-            memo::store(&world.paths, &next, ctx.actor);
+            // A restore since a client's previous projection: `status` hid its links
+            // behind it, and this projection, dated after it, shows them again.
+            let restored = seen.iter().any(|s| {
+                on_disk
+                    .targets
+                    .get(&s.filed_as)
+                    .and_then(|t| t.projected_at)
+                    .and_then(|since| errors_ledger::restores_since(&world.paths, s.target, since))
+                    .is_some_and(|restores| !restores.is_empty())
+            });
+            memo::store_projection(&world.paths, &next, ctx.actor, restored);
         }
     });
     // Their dismissals: moved to the key when the stored read carried the ledger entry,

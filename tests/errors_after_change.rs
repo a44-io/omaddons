@@ -904,6 +904,19 @@ fn a_restore_s_light_read_removes_the_links_of_the_file_it_replaced() {
     log.json("the doorbell", &bell);
     assert!(bell["at"].is_string(), "the memo write rang it");
     assert_eq!(both(&s, "Foo"), (Value::Null, Value::Null));
+    // The first projection after the restore rings (the restore came after the previous
+    // projection, which `status` dates links against); the one after it, which saw
+    // nothing new, does not (omad-6u54g). The restored file is first left past the
+    // ledger's racy slack, as `save` leaves the game's: a read within it proves nothing,
+    // and the read after it would then rightly ring for what it proved.
+    std::thread::sleep(Duration::from_millis(60));
+    let bell = s.home.env.cache().join("omaddons/doorbell.json");
+    for (read, rings) in [("after the restore", true), ("again", false)] {
+        fs::remove_file(&bell).unwrap_or_default();
+        errors(&s, &[]);
+        assert_eq!(bell.exists(), rings, "the full read {read}");
+    }
+    assert_eq!(both(&s, "Foo"), (Value::Null, Value::Null));
 }
 
 // ---------------------------------------------------------------------------------------

@@ -379,6 +379,36 @@ pub fn load(paths: &Paths) -> (ErrorsMemo, bool) {
 /// Writes `memo` when its encoding differs from the file's, ringing the doorbell then
 /// (M3-D4); whether it wrote. Best effort: a failure is not the command's.
 pub fn store(paths: &Paths, memo: &ErrorsMemo, actor: Actor) -> bool {
+    write_changed(paths, memo, actor, true)
+}
+
+/// [`store`] for a projection of the ledger's links (RG-17). Every full read moves the
+/// ledger (a database's `last_observed_at`), so every projection stamps its clients with
+/// a new `ledger_revision` and `projected_at` and the memo's bytes differ. It is written
+/// then, as [`store`] does, but rings only when what `status --cached` reports changed:
+/// the memo apart from that bookkeeping, or, when `restored` (a restore committed after a
+/// client's previous projection, which `status` hid that client's links behind and this
+/// projection is dated after), in any case. Ringing for nothing had the bar widget re-read
+/// its open Errors view in a loop (omad-6u54g).
+pub fn store_projection(paths: &Paths, memo: &ErrorsMemo, actor: Actor, restored: bool) -> bool {
+    let ring = restored || shown(&load(paths).0) != shown(memo);
+    write_changed(paths, memo, actor, ring)
+}
+
+/// The memo as `status` reads it: without the bookkeeping that only orders projections
+/// (`ledger_revision`) and dates them against restores (`projected_at`).
+fn shown(memo: &ErrorsMemo) -> ErrorsMemo {
+    let mut shown = memo.clone();
+    for t in shown.targets.values_mut() {
+        t.ledger_revision = None;
+        t.projected_at = None;
+    }
+    shown
+}
+
+/// Writes `memo` when its encoding differs from the file's, and rings the doorbell then
+/// when `ring`; whether it wrote.
+fn write_changed(paths: &Paths, memo: &ErrorsMemo, actor: Actor, ring: bool) -> bool {
     let Ok(json) = store::encode(memo) else {
         return false;
     };
@@ -388,7 +418,9 @@ pub fn store(paths: &Paths, memo: &ErrorsMemo, actor: Actor) -> bool {
     if write(paths, &json).is_err() {
         return false;
     }
-    crate::state::doorbell::ring(paths, "errors", actor);
+    if ring {
+        crate::state::doorbell::ring(paths, "errors", actor);
+    }
     true
 }
 
@@ -434,5 +466,65 @@ mod tests {
                 "case {case}"
             );
         }
+    }
+
+    /// One client's memo, projected from `revision` at second `at`.
+    fn projected(revision: u64, at: i64, received: u64) -> ErrorsMemo {
+        let target = TargetMemo {
+            capture: "buggrabber".to_owned(),
+            coverage: MemoCoverage {
+                truncated: false,
+                accounts: 1,
+                files: 1,
+            },
+            listings: Vec::new(),
+            received,
+            databases: Vec::new(),
+            ledger_revision: Some(revision),
+            projected_at: Some(Timestamp::from_second(1_800_000_000 + at).unwrap()),
+        };
+        ErrorsMemo {
+            targets: BTreeMap::from([("01TARGETKEY".to_owned(), target)]),
+        }
+    }
+
+    /// A projection that moved only its bookkeeping is written (the revision it carries
+    /// stays true) but rings nothing: `status` shows the same. What `status` shows
+    /// changing, or a restore since the previous projection, rings (omad-6u54g).
+    #[test]
+    fn a_projection_rings_only_when_what_status_shows_changed_or_a_restore_came_between() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let paths = Paths::with_roots(root, root.join("c"), root.join("s"), root.join("k"));
+        let bell = paths.doorbell_file();
+        let rang = |case: &str, memo: &ErrorsMemo, restored: bool| {
+            let _ = std::fs::remove_file(&bell);
+            let wrote = store_projection(&paths, memo, Actor::Human, restored);
+            let on_disk: ErrorsMemo =
+                serde_json::from_slice(&std::fs::read(paths.errors_memo()).unwrap()).unwrap();
+            assert_eq!(&on_disk, memo, "{case}: the file is the memo");
+            (wrote, bell.exists())
+        };
+        assert_eq!(rang("first", &projected(1, 0, 0), false), (true, true));
+        assert_eq!(
+            rang("bookkeeping only", &projected(2, 60, 0), false),
+            (true, false)
+        );
+        assert_eq!(
+            rang("same bytes", &projected(2, 60, 0), false),
+            (false, false)
+        );
+        assert_eq!(
+            rang("a restore came between", &projected(3, 120, 0), true),
+            (true, true)
+        );
+        assert_eq!(
+            rang("what status shows", &projected(4, 180, 1), false),
+            (true, true)
+        );
+        // A plain store rings on any change, bookkeeping included.
+        let _ = std::fs::remove_file(&bell);
+        assert!(store(&paths, &projected(5, 240, 1), Actor::Human));
+        assert!(bell.exists(), "store rings on bytes");
     }
 }

@@ -85,10 +85,15 @@ mod support {
 
         /// `omaddons errors <args> --json --progress json` with the clock frozen.
         pub fn errors(&self, args: &[&str]) -> Run {
+            self.errors_at(args, CLOCK)
+        }
+
+        /// [`Retail::errors`] with the clock frozen at `now` instead.
+        pub fn errors_at(&self, args: &[&str], now: &str) -> Run {
             let mut argv = vec!["errors".to_owned()];
             argv.extend(args.iter().map(|a| (*a).to_owned()));
             argv.extend(["--json", "--progress", "json"].map(str::to_owned));
-            let run = self.home.exec_with(&argv, &[("OMADDONS_NOW", CLOCK)]);
+            let run = self.home.exec_with(&argv, &[("OMADDONS_NOW", now)]);
             super::assert_private_all(&run.stdout, &run.stderr);
             run
         }
@@ -1121,6 +1126,38 @@ fn the_memo_is_written_only_when_it_changed_and_rings_then() {
     assert!(!bell.exists(), "nothing changed, nothing rung");
     // State is untouched: the memo is in the cache.
     assert!(!r.home.state().join("errors.json").exists());
+}
+
+/// The clock moves between reads, as it does for the bar widget: a read a minute later
+/// that saw nothing new moves the ledger (its database's `last_observed_at`) and the
+/// memo's projection bookkeeping with it, but rings nothing, since `status` shows the
+/// same. Ringing then had the widget's open Errors view re-read in a loop (omad-6u54g).
+/// A new session still rings.
+#[test]
+fn a_read_a_minute_later_that_saw_nothing_new_rings_nothing() {
+    let r = Retail::new(&["Foo"]);
+    r.write(&[file(&sessions_db(10, &[10]))]);
+    let bell = r.home.env.cache().join("omaddons/doorbell.json");
+    let ledger = r.home.env.cache().join("omaddons/errors_ledger.json");
+    let revision = || {
+        let text = fs::read_to_string(&ledger).unwrap();
+        serde_json::from_str::<Value>(&text).unwrap()["revision"].clone()
+    };
+    r.errors_at(&[], "2026-10-15T18:30:00Z").expect(0);
+    assert!(bell.exists(), "the first read rings");
+    let first = revision();
+    fs::remove_file(&bell).unwrap();
+    for later in ["2026-10-15T18:31:00Z", "2026-10-15T18:32:00Z"] {
+        r.errors_at(&[], later).expect(0);
+        assert!(
+            !bell.exists(),
+            "a read at {later} that saw nothing new rings nothing"
+        );
+    }
+    assert_ne!(revision(), first, "the ledger still records each look");
+    r.write(&[file(&sessions_db(11, &[10, 11]))]);
+    r.errors_at(&[], "2026-10-15T18:33:00Z").expect(0);
+    assert!(bell.exists(), "a new session rings");
 }
 
 #[test]
