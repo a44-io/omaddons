@@ -1439,6 +1439,37 @@ fn a_later_change_whose_running_is_unknown_never_takes_the_way_back() {
     );
 }
 
+/// omad-g398d, the property's counterexample by hand: two updates of Foo, the earlier
+/// one's `running` unknown, the later one's game running, and the error once in the
+/// later one's mixed session. With its unix time, both are `medium`; the later one is
+/// chosen and the earlier one's unknown caps it at `low`. Without a trusted time, the
+/// later one is `low` (nothing pins the occurrence after it in that session), but the
+/// time it lacked could have made it the choice: the earlier one is `low` at most, and
+/// no way back is offered either way.
+#[test]
+fn an_untrusted_time_never_hands_the_earlier_change_the_way_back() {
+    let scene = |time: TimeEvidence| {
+        Scene::at(42, 1)
+            .time(time)
+            .change(1000, "Foo", Some((40, None)))
+            .change(3000, "Foo", Some((41, Some(true))))
+    };
+    let known = scene(unix(4000)).suspect().unwrap();
+    assert_eq!((known.tx, known.confidence), (id(1), Low), "{known:?}");
+    for time in [local(4000), untimed()] {
+        let link = scene(time).suspect();
+        assert!(
+            link.as_ref()
+                .is_none_or(|s| grade(s.confidence) < grade(Medium)),
+            "{time:?}: {link:?}"
+        );
+        assert!(
+            link.is_some_and(|s| s.evidence.unknowns.contains(&Unknown::Time)),
+            "{time:?}"
+        );
+    }
+}
+
 /// `after` still says everything `before` did not know. A missing mark leaves every fact
 /// the mark would have told unknown: its sessions, whether the client ran, and so which
 /// account played; the verdict says `mark` for all of them.

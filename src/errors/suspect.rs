@@ -760,7 +760,8 @@ struct Graded<'c> {
     /// sessions, whether the game ran, which account played, or a dependency edge), or
     /// whether a later change had already taken its code away (`Replaced::Maybe`, which a
     /// later change's unknown facts can make). What every candidate shares (the entry's
-    /// time, the game's version) never counts.
+    /// time, the game's version) counts only where it would have raised this one: a
+    /// missing trusted time for a single occurrence in its mixed session.
     open: bool,
 }
 
@@ -874,7 +875,13 @@ fn grade_candidate<'c>(
     addons.dedup_by(|a, b| same(a, b));
     // A candidate capped as maybe replaced rivals the winner too (omad-ujq99): blanking
     // a later change's facts lowers it, and must not hand that later change a way back.
-    let open = unknowns.iter().any(|u| own_fact(*u)) || replaced == Replaced::Maybe;
+    // So does one the missing time lowered (omad-g398d): a single occurrence in its
+    // mixed session is `low` without a trusted time and `medium` or better with one, so
+    // untrusting the time must not hand an earlier change the way back it lost to this.
+    let timed = shared.unknowns.contains(&Unknown::Time)
+        && appearance.counter == 1
+        && per.contains(&Sessions::SameSession);
+    let open = unknowns.iter().any(|u| own_fact(*u)) || replaced == Replaced::Maybe || timed;
     Some(Graded {
         change,
         relation,
@@ -995,10 +1002,11 @@ pub fn judge(error: &Appeared<'_>, changes: &[ChangeFact], cx: &JudgeContext<'_>
     let Some(confidence) = best.link else {
         return verdict(JudgmentState::Complete, None, None);
     };
-    // Another candidate that might have outranked it had its own facts been known (its
-    // best case reaches this grade): which change came before the error is then not
-    // known either, so the link is `low` at most (decided in RG-40). Taking a fact away
-    // never names another change above `low`, so it never offers a way back from one.
+    // Another candidate that might have outranked it had its own facts, or a trusted time
+    // it needed, been known (its best case reaches this grade): which change came before
+    // the error is then not known either, so the link is `low` at most (decided in
+    // RG-40). Taking a fact away never names another change above `low`, so it never
+    // offers a way back from one.
     let rivalled = graded.iter().any(|g| {
         !std::ptr::eq(g, *best) && g.open && best_case(g.relation, g.blocked) >= grade(confidence)
     });
