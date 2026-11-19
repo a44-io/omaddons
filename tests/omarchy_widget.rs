@@ -90,7 +90,7 @@ fn plan_paths_mirror_the_registry() {
 /// dispatcher, its key reference and its tooltips, and this keeps README in step.
 #[test]
 fn readme_key_table_is_the_keymap() {
-    let source = model_js();
+    let source = support::view_js();
     let rows = support::block(&source, "KEYMAP");
     let contexts = support::block(&source, "KEY_CONTEXTS");
     let titles: BTreeMap<&str, &str> = contexts
@@ -141,7 +141,7 @@ fn readme_key_table_is_the_keymap() {
     assert_eq!(
         table,
         expected,
-        "README's key table differs from KEYMAP in omarchy/Model.js; it should read:\n{}",
+        "README's key table differs from KEYMAP in omarchy/View.js; it should read:\n{}",
         expected.join("\n")
     );
 }
@@ -1296,6 +1296,11 @@ mod support {
     /// `omarchy/Model.js`.
     pub fn model_js() -> String {
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy/Model.js")).unwrap()
+    }
+
+    /// `omarchy/View.js`, which holds the key map (omad-widget-plugin-3bcbh.1).
+    pub fn view_js() -> String {
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy/View.js")).unwrap()
     }
 
     /// The JSON literal of `var <name> = …` between `// BEGIN <name>` and `// END <name>`.

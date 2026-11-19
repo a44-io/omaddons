@@ -16,7 +16,7 @@
 const { describe, expect, test } = require("bun:test")
 const fs = require("fs")
 const path = require("path")
-const M = require("../Model.js")
+const M = require("./load.js")("Model.js")
 
 const ROOT = path.join(__dirname, "..")
 const REPO = path.join(ROOT, "..")

@@ -13,7 +13,7 @@
 const { describe, expect, test } = require("bun:test")
 const fs = require("fs")
 const path = require("path")
-const M = require("../Model.js")
+const M = require("./load.js")("Model.js")
 
 const OUT = process.env.OMADDONS_WIDGET_OUT
 if (!OUT) throw new Error("OMADDONS_WIDGET_OUT is unset: run the widget pipeline (argc widget-test)")

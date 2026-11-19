@@ -14,7 +14,9 @@
 //
 // Usage: bun window-events.js --minutes N --out FILE [--debounce-ms 500]
 
-const Model = require("../../omarchy/Model.js")
+// Through the tests' loader: Model.js reads View.js with QML's `.import`, which bun
+// cannot parse (omad-widget-plugin-3bcbh.1).
+const Model = require("../../omarchy/tests/load.js")("Model.js")
 
 const args = process.argv.slice(2)
 function option(name, fallback) {

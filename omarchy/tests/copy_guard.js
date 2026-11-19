@@ -7,13 +7,15 @@
 //   (1n2p.40), holding a string literal a player reads: two or more words, or a capital
 //   letter (copy ids, keys and slot names are lowercase single words; glyphs are code
 //   points).
-// - model-literal: a Model.js string literal of two or more words outside COPY,
-//   ERROR_WORDS, WARNING_WORDS, KEYMAP and comments. Not counted: a command path (a
-//   CLI_PATHS key), and the message of a `refuse(…)` or `Error(…)`, a diagnostic the
-//   widget keys by its code, as it keys the CLI's errors (§6.1). KEYMAP is a word table
-//   of its own (1n2p.37): its labels and notes are the key reference's and every
-//   tooltip's words, and tests/omarchy_widget.rs holds each row equal to README's key
-//   table, so they live in that one checked place, never split into COPY ids.
+// - model-literal: a string literal of two or more words in the model's files
+//   (MODEL_FILES: Model.js and the three it is split into, omad-widget-plugin-3bcbh.1)
+//   outside COPY, ERROR_WORDS, WARNING_WORDS, KEYMAP and comments. Not counted: a
+//   command path (a CLI_PATHS key), and the message of a `refuse(…)` or `Error(…)`, a
+//   diagnostic the widget keys by its code, as it keys the CLI's errors (§6.1). KEYMAP
+//   is a word table of its own (1n2p.37): its labels and notes are the key reference's
+//   and every tooltip's words, and tests/omarchy_widget.rs holds each row equal to
+//   README's key table, so they live in that one checked place, never split into COPY
+//   ids.
 // - unused-id: a COPY id no runtime file names, as a literal or under a prefix the code
 //   builds ids from (`"card.action." + name`).
 // - code-without-words: an error or warning code of `omaddons robot-docs errors` with no
@@ -25,6 +27,9 @@
 const WORD_PROPERTIES = ["text", "tooltipText", "placeholderText", "heading", "Accessible\\.name", "Accessible\\.description"]
 const DIAGNOSTIC_CALLS = ["refuse", "Error"]
 const WORD_TABLES = ["COPY", "ERROR_WORDS", "WARNING_WORDS", "KEYMAP"]
+// The model's files, lowest first (Model.js's header), and the one that holds COPY.
+const MODEL_FILES = ["Words.js", "Shared.js", "View.js", "Model.js"]
+const COPY_HOME = "Words.js"
 
 // The characters after which a `/` starts a regex literal, not a division.
 const REGEX_AFTER = "(,=:[!&|?{};+-*%<>~^"
@@ -198,18 +203,21 @@ function qmlFindings(files) {
   return out
 }
 
-// Rule model-literal over Model.js; `commandPaths` are the CLI paths it may name.
+// Rule model-literal over the model's files; `commandPaths` are the CLI paths they may
+// name.
 function modelFindings(files, commandPaths) {
-  const src = files["Model.js"] || ""
-  const spans = tableSpans(src, WORD_TABLES)
   const paths = new Set(commandPaths)
   const out = []
-  for (const literal of literals(src)) {
-    if (inside(spans, literal)) continue
-    if (literal.calls.some((call) => DIAGNOSTIC_CALLS.includes(call))) continue
-    if (paths.has(literal.value)) continue
-    if (words(literal.value) >= 2) {
-      out.push({ rule: "model-literal", file: "Model.js", line: literal.line, value: literal.value })
+  for (const name of MODEL_FILES) {
+    const src = files[name] || ""
+    const spans = tableSpans(src, WORD_TABLES)
+    for (const literal of literals(src)) {
+      if (inside(spans, literal)) continue
+      if (literal.calls.some((call) => DIAGNOSTIC_CALLS.includes(call))) continue
+      if (paths.has(literal.value)) continue
+      if (words(literal.value) >= 2) {
+        out.push({ rule: "model-literal", file: name, line: literal.line, value: literal.value })
+      }
     }
   }
   return out
@@ -218,7 +226,7 @@ function modelFindings(files, commandPaths) {
 // COPY's ids, in source order: its top-level keys (two-space indent; a plural pair's
 // "one" and "other" sit deeper).
 function copyIds(files) {
-  const src = files["Model.js"] || ""
+  const src = files[COPY_HOME] || ""
   const span = tableSpans(src, ["COPY"])[0]
   if (!span) return []
   const body = src.slice(span[0], span[1])
@@ -233,7 +241,7 @@ function namesOutsideCopy(files) {
   const prefixes = new Set()
   for (const name of Object.keys(files).sort()) {
     const src = files[name]
-    const spans = name === "Model.js" ? tableSpans(src, ["COPY"]) : []
+    const spans = name === COPY_HOME ? tableSpans(src, ["COPY"]) : []
     for (const literal of literals(src)) {
       if (inside(spans, literal)) continue
       named.add(literal.value)
@@ -246,10 +254,10 @@ function namesOutsideCopy(files) {
 // Rule unused-id.
 function unusedFindings(files) {
   const { named, prefixes } = namesOutsideCopy(files)
-  const src = files["Model.js"] || ""
+  const src = files[COPY_HOME] || ""
   return copyIds(files)
     .filter((id) => !named.has(id) && ![...prefixes].some((prefix) => id.startsWith(prefix)))
-    .map((id) => ({ rule: "unused-id", file: "Model.js", line: src.slice(0, src.indexOf('"' + id + '"')).split("\n").length, value: id }))
+    .map((id) => ({ rule: "unused-id", file: COPY_HOME, line: src.slice(0, src.indexOf('"' + id + '"')).split("\n").length, value: id }))
 }
 
 // Rule code-without-words: `catalog` is `robot-docs errors --json`'s envelope.
@@ -280,6 +288,8 @@ function parseAllowlist(text) {
 
 module.exports = {
   WORD_PROPERTIES,
+  MODEL_FILES,
+  COPY_HOME,
   literals,
   words,
   tableSpans,

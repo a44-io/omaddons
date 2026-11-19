@@ -1,5 +1,5 @@
 // The words guard (design doc §6.2, omad-e49b): every word a player reads lives in
-// Model.js's COPY, or ERROR_WORDS and WARNING_WORDS for a code's words, formatted by
+// Words.js's COPY, or ERROR_WORDS and WARNING_WORDS for a code's words, formatted by
 // copy(). The four rules are copy_guard.js's; this runs them over every runtime file
 // under omarchy/ (tests/ and a generated Build.js aside) and over the binary's catalog of
 // codes (contract-errors.json, from step 1 of the pipeline), and holds what they find to
@@ -10,7 +10,7 @@ const { describe, expect, test } = require("bun:test")
 const fs = require("fs")
 const path = require("path")
 const G = require("./copy_guard.js")
-const M = require("../Model.js")
+const M = require("./load.js")("Model.js")
 
 const ROOT = path.join(__dirname, "..")
 const ALLOWLIST = path.join(__dirname, "copy_allowlist.txt")
@@ -182,17 +182,28 @@ describe("each rule catches a planted violation", () => {
     const exempt = plant(REAL, "Model.js", "\n",
       'var PLANTED_PATH = "backup restore"\nfunction planted() { throw refuse("planted", "a diagnostic sentence") }\n// "a comment sentence"\n')
     expect(added(exempt)).toEqual([])
-    const inCopy = plant(REAL, "Model.js", "var COPY = {\n", '  "planted.words": "Planted words in COPY",\n')
-    expect(added(inCopy)).toEqual(['unused-id\tModel.js\t"planted.words"'])
+    const inCopy = plant(REAL, "Words.js", "var COPY = {\n", '  "planted.words": "Planted words in COPY",\n')
+    expect(added(inCopy)).toEqual(['unused-id\tWords.js\t"planted.words"'])
+  })
+
+  test("model-literal: every file of the model is read, not only Model.js", () => {
+    expect(G.MODEL_FILES.every((name) => typeof REAL[name] === "string")).toBe(true)
+    for (const name of G.MODEL_FILES) {
+      const prose = plant(REAL, name, "\nvar ", 'var PLANTED = "planted in ' + name + '"\nvar ')
+      expect(added(prose)).toEqual(["model-literal\t" + name + '\t"planted in ' + name + '"'])
+    }
+    // KEYMAP's words are a table of their own, wherever KEYMAP lives.
+    const keymap = plant(REAL, "View.js", "var KEYMAP = [\n", '  { "keys": ["planted"], "label": "planted key words" },\n')
+    expect(added(keymap)).toEqual([])
   })
 
   test("unused-id: an id nothing names, used once a file names it", () => {
-    const unused = plant(REAL, "Model.js", "var COPY = {\n", '  "planted.unused": "Planted",\n')
-    expect(added(unused)).toEqual(['unused-id\tModel.js\t"planted.unused"'])
+    const unused = plant(REAL, "Words.js", "var COPY = {\n", '  "planted.unused": "Planted",\n')
+    expect(added(unused)).toEqual(['unused-id\tWords.js\t"planted.unused"'])
     const used = plant(unused, "PanelView.qml", "\n", '  Text {\n    text: Model.copy("planted.unused")\n  }\n')
     expect(added(used)).toEqual([])
-    const pair = plant(REAL, "Model.js", "var COPY = {\n", '  "planted.pair": {\n    "one": "1 planted",\n    "other": "{n} planted"\n  },\n')
-    expect(added(pair)).toEqual(['unused-id\tModel.js\t"planted.pair"'])
+    const pair = plant(REAL, "Words.js", "var COPY = {\n", '  "planted.pair": {\n    "one": "1 planted",\n    "other": "{n} planted"\n  },\n')
+    expect(added(pair)).toEqual(['unused-id\tWords.js\t"planted.pair"'])
   })
 
   test("code-without-words: a code of the catalog with no words", () => {
