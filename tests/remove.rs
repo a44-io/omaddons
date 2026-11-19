@@ -220,6 +220,53 @@ fn removal_by_owned_folder_and_by_ref() {
     );
 }
 
+/// One addon named again (its name in another case, its ref, a folder it owns) is one
+/// `removed` item, for the first argument that names it, while a name of nothing still
+/// fails on its own: the folders go once, and `undo` puts them back
+/// (omad-bug-hunt-0shtt.45).
+#[test]
+fn an_addon_named_twice_is_one_removed_item() {
+    let home = Home::new(&["wow"]);
+    install(&home, "retail", "Foo", &["Foo", "FooOptions"]);
+    let addons = home.addons("_retail_");
+    let before = tree_hash(&addons);
+    let r = home.run(&[
+        "remove",
+        "foo",
+        "Foo",
+        "gh:o/foo",
+        "FooOptions",
+        "nope",
+        "-t",
+        "retail",
+    ]);
+    let envelope = r.expect(0);
+    let seen: Vec<(&str, &str)> = items(&envelope)
+        .iter()
+        .map(|i| {
+            (
+                i["request"].as_str().unwrap(),
+                i["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [("foo", "removed"), ("nope", "failed")],
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        items(&envelope)[0]["folders"],
+        serde_json::json!(["Foo", "FooOptions"])
+    );
+    assert_eq!(envelope["partial"], true);
+    assert!(!addons.join("Foo").exists() && !addons.join("FooOptions").exists());
+
+    home.run(&["undo"]).expect(0);
+    assert_eq!(tree_hash(&addons), before, "byte for byte");
+}
+
 #[test]
 fn unmanaged_protected_and_linked_folders_are_never_removed() {
     let home = Home::new(&["wow"]);

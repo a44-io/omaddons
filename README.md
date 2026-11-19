@@ -1152,7 +1152,7 @@ Each side is exactly one client: a selector that matches two is `target_ambiguou
 
 ### `remove <ADDON>...`
 
-Remove managed addons from one target, as a transaction undoable until retention prunes its snapshot (`uninstall`, `rm` and `delete` are aliases). Removing what no source gives again (an addon adopted as it was, or installed from a local archive or directory) warns `snapshot_only_copy`. An addon is named by its name, its ref or a folder it owns.
+Remove managed addons from one target, as a transaction undoable until retention prunes its snapshot (`uninstall`, `rm` and `delete` are aliases). Removing what no source gives again (an addon adopted as it was, or installed from a local archive or directory) warns `snapshot_only_copy`. An addon is named by its name, its ref or a folder it owns; naming it again adds no item to `data.items`.
 
 ```bash
 omaddons remove DBM -t retail

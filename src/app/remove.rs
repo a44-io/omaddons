@@ -52,7 +52,8 @@ pub struct RemoveData {
     pub dry_run: bool,
     pub target: TargetRef,
     pub tx: Option<TxId>,
-    /// In argument order.
+    /// In argument order, one per addon: an argument naming an addon an earlier one named
+    /// adds none.
     pub items: Vec<RemoveItem>,
     pub reload_required: ReloadRequired,
     /// `null` when no swap happened.
@@ -307,8 +308,22 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         Some(key) => Some(crate::state::records::load_record(&world.paths, &key)?.value),
         None => None,
     };
+    // One item per addon (omad-bug-hunt-0shtt.45): a later argument naming an addon an
+    // earlier one named (its name in another case, an alias, its ref or a folder) adds
+    // none, as the engine removes it once.
+    let mut named: Vec<&str> = Vec::new();
     let built: Vec<(RemoveItem, Option<Error>)> = requests
         .iter()
+        .filter(|r| {
+            let Some(name) = r.found.as_ref().ok().and_then(|found| found.get(target_id)) else {
+                return true;
+            };
+            let again = named.iter().any(|n| n.eq_ignore_ascii_case(name));
+            if !again {
+                named.push(name);
+            }
+            !again
+        })
         .map(|r| item(r, target_id, &done, after.as_ref()))
         .collect();
     let errors: Vec<(String, Error)> = built
