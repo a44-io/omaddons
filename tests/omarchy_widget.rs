@@ -522,7 +522,8 @@ fn the_manifest_is_the_planned_one() {
       "id": "a44.omaddons",
       "name": "omaddons",
       "version": "0.0.0-unstamped",
-      "author": "a44",
+      "author": "A44 Labs",
+      "license": "MIT",
       "description": "World of Warcraft addons on every client: updates, Lua errors and WTF backups, from the omaddons CLI.",
       "kinds": ["service", "bar-widget"],
       "entryPoints": { "service": "Service.qml", "barWidget": "BarWidget.qml" },
@@ -692,9 +693,10 @@ fn id_literals(files: &[(String, String)], id: &str) -> Vec<String> {
     out
 }
 
-/// The embedded asset table is exactly the runtime files under `omarchy/`, its tests and
-/// a generated `Build.js` aside, so a view added there is embedded in the same commit
-/// (E1). A row naming a missing file already fails the build, through `include_str!`.
+/// The embedded asset table is exactly the runtime files under `omarchy/`, its tests, the
+/// plugin repository's README and pictures (`publish/`, omad-widget-plugin-3bcbh.7) and a
+/// generated `Build.js` aside, so a view added there is embedded in the same commit (E1).
+/// A row naming a missing file already fails the build, through `include_str!`.
 #[test]
 fn every_runtime_file_is_embedded() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy");
@@ -708,7 +710,7 @@ fn every_runtime_file_is_embedded() {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned();
-            if relative == "tests" || relative == "Build.js" {
+            if relative == "tests" || relative == "publish" || relative == "Build.js" {
                 continue;
             }
             if path.is_dir() {

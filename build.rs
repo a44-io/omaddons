@@ -1,7 +1,8 @@
 //! Four outputs, computed separately:
 //!
-//! - The digest of the widget's runtime files under `omarchy/` (its tests, a generated
-//!   `Build.js` and the manifest aside: the same set as `src/omarchy/assets.rs`), so
+//! - The digest of the widget's runtime files under `omarchy/` (its tests, its
+//!   repository's README and pictures in `publish/`, a generated `Build.js` and the
+//!   manifest aside: the same set as `src/omarchy/assets.rs`), so
 //!   `status` can compare an installed widget with this build on every call without
 //!   hashing some 230 KB each time (E4). `src/omarchy/render.rs` holds it equal to a
 //!   digest of the embedded assets in a unit test.
@@ -196,7 +197,11 @@ fn collect(
             .to_str()
             .ok_or("a widget file name that is not UTF-8")?
             .to_owned();
-        if matches!(relative.as_str(), "tests" | "Build.js" | "manifest.json") {
+        // `publish/` is the plugin repository's README and pictures, never embedded.
+        if matches!(
+            relative.as_str(),
+            "tests" | "publish" | "Build.js" | "manifest.json"
+        ) {
             continue;
         }
         if path.is_dir() {
