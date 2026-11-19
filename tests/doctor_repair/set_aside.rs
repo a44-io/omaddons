@@ -958,6 +958,78 @@ fn reactivate_then_redo_sets_aside_again_a_repair_journal_no_build_reads() {
     change_on(&log, &home, "retail", "after").ok();
 }
 
+/// Two repair journals no build reads, one unreadable and one too new, each closing every
+/// change: the set-aside of either alone never lifts the other's close, whichever
+/// transaction is older (a set keeps one close, the older one's; omad-bug-hunt-0shtt.42).
+/// It is refused and moves nothing; set aside together, in one run, both go and changes
+/// run again.
+#[test]
+fn a_set_aside_of_one_closing_repair_journal_leaves_the_others_close() {
+    let outer = tlog!();
+    let (older, newer) = ("01JB8Q2VA00000000000000001", "01JB8Q2VA00000000000000002");
+    for (case, unreadable, too_new) in [
+        ("the unreadable one older", older, newer),
+        ("the too-new one older", newer, older),
+    ] {
+        let log = outer.case(case);
+        let home = two_clients(&log);
+        log.step("plant");
+        register(&home, "retail");
+        let dir = home.state().join("journal");
+        fs::create_dir_all(&dir).unwrap();
+        let a = dir.join(format!("{unreadable}.repair.jsonl"));
+        let b = dir.join(format!("{too_new}.repair.jsonl"));
+        fs::write(
+            &a,
+            "{\"type\":\"prepared\",\"format\":\"1.0\",\"tx\":\"not a ulid\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            &b,
+            format!("{{\"type\":\"prepared\",\"format\":\"2.0\",\"tx\":\"{too_new}\"}}\n"),
+        )
+        .unwrap();
+        let held = hashes(&[a.clone(), b.clone()]);
+
+        for (alone, other) in [(UNREADABLE, too_new), (TOO_NEW, unreadable)] {
+            log.step(&format!("{alone} alone is refused"));
+            let ran = run(
+                &log,
+                &home,
+                &["doctor", "fix", "--only", alone, "--force", "--yes"],
+            );
+            log.json("refused", ran.envelope());
+            assert_ne!(ran.run.code, 0, "{case}: {alone} alone");
+            assert_eq!(
+                hashes(&[a.clone(), b.clone()]),
+                held,
+                "{case}: {alone} alone moved nothing"
+            );
+            assert!(
+                ran.envelope().to_string().contains(other),
+                "{case}: {alone} alone is refused for {other}: {}",
+                ran.envelope()
+            );
+        }
+        assert_ne!(
+            change_on(&log, &home, "retail", "probe").run.code,
+            0,
+            "{case}: changes stay refused"
+        );
+
+        log.step("both in one run");
+        let only = format!("{UNREADABLE},{TOO_NEW}");
+        let ran = run(
+            &log,
+            &home,
+            &["doctor", "fix", "--only", &only, "--force", "--yes"],
+        );
+        ran.ok();
+        assert!(!a.exists() && !b.exists(), "{case}: both set aside");
+        change_on(&log, &home, "retail", "after").ok();
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // 9. Privacy.
 

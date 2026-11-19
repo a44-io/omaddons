@@ -197,13 +197,19 @@ pub fn commit(
         ))
     })?;
     // A set-aside may move what its own suspended journals' fences protect (E14): those
-    // fences, and a close one of them made, are lifted; every other journal's stand. By
+    // fences, and a close one of them made, are lifted; every other journal's stand, a
+    // close the set kept for an excused journal hid included (omad-bug-hunt-0shtt.42). By
     // the journals moved, not by fix kind: a set-aside of a stuck repair crosses that
     // repair's own fence, and one of an unreadable repair passes its closed set.
     let excused;
     let ctx = match barrier::of(&prepared, paths) {
         Some(barrier) if barrier.kind == barrier::BarrierKind::Suspension => {
-            let fences = ctx.scopes.fences().excusing(&barrier.names);
+            let fences = crate::engine::fence::excusing(
+                ctx.scopes.fences(),
+                paths,
+                ctx.scopes.client_dirs(),
+                &barrier.names,
+            );
             excused = ctx.scopes.clone().with_fences(fences);
             &CommitCtx {
                 lock: ctx.lock,

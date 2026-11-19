@@ -5370,6 +5370,97 @@ mod tests {
         }
     }
 
+    /// `fixes` lowered and committed on `home` as one repair, under `scopes` (its fences
+    /// as a command loads them under the lock): `Ok` when it committed, else why it did
+    /// not, refused before a write (`Err`) or at one (rolled back).
+    fn commit_under(
+        home: &RepairHome,
+        scopes: &fsx::ScopeTable,
+        fixes: &[PlannedFix],
+    ) -> std::result::Result<TxId, Box<Error>> {
+        let rtx = RepairTx::begin(&home.paths).unwrap();
+        let tx = rtx.tx();
+        let lowered = lower(
+            &LowerCtx {
+                paths: &home.paths,
+                tx,
+                run: &home.run,
+                clients: &home.planned,
+                skill_dirs: &home.skill_dirs,
+                scopes,
+                mount_id: &fsx::mount_id,
+            },
+            fixes,
+        )
+        .unwrap_or_else(|err| panic!("lowering {fixes:?}: {err}")); // ubs:ignore — fails the test
+        let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
+        let ctx = CommitCtx {
+            lock: &lock,
+            scopes,
+            run: &home.run,
+            mount_id: &fsx::mount_id,
+        };
+        let (outcome, cleanup) = commit(&ctx, rtx, &lowered, &meta()).map_err(Box::new)?;
+        drop(lock);
+        cleanup.finish();
+        match outcome {
+            RepairOutcome::Committed { .. } => Ok(tx),
+            RepairOutcome::RolledBack { cause, .. } => Err(Box::new(cause)),
+        }
+    }
+
+    /// A forced set-aside of one repair journal no build reads, with another one left:
+    /// the other's close still refuses the commit, whichever of the two the loaded set
+    /// kept (its close is the lower transaction id's), and nothing is moved
+    /// (omad-bug-hunt-0shtt.42). Set aside together, in one repair, both go.
+    #[test]
+    fn a_set_aside_of_one_stuck_repair_journal_leaves_anothers_close_standing() {
+        for (case, other) in [
+            ("an older journal", "01JB8Q2VA00000000000000001"),
+            ("a newer journal", "7ZZZZZZZZZZZZZZZZZZZZZZZZZ"),
+        ] {
+            let home = plain_home();
+            let stuck = too_new_repair_journal(&home);
+            let other = too_new_repair_journal_as(&home, other.parse().unwrap());
+            let (journal, others) = (
+                home.paths.journal_repair(&stuck),
+                home.paths.journal_repair(&other),
+            );
+            let dirs = [home.client.client_dir().to_path_buf()];
+            let loaded = || {
+                home.scopes
+                    .clone()
+                    .with_fences(fence::load(&home.paths, &dirs))
+            };
+            let set_aside = [repair_set_aside(
+                &home,
+                stuck,
+                std::slice::from_ref(&journal),
+            )];
+            let Err(err) = commit_under(&home, &loaded(), &set_aside) else {
+                panic!("{case}: committed although {other} still closes every change"); // ubs:ignore — fails the test
+            };
+            assert!(journal.is_file(), "{case}: nothing moved: {err:?}");
+            assert!(others.is_file(), "{case}: {err:?}");
+            assert_eq!(
+                err.details["journal_pending"],
+                json!(other),
+                "{case}: refused for the other journal: {err:?}"
+            );
+            // Both in one repair: neither's close stands.
+            commit_under(
+                &home,
+                &loaded(),
+                &[
+                    repair_set_aside(&home, stuck, std::slice::from_ref(&journal)),
+                    repair_set_aside(&home, other, std::slice::from_ref(&others)),
+                ],
+            )
+            .unwrap_or_else(|err| panic!("{case}: both set aside: {err:?}"));
+            assert!(!journal.exists() && !others.exists(), "{case}");
+        }
+    }
+
     #[test]
     fn another_stuck_journal_still_blocks_an_undo() {
         let home = home();
