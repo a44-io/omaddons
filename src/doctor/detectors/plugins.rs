@@ -318,7 +318,6 @@ mod tests {
     use crate::doctor::registry::{self, ids};
     use crate::doctor::view::tests::home;
     use crate::doctor::view::{LayerState, Preloaded, WidgetLayer};
-    use crate::omarchy::render::{Context, render};
     use crate::omarchy::validate::Rule;
     use crate::state::paths::Paths;
 
@@ -665,24 +664,27 @@ mod tests {
         }
     }
 
-    /// Writes this binary's rendered widget into `dir`.
+    /// Writes the widget into `dir` as a checkout of its repository holds it: `omarchy/`,
+    /// its tests aside (omad-widget-plugin-3bcbh.9).
     fn write_rendered(dir: &Path) {
-        let ctx = Context {
-            home: "/h".into(),
-            xdg_config_home: "/h/.config".into(),
-            xdg_state_home: "/h/.local/state".into(),
-            xdg_cache_home: "/h/.cache".into(),
-            xdg_data_home: "/h/.local/share".into(),
-        };
-        let rendered = render(Path::new("/o/omaddons"), &ctx, "a44.omaddons").unwrap();
-        for (path, bytes) in &rendered.files {
-            let target = dir.join(path);
-            fs::create_dir_all(target.parent().unwrap()).unwrap();
-            fs::write(target, bytes).unwrap();
+        fn copy(from: &Path, to: &Path) {
+            fs::create_dir_all(to).unwrap();
+            for entry in fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let (path, name) = (entry.path(), entry.file_name());
+                if path.is_dir() {
+                    if name != "tests" {
+                        copy(&path, &to.join(&name));
+                    }
+                } else {
+                    fs::copy(&path, to.join(&name)).unwrap();
+                }
+            }
         }
+        copy(&Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy"), dir);
     }
 
-    /// The rendered widget's manifest, edited.
+    /// The widget's manifest, edited.
     fn edit_manifest(dir: &Path, edit: impl FnOnce(&mut Value)) {
         let path = dir.join("manifest.json");
         let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

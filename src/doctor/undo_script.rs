@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::runtime::DoctorRunId;
 use crate::model::TxId;
-use crate::omarchy::render::Context;
+use crate::omarchy::context::Context;
 
 /// The script's name in the run directory.
 pub const UNDO_SCRIPT: &str = "undo.sh";

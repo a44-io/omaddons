@@ -359,20 +359,25 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
     assert!(missing.is_empty(), "never recommended: {missing:?}");
 }
 
-/// `reinstall_widget` (E4): with an outdated bar widget, `status` warns `widget_outdated`,
-/// lists the machine's issue `fm-plugins-widget-version-drift` (P3) and recommends
-/// `omarchy install`. Run on a home freshly built the same way, the recommendation and
-/// the issue's remediation each bring the widget current, and all three go. Every run
-/// has a fake Omarchy (`OMARCHY_PATH`) and no Omarchy tool on `PATH`: never this
-/// machine's shell or bar.
+/// `reinstall_widget` (E4): with a widget an older omaddons rendered, `status` warns
+/// `widget_outdated`, lists the machine's issue `fm-plugins-widget-version-drift` (P3) and
+/// recommends `omarchy install`. Run on a home freshly built the same way, the
+/// recommendation and the issue's remediation each replace it with the widget's checkout
+/// (omad-widget-plugin-3bcbh.9), and all three go. Every run has a fake Omarchy
+/// (`OMARCHY_PATH`) and only the stub `omarchy-plugin-add` on `PATH`, adding the widget
+/// from a local export: never this machine's shell or bar.
 #[test]
 fn reinstall_widget_runs_and_clears_the_widget_issue() {
     use super::{Scene, fs};
-    let env_of = |s: &Scene| -> [(&'static str, String); 2] {
+    let env_of = |s: &Scene| -> [(&'static str, String); 3] {
         let root = s.home.env.root();
         [
-            ("PATH", root.join("no-tools").display().to_string()),
+            ("PATH", root.join("bin").display().to_string()),
             ("OMARCHY_PATH", root.join("omarchy").display().to_string()),
+            (
+                crate::common::omarchy::WIDGET_REPO_ENV,
+                root.join("widget-repo").display().to_string(),
+            ),
         ]
     };
     let run = |s: &Scene, args: &[&str]| -> serde_json::Value {
@@ -383,31 +388,17 @@ fn reinstall_widget_runs_and_clears_the_widget_issue() {
     let build = || {
         let s = Scene::new();
         let root = s.home.env.root().to_path_buf();
-        for dir in [root.join("omarchy/shell"), root.join("no-tools")] {
+        for dir in [root.join("omarchy/shell"), root.join("bin")] {
             fs::create_dir_all(dir).unwrap();
         }
-        fs::create_dir_all(s.home.env.config().join("omarchy")).unwrap();
-        run(&s, &["omarchy", "install"]);
-        // Another build's code hash in the installed Build.js.
-        let plugin = s.home.env.config().join("omarchy/plugins/a44.omaddons");
-        let code = fs::read_dir(&plugin)
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .find(|p| p.is_dir())
-            .unwrap();
-        let build_js = code.join("Build.js");
-        let text = fs::read_to_string(&build_js).unwrap();
-        let stamped: Vec<String> = text
-            .lines()
-            .map(|line| {
-                if line.starts_with("var CONTENT_SHA256 = ") {
-                    format!("var CONTENT_SHA256 = \"{}\";", "0".repeat(64))
-                } else {
-                    line.to_owned()
-                }
-            })
-            .collect();
-        fs::write(&build_js, stamped.join("\n") + "\n").unwrap();
+        crate::common::omarchy::write_tool(&root, "omarchy-plugin-add");
+        crate::common::omarchy::write_widget_repo(&root.join("widget-repo"));
+        // A widget an older omaddons rendered, for this state.
+        crate::common::omarchy::plant_rendered(
+            &s.home.env.config().join("omarchy/plugins/a44.omaddons"),
+            std::path::Path::new("/opt/omaddons-0.2.1/omaddons"),
+            &crate::common::omarchy::context_json(&s.home.env),
+        );
         s
     };
     let install = json!(["omaddons", "omarchy", "install"]);

@@ -328,10 +328,12 @@ fn widget_fixtures_are_found_and_cleared() {
         );
         assert_eq!(remediation["auto_fixable"], false, "{id}");
         assert_eq!(remediation["destructive"], false, "{id}");
+        // A valid render is drift alone; an invalid one is a render too, so outdated
+        // (omad-widget-plugin-3bcbh.9: only the widget's checkout is current).
         assert_eq!(
-            found(envelope, other),
-            Vec::<Value>::new(),
-            "{id}: no {other}"
+            found(envelope, other).len(),
+            usize::from(id == INVALID),
+            "{id} and {other}: {envelope:#}"
         );
         // Never a validator message, which quotes the manifest's values.
         assert!(!ran.stdout().contains("\"top\""), "{id}: {}", ran.stdout());

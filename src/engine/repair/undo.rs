@@ -2597,7 +2597,7 @@ fn record_of(
 /// `undo.sh`: it undoes this undo, by `doctor undo <this run>`.
 fn write_undo_script(runtime: &mut Runtime<'_>, paths: &Paths, tx: TxId) -> Result<()> {
     let binary = crate::binary::current_binary()?;
-    let context = crate::omarchy::render::Context::of(paths);
+    let context = crate::omarchy::context::Context::of(paths);
     let script = undo_script(&binary, &context, runtime.id(), tx);
     runtime
         .write_file(UNDO_SCRIPT, &script, 0o600)

@@ -67,6 +67,12 @@ pub const ENV_VARS: &[EnvVar] = &[
         None,
     ),
     var(
+        "OMADDONS_WIDGET_REPO",
+        EnvKind::Release,
+        "The git URL or local path omarchy install adds the bar widget from, in place of its repository",
+        None,
+    ),
+    var(
         "NO_COLOR",
         EnvKind::Release,
         "Set and non-empty: no color",
@@ -817,6 +823,7 @@ mod tests {
                 "OMADDONS_OFFLINE",
                 "OMADDONS_FORMAT",
                 "OMADDONS_GITHUB_TOKEN",
+                "OMADDONS_WIDGET_REPO",
                 "NO_COLOR",
                 "CI",
                 "TERM",

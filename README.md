@@ -282,7 +282,7 @@ cargo build --locked --release
 ./target/release/omaddons status
 ```
 
-The release profile is built for size: `opt-level = "s"`, fat LTO, a single codegen unit and stripped symbols. The binary is about 15.5 MB, with the catalog, the agent guide, the bar widget and every published JSON Schema embedded, and it keeps every speed budget. It links no schema generator: it prints the schemas a test generated (see [The embedded schemas](#the-embedded-schemas)). A release rebuild takes about two and a half minutes on the development machine. Milestone 5 keeps the binary under 18 MB with its new sources included.
+The release profile is built for size: `opt-level = "s"`, fat LTO, a single codegen unit and stripped symbols. The binary is about 15.8 MB, with the catalog, the agent guide and every published JSON Schema embedded (the bar widget is its own repository), and it keeps every speed budget. It links no schema generator: it prints the schemas a test generated (see [The embedded schemas](#the-embedded-schemas)). A release rebuild takes about two and a half minutes on the development machine. Milestone 5 keeps the binary under 18 MB with its new sources included.
 
 For Claude Code: `omaddons robot-docs install-skill` installs the agent guide as a skill (see [`robot-docs install-skill`](#robot-docs-install-skill)).
 
@@ -2208,15 +2208,15 @@ The Settings sheet (`,`, or the cog) explains each setting.
 ```bash
 omaddons omarchy install                       # right section; then says how to move it and bind a key
 omaddons omarchy install --section left        # a widget not yet on the bar goes left
-omaddons omarchy install --no-enable           # files only
-omaddons omarchy install --dry-run             # render and validate; write nothing
+omaddons omarchy install --no-enable           # add it, leave the bar as it is
+omaddons omarchy install --dry-run             # say what it would do; run and write nothing
 omarchy bar move a44.omaddons --section left   # move it
 omaddons omarchy                               # status
 omaddons omarchy remove
 mise upgrade github:a44-io/omaddons            # upgrade omaddons; the widget keeps working
 ```
 
-Run `install` and `remove` from the desktop session: Omarchy's tools run with your environment. The [setup plugin](https://github.com/a44-io/omaddons-omarchy) (`omarchy plugin add https://github.com/a44-io/omaddons-omarchy.git --enable`) is a bar button with the widget's id. Its click installs the omaddons release it pins with mise when needed, checks that binary's SHA-256, then runs its `omarchy install`; the widget takes its place. `omarchy plugin remove a44.omaddons` removes either, without a history line. For a key, add `o.bind("SUPER + ALT + W", "WoW addons", { panel = "a44.omaddons" })` to `~/.config/hypr/bindings.lua`.
+Run `install` and `remove` from the desktop session: Omarchy's tools run with your environment. The widget is its own repository, [a44-io/omaddons-omarchy](https://github.com/a44-io/omaddons-omarchy): `omarchy plugin add https://github.com/a44-io/omaddons-omarchy.git --enable` adds it without omaddons, and `omaddons omarchy install` adds the same repository through that command. `omarchy plugin remove a44.omaddons` removes it, without a history line. For a key, add `o.bind("SUPER + ALT + W", "WoW addons", { panel = "a44.omaddons" })` to `~/.config/hypr/bindings.lua`.
 
 The widget never reinstalls or replaces itself, and never runs `omarchy install` or `omarchy remove`: Omarchy's plugin commands add, update and remove it. It reads any omaddons whose contract is 1.x from the minimum its manifest names (`omaddons.contract_min`, 1.2; a manifest may raise it, never lower it), whatever its version, so upgrading omaddons needs nothing else. An omaddons older than that shows a read-only card with `mise upgrade github:a44-io/omaddons`; a later major shows one with `omarchy plugin update a44.omaddons`; each command is copied, never run. See [`omarchy status`](#omarchy-status), [`omarchy install`](#omarchy-install) and [`omarchy remove`](#omarchy-remove).
 
@@ -2297,17 +2297,24 @@ Every gate checks these:
 
 #### `omarchy status`
 
-Whether Omarchy is here (`omarchy.present`: `~/.config/omarchy` and its shell), its shell runs (`omarchy.shell_running`: `omarchy-shell shell ping` answered `ok` within 2 seconds) and `omarchy-plugin-validate` is on `PATH` (`omarchy.validator`); then the widget as `plugin` (as `install` reports it, with its bar `section` and `context_matches`), where `outdated` means this binary would render other code for its directories, or `Build.js` is missing. `validation` is `{ok, errors}` from omaddons' copy of Omarchy's plugin validator, or `null` with nothing installed; its one added rule reads `manifest.json` only up to 64 KiB (`WIDGET_READBACK_MAX_BYTES`).
+Whether Omarchy is here (`omarchy.present`: `~/.config/omarchy` and its shell), its shell runs (`omarchy.shell_running`: `omarchy-shell shell ping` answered `ok` within 2 seconds) and `omarchy-plugin-validate` is on `PATH` (`omarchy.validator`); then the widget as `plugin` (as `install` reports it, with its bar `section` and `context_matches`), where `outdated` means a widget an older omaddons rendered (or the setup button that installed one), which `install` replaces with the widget's checkout. `validation` is `{ok, errors}` from omaddons' copy of Omarchy's plugin validator, or `null` with nothing installed; its one added rule reads `manifest.json` only up to 64 KiB (`WIDGET_READBACK_MAX_BYTES`).
 
-It recommends `omaddons omarchy install` for an outdated widget (`reinstall_widget`) or one on no bar section (`enable_widget`), but not for a widget installed under other `HOME` or XDG directories (`context_matches: false`), which serves that state; one missing `Build.js` serves none, so its reinstall is recommended from anywhere. It writes nothing and makes no request; its one subprocess is the ping.
+It recommends `omaddons omarchy install` for an outdated widget (`reinstall_widget`) or one on no bar section (`enable_widget`), but not for a rendered widget whose `Build.js` names other `HOME` or XDG directories (`context_matches: false`), which serves that state. The widget's checkout finds omaddons itself in its desktop session, so `binary` is `null` for it. It writes nothing and makes no request; its one subprocess is the ping.
 
 #### `omarchy install`
 
-It renders the embedded widget for this binary's path and this session's `HOME` and XDG directories, stages it in a hidden `~/.config/omarchy/plugins/.a44.omaddons.stage-<id>/` that Omarchy's registry ignores, checks it with omaddons' copy of Omarchy's validator and, if installed, `omarchy-plugin-validate`, then swaps it into `~/.config/omarchy/plugins/a44.omaddons/` (the folder `omarchy plugin add` gives the id), replacing whatever it held, with one atomic rename, so the shell never sees it half-written; a widget an older omaddons left in `plugins/omaddons/` is moved out under the same lock. Last, it records a `widget` line in history, asks the shell to rescan plugins and, unless `--no-enable`, runs `omarchy-bar put a44.omaddons --section <section>`; a widget already on the bar stays where you put it, and omaddons never writes Omarchy's `shell.json`. Usage: [Install and upgrade](#install-and-upgrade).
+It adds the widget's repository through Omarchy, `omarchy-plugin-add https://github.com/a44-io/omaddons-omarchy.git --yes` (`OMADDONS_WIDGET_REPO` names another URL or a local path), which clones it, validates it and puts it in `~/.config/omarchy/plugins/a44.omaddons/`. omaddons never writes the widget's code: `omarchy plugin update a44.omaddons` updates it. `--yes` because running `omaddons omarchy install` is the request, and Omarchy's warning cannot be answered without a terminal. What the folder holds decides the rest:
 
-With nothing changed it writes nothing (`installed: unchanged`). Reinstall after moving the binary or changing the XDG directories, which `Build.js` records. A mise-installed binary is recorded by mise's `latest` link (`…/installs/<tool>/latest/…`), following mise's upgrades without its slower wrapper. Concurrent installs each stage their own copy under an in-flight lock, the last to publish winning; the next install removes a killed install's stage once its process is gone. Without `RENAME_EXCHANGE` the swap takes two renames (warning `atomic_swap_unavailable`), and an install interrupted between them leaves no widget until the next install.
+- nothing: it is added (`installed: fresh`);
+- the widget's checkout, or a symlink of your own: nothing under it is written (`unchanged`);
+- a widget an older omaddons rendered, or the setup button that installed one: moved out first, under the global lock, since Omarchy refuses an id in use, then the repository added (`replaced`). If the add fails, the older widget goes back where it was and nothing is recorded;
+- anything else, such as files copied there by hand: refused with `file_exists` (`details.reason: "plugin_folder_foreign"`), and never moved.
 
-`data` is `{dry_run, installed, enabled, section, plugin}`: `installed` is `fresh`, `replaced` or `unchanged`; `enabled` is `yes`, `already`, `skipped` (`--no-enable`) or `failed`; `plugin` is `{installed, path, id, version, binary, outdated, enabled, section, context_matches}`. Without Omarchy (no `~/.config/omarchy`, or no `omarchy-shell` on `PATH` or `$OMARCHY_PATH/shell`) it fails `not_found`, `details.reason: "omarchy_missing"`. If the shell cannot be told (over SSH, or stopped), the files stay installed, with the warning `omarchy_shell_unreachable`. A plugin failing validation is a build bug: `internal`, `details.reason: "plugin_invalid"`, nothing swapped.
+A widget an older omaddons left in `plugins/omaddons/` is moved out the same way. A change records a `widget` line in history. Last, unless `--no-enable`, it runs `omarchy-bar put a44.omaddons --section <section>`; a widget already on the bar stays where you put it, and omaddons never writes Omarchy's `shell.json`. Usage: [Install and upgrade](#install-and-upgrade).
+
+`--offline` refuses an install that would clone (`offline`, `details.reason: "plugin_add_offline"`), and writes nothing. If Omarchy's add fails (no network, a refused id), it fails `download_failed` (`details.reason: "plugin_add_failed"`, with the `url` and what the tool `said`), retryable.
+
+`data` is `{dry_run, installed, enabled, section, plugin}`: `installed` is `fresh`, `replaced` or `unchanged`; `enabled` is `yes`, `already`, `skipped` (`--no-enable`) or `failed`; `plugin` is `{installed, path, id, version, binary, outdated, enabled, section, context_matches}`. Without Omarchy (no `~/.config/omarchy`, or no `omarchy-shell` on `PATH` or `$OMARCHY_PATH/shell`) it fails `not_found`, `details.reason: "omarchy_missing"`. If the shell cannot be told (over SSH, or stopped), the widget stays installed, with the warning `omarchy_shell_unreachable`.
 
 #### `omarchy remove`
 
@@ -3174,6 +3181,7 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `OMADDONS_OFFLINE` | `1` (exactly) means `--offline` |
 | `OMADDONS_FORMAT` | `json` means `--json` |
 | `OMADDONS_GITHUB_TOKEN` | Bearer token for `api.github.com` only |
+| `OMADDONS_WIDGET_REPO` | The git URL or local path `omarchy install` adds the bar widget from, in place of `https://github.com/a44-io/omaddons-omarchy.git`: a local export, for development builds and tests |
 | `NO_COLOR`, `CI`, `TERM=dumb` | No color; `CI` and `TERM=dumb` also switch stderr to NDJSON |
 | `HOME` | Required and absolute: `~/Games`, `~/.wine`, launcher configs |
 | `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | Move omaddons' config, state and cache (used only when absolute). `XDG_CONFIG_HOME` also moves the Lutris and Heroic config lookups, and where `install-completions fish` writes |
@@ -3181,7 +3189,7 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `OMARCHY_PATH` | Where `omarchy install` also looks for Omarchy's shell (`$OMARCHY_PATH/shell`) when `omarchy-shell` is not on `PATH`. Omarchy's tools get it, with the rest of the environment, unchanged |
 | `PATH` | Where `gh`, `git` and `omarchy-shell` are found; `git` runs with only `PATH` from your environment |
 
-Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether a client's filesystem clones), `OMADDONS_FS_FREE_MB` (the free space backups see), `OMADDONS_WIDGET_ID` (a suffix installing a separate copy of the bar widget) and `OMADDONS_TEST_FIXERS` (`1` registers the doctor's test-only fixers); release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE`, `OMADDONS_LIVE`, `OMADDONS_REAL_CUSTOM_ROOT`, `OMADDONS_WRITE_SEEDS`, `OMADDONS_WIDGET_OUT`, `OMADDONS_TEST_LOG`, `OMADDONS_UPDATE_SKILL`, `OMADDONS_UPDATE_WIRE_NAMES`, `OMADDONS_UPDATE_SCHEMAS`, `OMADDONS_ADVANCE_RELEASED_BASELINE`, `BENCH_HOME`, `LIVE_HOME` and `COVERAGE_HOME` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate) and [Test logs and `argc e2e`](#test-logs-and-argc-e2e)).
+Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether a client's filesystem clones), `OMADDONS_FS_FREE_MB` (the free space backups see), `OMADDONS_WIDGET_ID` (a suffix for a separate copy of the bar widget: `omarchy install` then looks after `a44.omaddons-<suffix>`, which `OMADDONS_WIDGET_REPO` must name an export of, its manifest and `Model.PLUGIN_ID` carrying that id) and `OMADDONS_TEST_FIXERS` (`1` registers the doctor's test-only fixers); release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE`, `OMADDONS_LIVE`, `OMADDONS_REAL_CUSTOM_ROOT`, `OMADDONS_WRITE_SEEDS`, `OMADDONS_WIDGET_OUT`, `OMADDONS_TEST_LOG`, `OMADDONS_UPDATE_SKILL`, `OMADDONS_UPDATE_WIRE_NAMES`, `OMADDONS_UPDATE_SCHEMAS`, `OMADDONS_ADVANCE_RELEASED_BASELINE`, `BENCH_HOME`, `LIVE_HOME` and `COVERAGE_HOME` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate) and [Test logs and `argc e2e`](#test-logs-and-argc-e2e)).
 
 A test fails when the binary reads a variable this section does not list.
 
@@ -3225,8 +3233,8 @@ A test fails when the binary reads a variable this section does not list.
 | `<client>/Interface/.omaddons/backups/<id>/` | One `WTF/` [backup](#backup), owner-only (`0700`): `backup.json`, `manifest.json` (it names the account, realm and character, so it leaves this machine only inside an archive you export), `addons.json` and the `WTF/` copy | Loses that backup |
 | `~/.cache/omaddons/backups.json` | The backup inventory, checked against the directories before it is believed | Yes |
 | the `<FILE>` you give `backup export` | One backup as a `.tar.zst` (mode `0600`), written through a hidden `.omaddons-…` temporary file beside it | Yours |
-| `~/.config/omarchy/plugins/a44.omaddons/` | The bar widget: `manifest.json` and its code in an `r-<hash>/` folder, whose generated `Build.js` records the binary, the `HOME` and XDG directories and the code's hash | Use `omaddons omarchy remove` |
-| `~/.config/omarchy/plugins/.a44.omaddons.stage-<id>/`, `.a44.omaddons.old-<id>/`, `.a44.omaddons.trash/` | Hidden from Omarchy: an install's stage, the old widget a swap parks, and staged deletions | Yes when no install runs |
+| `~/.config/omarchy/plugins/a44.omaddons/` | The bar widget: a git checkout of its repository, which Omarchy's plugin commands add, update and remove (one an older omaddons rendered holds `manifest.json` and an `r-<hash>/` folder with a generated `Build.js`) | Use `omaddons omarchy remove` |
+| `~/.config/omarchy/plugins/.a44.omaddons.old-<id>/`, `.a44.omaddons.stage-<id>/`, `.a44.omaddons.trash/` | Hidden from Omarchy: a widget moved out, an older omaddons' stage, and staged deletions | Yes when no install runs |
 | `~/.claude/skills/omaddons/SKILL.md`, or `SKILL.md` in a `--dir` folder | The agent guide `robot-docs install-skill` wrote; `SKILL.md.bak`, `SKILL.md.bak.1`, … are hand-edited copies it replaced | Yes |
 | `<data>/bash-completion/completions/omaddons`, `~/.zfunc/_omaddons`, `<config>/fish/completions/omaddons.fish` (XDG data and config folders) | The completion scripts `install-completions` wrote | Yes |
 
@@ -3323,13 +3331,13 @@ A client's record (`targets/<key>.json`) is format 1.1 from the first change thi
 | `src/backup/` | `WTF/` backups: the on-disk model, the one tree copy, the inventory projection, automatic backups, export, import and verify, filesystem hints |
 | `src/lua.rs` | A parser of the Lua literals the client writes as SavedVariables, read-only and infallible |
 | `src/errors/` | Lua errors: BugGrabber's databases decoded into one model, attribution, the errors memo and dismissals |
-| `src/omarchy/` | The bar widget: its embedded files (`assets.rs`), rendering it for a given binary and state, `omarchy install`, `status` and `remove`, the port of Omarchy's plugin validator, and the calls to Omarchy's tools |
+| `src/omarchy/` | The bar widget's commands: `omarchy install` (Omarchy's plugin add of the widget's repository, moving an older widget out), `status` and `remove`, reading a widget an older omaddons rendered (`legacy.rs`), the port of Omarchy's plugin validator, and the calls to Omarchy's tools |
 | `src/privacy.rs` | The one redactor for account, realm and character names in `WTF/` paths, used by backups, restores and `errors` |
 | `src/clock.rs` | The clock time rules read (`OMADDONS_NOW` freezes it in debug builds) |
 | `src/politeness.rs`, `src/limits.rs` | Every network-politeness constant and every safety limit, each in one place |
 | `catalog/catalog.toml` | The built-in catalog, embedded with `include_str!` |
 | `omarchy/` | The bar widget's QML and JavaScript: `Model.js` turns envelopes into views and builds every argv the widget may run, from three files below it that each import only the one under them (`View.js` the views, `Shared.js` the helpers both read, `Words.js` the words), so no file passes the plugin marketplace scan's 512 KiB (a test holds each to 384 KiB); `Service.qml` is its one service, `views/` and `ui/` the panel; tests under `omarchy/tests/`, which load the model through `omarchy/tests/load.js`; the plugin repository's own README and pictures under `omarchy/publish/`, published with it and never read by the widget |
-| `build.rs` | The widget files' digest (so `status` compares an installed widget without hashing it), the build id, the agent guide's digest, and the catalog's folder index |
+| `build.rs` | The build id, the agent guide's digest, and the catalog's folder index |
 | `crates/` | The `schemars` facade: schemars itself with the `schemas` feature (every test build), a no-op derive without it (the release binary; see [The embedded schemas](#the-embedded-schemas)) |
 | `tests/`, `fuzz/` | Integration, contract, crash, concurrency and live tests; cargo-fuzz targets |
 

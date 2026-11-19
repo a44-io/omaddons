@@ -39,7 +39,6 @@ pub const ROWS: &[Row] = &[
     BEHIND_STEP_UNRECOGNIZED,
     RECOVERY_FAILED,
     INSTALL_SKILL_REFUSED,
-    WIDGET_INVALID,
 ];
 
 /// `omaddons <args> --json` on `home` with `env`, and this home's own Omarchy
@@ -488,28 +487,5 @@ const INSTALL_SKILL_REFUSED: Row = Row {
         std::os::unix::fs::symlink(home.join("dotfiles/SKILL.md"), skill.join("SKILL.md")).unwrap();
         let linked = s.json(&["robot-docs", "install-skill"], 4);
         vec![inside, linked]
-    },
-};
-
-/// `omarchy install` over stub Omarchy tools whose `omarchy-plugin-validate` refuses the
-/// rendered widget: a build bug, `internal`, with the validator's problems.
-const WIDGET_INVALID: Row = Row {
-    id: "a_widget_omarchy_refuses_is_internal_with_its_problems",
-    keys: &[
-        (ErrorCode::Internal, "problems"),
-        (ErrorCode::Internal, "reason"),
-    ],
-    run: || {
-        let home = Home::new(&["wow"]);
-        let desk = crate::common::omarchy::stub_desk(&home.env);
-        fs::write(home.env.root().join("validate-mode"), "bad\n").unwrap();
-        let env: Vec<(&str, String)> = desk
-            .env()
-            .iter()
-            .map(|(key, value)| (*key, value.display().to_string()))
-            .collect();
-        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let install = home.exec_with(&json_argv(&["omarchy", "install"]), &env);
-        vec![check(install, 1)]
     },
 };

@@ -263,7 +263,7 @@ error_codes! {
     /// process meanwhile); it is never replaced (`backup export`, M3-D34). Also a shell
     /// completion file `install-completions` did not write, replaced only with `--force`.
     FileExists          = "file_exists",           Refused,     false,
-        "A destination that must be newly created already exists, or a completion file omaddons did not write is there.", specs::FILE_EXISTS;
+        "A destination that must be newly created already exists, a completion file omaddons did not write is there, or the bar widget's folder holds a plugin omaddons did not install.", specs::FILE_EXISTS;
     Locked              = "locked",                Locked,      true,
         "Another omaddons process held the lock past the acquire timeout.", specs::LOCKED;
     CheckFailed         = "check_failed",          CheckFailed, false,
@@ -274,7 +274,7 @@ error_codes! {
     RateLimited         = "rate_limited",          Failed,      true,
         "A host exhausted its request budget or kept refusing requests beyond the allowed rate-limit retries.", specs::RATE_LIMITED;
     DownloadFailed      = "download_failed",       Failed,      false,
-        "The git subprocess could not clone or fetch the requested repository or revision.", specs::DOWNLOAD_FAILED;
+        "The git subprocess could not clone or fetch the requested repository or revision, or Omarchy's plugin add could not add the bar widget's repository.", specs::DOWNLOAD_FAILED;
     /// Retryable for 5xx only; see [`Error::http_status`].
     HttpStatus          = "http_status",           Failed,      false,
         "A host answered with an unexpected HTTP status; an instance is retryable for a 5xx status only.", specs::HTTP_STATUS;

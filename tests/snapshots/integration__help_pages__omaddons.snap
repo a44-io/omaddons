@@ -125,6 +125,8 @@ Environment:
   OMADDONS_OFFLINE       1 (exactly) means --offline
   OMADDONS_FORMAT        json means --json
   OMADDONS_GITHUB_TOKEN  Bearer token sent to api.github.com only
+  OMADDONS_WIDGET_REPO   The git URL or local path omarchy install adds the bar widget from, in
+                         place of its repository
   NO_COLOR               Set and non-empty: no color
   CI                     Set and non-empty: no color, and NDJSON on stderr
   TERM                   dumb: no color, and NDJSON on stderr

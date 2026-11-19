@@ -1212,6 +1212,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "An Omarchy tool (plugin validator, shell IPC, bar placement) is killed after this long"
     },
     {
+      "name": "OMARCHY_PLUGIN_ADD_TIMEOUT",
+      "value": {
+        "millis": 120000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "omarchy-plugin-add, which clones the widget's repository, is killed after this long"
+    },
+    {
       "name": "OMARCHY_SHELL_JSON_MAX_BYTES",
       "value": {
         "bytes": 4194304

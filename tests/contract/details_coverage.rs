@@ -26,6 +26,7 @@ mod doctor;
 mod folders;
 mod plans;
 mod sources;
+mod widget;
 
 /// One scene and the declared `details` pairs its envelopes show.
 pub struct Row {
@@ -47,6 +48,7 @@ fn rows() -> Vec<&'static Row> {
         folders::ROWS,
         plans::ROWS,
         sources::ROWS,
+        widget::ROWS,
     ]
     .into_iter()
     .flatten()
@@ -98,12 +100,41 @@ fn claimed(code: ErrorCode, path: &str, declared: &BTreeSet<Declared>) -> Option
     .find(|pair| declared.contains(pair))
 }
 
-/// The table's own faults, in order: every declared pair no row names, every row pair its
-/// code does not declare, and every row id used twice.
-fn table_faults(declared: &BTreeSet<Declared>, rows: &[&Row]) -> Vec<String> {
+/// Declared keys no site produces any more, each with why it stays declared: removing one
+/// breaks contract 1.x (the released baseline's classifier says so), so it is kept until
+/// a major, and no row can show it. Each must still be declared, and no row may name it.
+const RETIRED: &[(ErrorCode, &str, &str)] = &[(
+    ErrorCode::Internal,
+    "problems",
+    "the rendered widget's validation problems; the render is gone (omad-widget-plugin-3bcbh.9)",
+)];
+
+/// The table's own faults, in order: every declared pair no row names (a retired one
+/// aside), every row pair its code does not declare, every retired pair no longer declared
+/// or named by a row, and every row id used twice.
+fn table_faults(
+    declared: &BTreeSet<Declared>,
+    rows: &[&Row],
+    retired: &[(ErrorCode, &str, &str)],
+) -> Vec<String> {
     let mut faults = Vec::new();
     let mut named = BTreeSet::new();
     let mut ids = BTreeSet::new();
+    for (code, path, why) in retired {
+        match claimed(*code, path, declared) {
+            Some(pair) => {
+                named.insert(pair);
+            }
+            None => faults.push(format!(
+                "retired `{code}` `details.{path}` ({why}) is no longer declared: drop it from RETIRED"
+            )),
+        }
+        if rows.iter().any(|row| row.keys.contains(&(*code, *path))) {
+            faults.push(format!(
+                "retired `{code}` `details.{path}` is named by a row: a site produces it, so it is not retired"
+            ));
+        }
+    }
     for row in rows {
         if !ids.insert(row.id) {
             faults.push(format!("row `{}` is in the table twice", row.id));
@@ -158,7 +189,7 @@ fn every_declared_details_key_is_observed() {
     let declared = declared();
     let rows = rows();
     log.step("the table covers every declared pair");
-    let faults = table_faults(&declared, &rows);
+    let faults = table_faults(&declared, &rows, RETIRED);
     log.json("table faults", &faults);
     assert!(
         faults.is_empty(),
@@ -237,7 +268,7 @@ fn the_coverage_check_reports_what_is_missing() {
         keys: &[(ErrorCode::Locked, "changed")],
         run: none,
     };
-    let faults = table_faults(&planted, &[&SHOWS, &UNDECLARED, &SHOWS]);
+    let faults = table_faults(&planted, &[&SHOWS, &UNDECLARED, &SHOWS], &[]);
     assert_eq!(
         faults,
         [
@@ -248,6 +279,23 @@ fn the_coverage_check_reports_what_is_missing() {
             "`plan_stale` declares `details.planted_unproducible`, but no row shows it: add a \
              row that produces it through support::check, or remove it from the code's spec \
              (src/error/specs.rs) when no site can emit it"
+                .to_owned(),
+        ]
+    );
+    // A retired pair covers its declared key; one no longer declared, or one a row still
+    // names, is a fault.
+    let retired = [
+        (ErrorCode::PlanStale, "planted_unproducible", "why"),
+        (ErrorCode::Locked, "gone", "why"),
+        (ErrorCode::PlanStale, "changed", "why"),
+    ];
+    assert_eq!(
+        table_faults(&planted, &[&SHOWS], &retired),
+        [
+            "retired `locked` `details.gone` (why) is no longer declared: drop it from RETIRED"
+                .to_owned(),
+            "retired `plan_stale` `details.changed` is named by a row: a site produces it, so \
+             it is not retired"
                 .to_owned(),
         ]
     );

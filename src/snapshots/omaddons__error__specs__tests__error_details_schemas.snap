@@ -1075,6 +1075,11 @@ expression: schemas
       "journal_pending": {
         "type": "string"
       },
+      "reason": {
+        "enum": [
+          "plugin_add_failed"
+        ]
+      },
       "recovery_error": {
         "properties": {
           "code": {
@@ -1095,6 +1100,12 @@ expression: schemas
           "type": "string"
         },
         "type": "array"
+      },
+      "said": {
+        "type": "string"
+      },
+      "url": {
+        "type": "string"
       }
     },
     "type": "object"
@@ -1165,6 +1176,11 @@ expression: schemas
       },
       "journal_pending": {
         "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "plugin_folder_foreign"
+        ]
       },
       "recovery_error": {
         "properties": {
@@ -2641,7 +2657,8 @@ expression: schemas
       },
       "reason": {
         "enum": [
-          "not_cached"
+          "not_cached",
+          "plugin_add_offline"
         ]
       },
       "recovery_error": {

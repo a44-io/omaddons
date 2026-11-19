@@ -1,12 +1,14 @@
 //! Omarchy's own tools: the only processes the `omarchy` commands start.
-//! `omarchy-plugin-validate` reads the rendered stage; `omarchy-shell` pings the shell
-//! and asks it to rescan its plugins; `omarchy-bar put` places the widget and
-//! `omarchy-plugin-disable` takes it off, which write Omarchy's `shell.json` (omaddons
-//! never writes it). Each runs from `PATH` with argv only, the user's environment
-//! inherited unchanged (the tools need `OMARCHY_PATH`, the Wayland and Hyprland
-//! variables and the D-Bus session), in its own process group, which is stopped after
-//! [`OMARCHY_COMMAND_TIMEOUT`] (the ping after [`OMARCHY_PING_TIMEOUT`]), its output read
-//! up to [`API_RESPONSE_MAX_BYTES`].
+//! `omarchy-plugin-add` clones the widget's repository into the plugins folder (only
+//! Omarchy's plugin commands write the widget's code, omad-widget-plugin-3bcbh.9);
+//! `omarchy-plugin-validate` checks a plugin folder for `omarchy status`; `omarchy-shell`
+//! pings the shell and asks it to rescan its plugins; `omarchy-bar put` places the widget
+//! and `omarchy-plugin-disable` takes it off, which write Omarchy's `shell.json`
+//! (omaddons never writes it). Each runs from `PATH` with argv only, the user's
+//! environment inherited unchanged (the tools need `OMARCHY_PATH`, the Wayland and
+//! Hyprland variables and the D-Bus session), in its own process group, which is stopped
+//! after [`OMARCHY_COMMAND_TIMEOUT`] (the ping after [`OMARCHY_PING_TIMEOUT`], the clone
+//! after [`OMARCHY_PLUGIN_ADD_TIMEOUT`]), its output read up to [`API_RESPONSE_MAX_BYTES`].
 
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -17,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use crate::limits::{
     API_RESPONSE_MAX_BYTES, OMARCHY_COMMAND_TIMEOUT, OMARCHY_KILL_GRACE, OMARCHY_PING_TIMEOUT,
+    OMARCHY_PLUGIN_ADD_TIMEOUT,
 };
 
 /// The validator Omarchy ships.
@@ -27,6 +30,10 @@ pub const SHELL: &str = "omarchy-shell";
 pub const BAR: &str = "omarchy-bar";
 /// Omarchy's plugin disable.
 pub const DISABLE: &str = "omarchy-plugin-disable";
+/// Omarchy's plugin add (`omarchy plugin add`).
+pub const PLUGIN_ADD: &str = "omarchy-plugin-add";
+/// The lines of a tool's output an error quotes.
+const SAID_LINES: usize = 3;
 /// How often `omarchy-bar put` is asked again while the shell has not seen the new
 /// plugin yet, and how long apart (F0: the shell answers "unknown" for about 0.4 s
 /// after the files land, before its debounced rescan starts).
@@ -247,6 +254,37 @@ pub fn disable(id: &str) -> Result<(), String> {
         },
         Err(not_run) => Err(not_run.describe(DISABLE)),
     }
+}
+
+/// Adds the plugin repository at `url` through Omarchy: `omarchy-plugin-add <url>
+/// --yes`, which checks the URL, clones it, validates it, refuses an id already in use,
+/// moves it into the plugins folder and asks the shell to rescan. `--yes`: running
+/// `omaddons omarchy install` is the request, and Omarchy's warning cannot be answered
+/// without a terminal. Never `--enable`, whose choice of section is interactive only:
+/// omaddons places the widget with `omarchy-bar put`. The error is why it did not
+/// happen: its last lines of output.
+pub fn plugin_add(url: &str) -> Result<(), String> {
+    match run_for(PLUGIN_ADD, &[url, "--yes"], OMARCHY_PLUGIN_ADD_TIMEOUT) {
+        Ok(ran) if ran.success => Ok(()),
+        Ok(ran) => Err(format!("{PLUGIN_ADD} said: {}", last_lines(&ran))),
+        Err(not_run) => Err(not_run.describe(PLUGIN_ADD)),
+    }
+}
+
+/// The last [`SAID_LINES`] non-blank lines of a run's stderr, else of its stdout, joined
+/// with " / ".
+fn last_lines(ran: &Ran) -> String {
+    let from = if ran.stderr.trim().is_empty() {
+        &ran.stdout
+    } else {
+        &ran.stderr
+    };
+    let lines: Vec<&str> = from
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(SAID_LINES)..].join(" / ")
 }
 
 /// How placing the widget went.

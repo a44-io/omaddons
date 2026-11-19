@@ -23,7 +23,6 @@ const path = require("path")
 const M = require("./load.js")("Model.js")
 
 const ROOT = path.join(__dirname, "..")
-const REPO = path.join(ROOT, "..")
 // The widget's id, from the one file that may write it.
 const ID = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).id
 
@@ -997,10 +996,15 @@ const CHECKS = [
 // ------------------------------------------------------------------ the tests
 
 describe("the scans cover the finished widget", () => {
-  test("every runtime file, exactly the embedded assets but the manifest", () => {
-    const assets = fs.readFileSync(path.join(REPO, "src/omarchy/assets.rs"), "utf8")
-    const embedded = [...assets.matchAll(/include_str!\("\.\.\/\.\.\/omarchy\/([^"]+)"\)/g)].map((m) => m[1]).filter((n) => n !== "manifest.json")
-    expect(Object.keys(REAL)).toEqual(embedded.sort())
+  // The widget's checkout is omarchy/ itself (omad-widget-plugin-3bcbh.9): the scans read
+  // every .qml and .js under it, its tests aside, which holds the manifest's entry points
+  // and the model's four files.
+  test("every runtime file, the manifest's entry points and the model's files among them", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"))
+    const wanted = Object.values(manifest.entryPoints).concat(["Words.js", "Shared.js", "View.js", "Model.js"])
+    for (const name of wanted) expect([name, Object.prototype.hasOwnProperty.call(REAL, name)]).toEqual([name, true])
+    expect(Object.keys(REAL).every((name) => !name.startsWith("tests/") && !name.startsWith("publish/"))).toBe(true)
+    expect(Object.keys(REAL).length).toBeGreaterThan(20)
   })
 
   for (const [name, check] of CHECKS) {

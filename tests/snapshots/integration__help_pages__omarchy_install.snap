@@ -21,7 +21,8 @@ Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--h
 ==> omaddons omarchy install --help <==
 Install the bar widget and put it on the bar
 
-Render it for this binary, swap it in, and place it on the bar.
+Add its repository through omarchy plugin add, moving an older widget out first, and place it on the
+bar. A checkout already there is left as it is.
 
 Usage: omaddons omarchy install [OPTIONS]
 

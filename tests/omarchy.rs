@@ -1,7 +1,9 @@
-//! `omaddons omarchy install` end to end (E2): a fake `<config-omarchy>` and stub
-//! `omarchy-*` tools that log their argv and `OMARCHY_PATH`. omaddons runs with `PATH`
-//! holding the stubs alone, so the real tools (whose `omarchy-bar put` would place the
-//! widget on this machine's bar) are never reachable; the stubs use shell builtins only.
+//! `omaddons omarchy install` end to end (E2, omad-widget-plugin-3bcbh.9): a fake
+//! `<config-omarchy>` and stub `omarchy-*` tools that log their argv and `OMARCHY_PATH`.
+//! omaddons runs with `PATH` holding the stubs alone, so the real tools (whose
+//! `omarchy-bar put` would place the widget on this machine's bar) are never reachable,
+//! and adds the widget from a local export of its repository through the
+//! `omarchy-plugin-add` stub, never from the network.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -15,7 +17,6 @@ use common::env::TestEnv;
 use common::home::{Run, wait};
 use common::pause::Pause;
 use common::privacy::assert_private_all;
-use omaddons::omarchy::render;
 use serde_json::Value;
 
 const ID: &str = "a44.omaddons";
@@ -36,12 +37,34 @@ impl Desk {
         desk
     }
 
-    /// No Omarchy at all: an empty stub dir and an `OMARCHY_PATH` without `shell/`.
+    /// No Omarchy at all: an empty stub dir and an `OMARCHY_PATH` without `shell/`. The
+    /// widget's export is there, for an install that gets that far.
     fn bare() -> Self {
         let env = TestEnv::new();
         fs::create_dir_all(env.root().join("bin")).unwrap();
         fs::create_dir_all(env.root().join("omarchy")).unwrap();
+        common::omarchy::write_widget_repo(&env.root().join("widget-repo"));
         Self { env }
+    }
+
+    /// The local export `omarchy install` adds the widget from.
+    fn repo(&self) -> PathBuf {
+        self.root().join("widget-repo")
+    }
+
+    /// The widget's checkout as the stub's clone of the export leaves it.
+    fn checkout(&self) -> BTreeMap<String, Vec<u8>> {
+        tree(&self.repo())
+    }
+
+    /// A widget an older omaddons rendered in the widget's folder, for this run's
+    /// directories.
+    fn rendered(&self) {
+        common::omarchy::plant_rendered(
+            &self.plugin(),
+            Path::new("/opt/omaddons-0.2.1/omaddons"),
+            &common::omarchy::context_json(&self.env),
+        );
     }
 
     fn root(&self) -> &Path {
@@ -120,6 +143,7 @@ impl Desk {
         self.env.apply_to(&mut cmd);
         cmd.env("PATH", self.root().join("bin"));
         cmd.env("OMARCHY_PATH", self.root().join("omarchy"));
+        cmd.env(common::omarchy::WIDGET_REPO_ENV, self.repo());
         for (key, value) in extra {
             cmd.env(key, value);
         }
@@ -152,16 +176,6 @@ impl Desk {
 
     fn install(&self) -> Value {
         self.run(&["omarchy", "install"]).expect(0)
-    }
-
-    /// `omarchy install --json` in the background, armed with `extra`.
-    fn spawn(&self, extra: &[(&str, &str)]) -> std::process::Child {
-        let binary = Path::new(env!("CARGO_BIN_EXE_omaddons"));
-        self.command(binary, &["omarchy", "install", "--json"], extra)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap()
     }
 
     /// The stub log's lines, `OMARCHY_PATH` lines checked and dropped.
@@ -227,27 +241,21 @@ fn tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     files
 }
 
-/// A `Build.js` line's value.
-fn build_value(dir: &Path, prefix: &str) -> String {
-    let build = tree(dir)
-        .into_iter()
-        .find(|(rel, _)| rel.ends_with("/Build.js"))
-        .map(|(_, bytes)| String::from_utf8(bytes).unwrap())
-        .unwrap();
-    build
-        .lines()
-        .find_map(|l| l.strip_prefix(prefix))
-        .unwrap()
-        .trim_end_matches(';')
-        .to_owned()
-}
-
 fn this_binary() -> PathBuf {
     fs::canonicalize(env!("CARGO_BIN_EXE_omaddons")).unwrap()
 }
 
+/// The widget manifest's `version`, as the export holds it (the publish stamps it).
+fn repo_version() -> String {
+    let manifest: Value = serde_json::from_str(include_str!("../omarchy/manifest.json")).unwrap();
+    manifest["version"].as_str().unwrap().to_owned()
+}
+
+/// The widget's repository added through Omarchy (`omarchy-plugin-add <url> --yes`, never
+/// `--enable`), recorded as a `widget` history line, then placed with `omarchy-bar put`.
+/// omaddons writes nothing of the widget's code: the folder is exactly the clone.
 #[test]
-fn a_fresh_install_validates_publishes_records_rings_and_places() {
+fn a_fresh_install_adds_the_repository_through_omarchy_and_places_it() {
     let desk = Desk::new();
     let d = desk.install();
     let data = &d["data"];
@@ -259,40 +267,63 @@ fn a_fresh_install_validates_publishes_records_rings_and_places() {
     assert_eq!(plugin["installed"], true);
     assert_eq!(plugin["id"], ID);
     assert_eq!(plugin["path"], desk.plugin().display().to_string());
-    assert_eq!(plugin["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(plugin["binary"], this_binary().display().to_string());
+    assert_eq!(plugin["version"], repo_version());
+    assert_eq!(
+        plugin["binary"],
+        Value::Null,
+        "a checkout finds omaddons itself"
+    );
     assert_eq!(plugin["outdated"], false);
     assert_eq!(plugin["enabled"], true);
     assert_eq!(plugin["section"], "right");
-    assert_eq!(plugin["context_matches"], true);
     assert_eq!(d["warnings"], serde_json::json!([]));
 
-    // The stage was validated (by its hidden name), then the shell rescanned, then put.
-    let calls = desk.calls();
-    assert_eq!(calls.len(), 3, "{calls:?}");
-    let staged = calls[0].strip_prefix("omarchy-plugin-validate ").unwrap();
-    let stage_name = Path::new(staged).file_name().unwrap().to_str().unwrap();
-    assert!(stage_name.starts_with(".a44.omaddons.stage-"), "{staged}");
-    assert_eq!(Path::new(staged).parent().unwrap(), desk.plugins());
-    assert_eq!(calls[1], "omarchy-shell -q shell rescanPlugins");
-    assert_eq!(calls[2], format!("omarchy-bar put {ID} --section right"));
-
+    assert_eq!(
+        desk.calls(),
+        [
+            format!("omarchy-plugin-add {} --yes", desk.repo().display()),
+            format!("omarchy-bar put {ID} --section right"),
+        ]
+    );
+    assert_eq!(tree(&desk.plugin()), desk.checkout(), "exactly the clone");
     let lines = desk.widget_lines();
     assert_eq!(lines.len(), 1);
-    let op = stage_name.trim_start_matches(".a44.omaddons.stage-");
-    assert_eq!(lines[0]["tx"], op, "the operation that published");
     assert_eq!(lines[0]["target"], Value::Null);
     assert_eq!(lines[0]["ops"], serde_json::json!([]));
     let bell: Value = serde_json::from_slice(&fs::read(desk.doorbell()).unwrap()).unwrap();
     assert_eq!(bell["command"], "omarchy install");
-
-    assert!(desk.plugin().join("manifest.json").is_file());
-    assert_eq!(
-        build_value(&desk.plugin(), "var BINARY = "),
-        format!("\"{}\"", this_binary().display())
-    );
     assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.inflight_locks(), 0);
+}
+
+/// The repository is the widget's own unless `OMADDONS_WIDGET_REPO` says otherwise; a
+/// value that is empty or reads as an option is refused before anything runs.
+#[test]
+fn the_repository_is_the_widgets_and_a_bad_override_is_refused() {
+    let desk = Desk::new();
+    for bad in ["", "--upload-pack=touch /tmp/x"] {
+        let d = desk
+            .run_with(
+                &["omarchy", "install"],
+                &[(common::omarchy::WIDGET_REPO_ENV, bad)],
+            )
+            .expect(2);
+        assert_eq!(d["error"]["code"], "usage", "{bad}: {d}");
+        assert!(!desk.plugin().exists());
+        assert_eq!(desk.calls(), Vec::<String>::new());
+    }
+    // Unset, the widget's repository on GitHub: the stub's clone of it fails here, as no
+    // network is reachable from the stub, and nothing is left.
+    let binary = Path::new(env!("CARGO_BIN_EXE_omaddons"));
+    let mut cmd = desk.command(binary, &["omarchy", "install", "--json"], &[]);
+    cmd.env_remove(common::omarchy::WIDGET_REPO_ENV);
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        desk.calls(),
+        ["omarchy-plugin-add https://github.com/a44-io/omaddons-omarchy.git --yes"]
+    );
+    assert!(!desk.plugin().exists());
 }
 
 #[test]
@@ -422,48 +453,57 @@ fn without_omarchy_there_is_no_bar() {
     fs::create_dir_all(desk.config_omarchy()).unwrap();
     fs::create_dir_all(desk.root().join("omarchy/shell")).unwrap();
     desk.tool("omarchy-bar");
+    desk.tool("omarchy-plugin-add");
     let d = desk.install();
     assert_eq!(d["data"]["installed"], "fresh");
 }
 
+/// Omarchy refusing or failing the add: `download_failed` with what it said, nothing
+/// recorded, and nothing left; an older widget it was to replace is back where it was.
 #[test]
-fn an_invalid_render_is_internal_and_nothing_is_swapped() {
+fn a_failed_add_leaves_everything_as_it_was() {
     let desk = Desk::new();
-    let r = desk.run_with(
-        &["omarchy", "install"],
-        &[("OMADDONS_FAILPOINTS", "omarchy.invalid")],
-    );
-    let d = r.expect(1);
-    assert_eq!(d["error"]["code"], "internal", "{d}");
-    assert_eq!(d["error"]["details"]["reason"], "plugin_invalid");
+    desk.set("add-mode", "fail");
+    let d = desk.run(&["omarchy", "install"]).expect(1);
+    assert_eq!(d["error"]["code"], "download_failed", "{d}");
+    assert_eq!(d["error"]["details"]["reason"], "plugin_add_failed");
     assert!(
-        !d["error"]["details"]["problems"]
-            .as_array()
+        d["error"]["details"]["said"]
+            .as_str()
             .unwrap()
-            .is_empty()
+            .contains("failed to clone"),
+        "{d}"
+    );
+    assert_eq!(
+        d["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "omarchy", "install"])
     );
     assert!(!desk.plugin().exists());
-    assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.widget_lines().len(), 0);
+    assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.inflight_locks(), 0);
 
-    // Omarchy's own validator refusing is the same build bug, in its words.
-    desk.set("validate-mode", "bad");
+    // An older render, moved out for the add, goes back whole.
+    desk.rendered();
+    let before = tree(&desk.plugin());
     let d = desk.run(&["omarchy", "install"]).expect(1);
-    assert_eq!(d["error"]["details"]["reason"], "plugin_invalid");
-    let problems = d["error"]["details"]["problems"].to_string();
-    assert!(
-        problems.contains("omarchy-plugin-validate: manifest.json"),
-        "{problems}"
-    );
-    assert!(!desk.plugin().exists());
+    assert_eq!(d["error"]["details"]["reason"], "plugin_add_failed");
+    assert_eq!(tree(&desk.plugin()), before);
+    assert_eq!(desk.widget_lines().len(), 0);
     assert_eq!(desk.leftovers(), Vec::<String>::new());
+    assert_eq!(desk.inflight_locks(), 0);
 
-    // Without it, omaddons' own port is enough.
-    fs::remove_file(desk.root().join("bin/omarchy-plugin-validate")).unwrap();
-    assert_eq!(desk.install()["data"]["installed"], "fresh");
+    // Failing after the checkout landed (its rescan): added, with a warning.
+    desk.set("add-mode", "late-fail");
+    let d = desk.install();
+    assert_eq!(d["data"]["installed"], "replaced", "{d}");
+    assert_eq!(d["warnings"][0]["code"], "omarchy_shell_unreachable", "{d}");
+    assert_eq!(tree(&desk.plugin()), desk.checkout());
+    assert_eq!(desk.widget_lines().len(), 1);
+    assert_eq!(desk.leftovers(), Vec::<String>::new());
 }
 
+/// A dry run says what it would do, and runs and writes nothing.
 #[test]
 fn a_dry_run_writes_nothing_under_plugins() {
     let desk = Desk::new();
@@ -475,244 +515,161 @@ fn a_dry_run_writes_nothing_under_plugins() {
     assert!(!desk.plugins().exists());
     assert!(!desk.history().exists());
     assert!(!desk.doorbell().exists());
-    // Only the read-only validator ran, on a scratch copy that is gone.
-    let calls = desk.calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    let scratch = calls[0].strip_prefix("omarchy-plugin-validate ").unwrap();
-    assert!(
-        scratch.starts_with(&desk.env.cache().display().to_string()),
-        "{scratch}"
-    );
-    assert!(!Path::new(scratch).exists());
+    assert_eq!(desk.calls(), Vec::<String>::new());
 
+    desk.rendered();
+    let before = tree(&desk.config_omarchy());
+    let d = desk.run(&["omarchy", "install", "--dry-run"]).expect(0);
+    assert_eq!(d["data"]["installed"], "replaced");
+    assert_eq!(tree(&desk.config_omarchy()), before);
+    assert_eq!(desk.calls(), Vec::<String>::new());
+
+    fs::remove_dir_all(desk.plugin()).unwrap();
     desk.install();
     let d = desk.run(&["omarchy", "install", "--dry-run"]).expect(0);
     assert_eq!(d["data"]["installed"], "unchanged");
     assert_eq!(d["data"]["enabled"], "already");
 }
 
-/// A moved binary restamps `Build.js` through an exchange; the code hash excludes the
-/// binary, so `status` would not call the installed widget outdated before it. Run as
-/// the widget's self-reinstall runs it, the history line says so.
+/// `--offline` refuses an install that would clone, and writes nothing; one that has the
+/// checkout already needs no network and places it.
 #[test]
-fn a_moved_binary_is_replaced_and_its_code_hash_is_unchanged() {
+fn offline_refuses_only_an_install_that_would_clone() {
+    let desk = Desk::new();
+    let d = desk.run(&["omarchy", "install", "--offline"]).expect(1);
+    assert_eq!(d["error"]["code"], "offline", "{d}");
+    assert_eq!(d["error"]["details"]["reason"], "plugin_add_offline");
+    assert!(!desk.plugins().exists());
+    assert_eq!(desk.calls(), Vec::<String>::new());
+    desk.rendered();
+    let before = tree(&desk.config_omarchy());
+    let d = desk.run(&["omarchy", "install", "--offline"]).expect(1);
+    assert_eq!(d["error"]["code"], "offline");
+    assert_eq!(tree(&desk.config_omarchy()), before);
+
+    fs::remove_dir_all(desk.plugin()).unwrap();
+    desk.run(&["omarchy", "install", "--no-enable"]).expect(0);
+    let d = desk.run(&["omarchy", "install", "--offline"]).expect(0);
+    assert_eq!(d["data"]["installed"], "unchanged");
+    assert_eq!(d["data"]["enabled"], "yes");
+}
+
+/// The widget's checkout is Omarchy's to update: an install beside it writes nothing
+/// under it, whatever it holds, and starts no tool once it is on the bar.
+#[test]
+fn a_checkout_is_never_written() {
     let desk = Desk::new();
     desk.install();
-    let moved = desk.root().join("moved/omaddons");
-    fs::create_dir_all(moved.parent().unwrap()).unwrap();
-    fs::copy(this_binary(), &moved).unwrap();
-
-    let context = render::installed_context(&desk.plugin()).unwrap();
-    let installed = render::installed_sha256(&desk.plugin()).unwrap();
-    let rerendered = render::render(&moved, &context, ID).unwrap();
-    assert_eq!(rerendered.content_sha256, installed);
-
-    let reason = "reinstall from the bar widget";
-    let args = [
-        "omarchy", "install", "--actor", "widget", "--reason", reason,
-    ];
-    let d = desk.run_binary(&moved, &args, &[]).expect(0);
-    assert_eq!(d["data"]["installed"], "replaced", "{d}");
-    assert_eq!(d["data"]["enabled"], "already");
-    assert_eq!(d["data"]["plugin"]["binary"], moved.display().to_string());
-    assert_eq!(
-        build_value(&desk.plugin(), "var BINARY = "),
-        format!("\"{}\"", moved.display())
-    );
-    assert_eq!(render::installed_sha256(&desk.plugin()).unwrap(), installed);
-    let lines = desk.widget_lines();
-    assert_eq!(lines.len(), 2);
-    assert_eq!(lines[1]["actor"], "widget");
-    assert_eq!(lines[1]["reason"], reason);
-    let bell: Value = serde_json::from_slice(&fs::read(desk.doorbell()).unwrap()).unwrap();
-    assert_eq!(bell["actor"], "widget");
-    assert_eq!(desk.leftovers(), Vec::<String>::new());
-    assert_eq!(desk.inflight_locks(), 0);
-}
-
-/// An installed widget someone changed: the next install replaces it with the render.
-fn tampered(desk: &Desk) -> (BTreeMap<String, Vec<u8>>, BTreeMap<String, Vec<u8>>) {
-    desk.install();
-    let fresh = tree(&desk.plugin());
-    let (model, _) = fresh
-        .iter()
-        .find(|(rel, _)| rel.ends_with("/Model.js"))
-        .unwrap();
-    let path = desk.plugin().join(model);
-    let mut bytes = fs::read(&path).unwrap();
-    bytes.extend_from_slice(b"\n// changed by hand\n");
-    fs::write(&path, bytes).unwrap();
-    (tree(&desk.plugin()), fresh)
-}
-
-fn stages(desk: &Desk) -> Vec<String> {
-    desk.leftovers()
-        .into_iter()
-        .filter(|n| n.starts_with(".a44.omaddons.stage-"))
-        .collect()
-}
-
-/// On the exchange path a crash leaves the old or the new widget, whole, and at most a
-/// hidden stage; the next install finishes.
-#[test]
-fn a_crash_around_the_exchange_leaves_one_whole_widget() {
-    // Before the publishing rename: the old widget, and the new render staged.
-    let desk = Desk::new();
-    let (old, new) = tampered(&desk);
-    let r = desk.run_with(
-        &["omarchy", "install"],
-        &[("OMADDONS_FAILPOINTS", "omarchy.swap")],
-    );
-    assert_eq!(r.code, -1, "{}", r.context());
-    assert_eq!(tree(&desk.plugin()), old);
-    let left = stages(&desk);
-    assert_eq!(left.len(), 1);
-    assert_eq!(tree(&desk.plugins().join(&left[0])), new);
-    // The next install reclaims the dead stage and publishes.
+    fs::write(desk.plugin().join("local-note.txt"), "mine\n").unwrap();
+    fs::write(desk.plugin().join(".git/FETCH_HEAD"), "abc\n").unwrap();
+    let before = tree(&desk.plugin());
+    let calls = desk.calls().len();
     let d = desk.install();
-    assert_eq!(d["data"]["installed"], "replaced");
-    assert_eq!(tree(&desk.plugin()), new);
-    assert_eq!(desk.leftovers(), Vec::<String>::new());
-    assert_eq!(desk.inflight_locks(), 0);
+    assert_eq!(d["data"]["installed"], "unchanged");
+    assert_eq!(tree(&desk.plugin()), before);
+    assert_eq!(desk.calls().len(), calls);
+    assert_eq!(desk.widget_lines().len(), 1);
 
-    // Right after it, before history: the new widget, the old one at the stage's name.
+    // A developer's symlink in its place is left alone too.
     let desk = Desk::new();
-    let (old, new) = tampered(&desk);
-    let lines = desk.widget_lines().len();
-    let r = desk.run_with(
-        &["omarchy", "install"],
-        &[("OMADDONS_FAILPOINTS", "fsx.append_durable.before")],
+    fs::create_dir_all(desk.plugins()).unwrap();
+    std::os::unix::fs::symlink(desk.repo(), desk.plugin()).unwrap();
+    let d = desk.install();
+    assert_eq!(d["data"]["installed"], "unchanged");
+    assert!(desk.plugin().is_symlink());
+    assert!(
+        !desk
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("omarchy-plugin-add"))
     );
-    assert_eq!(r.code, -1, "{}", r.context());
-    assert_eq!(tree(&desk.plugin()), new);
-    let left = stages(&desk);
-    assert_eq!(left.len(), 1);
-    assert_eq!(tree(&desk.plugins().join(&left[0])), old);
-    assert_eq!(desk.widget_lines().len(), lines);
-    // The widget is current: nothing to do, the hidden stage waits for the next publish.
-    assert_eq!(desk.install()["data"]["installed"], "unchanged");
 }
 
-/// Without `RENAME_EXCHANGE` the swap is two renames: a crash between them leaves no
-/// widget and a hidden parked one, and the next install finishes as a first install.
+/// A widget an older omaddons rendered is moved out, the checkout added in its place,
+/// and the move recorded; it keeps the place the owner gave it on the bar.
 #[test]
-fn without_exchange_a_crash_between_the_renames_is_finished_by_the_next_install() {
+fn a_rendered_widget_is_replaced_by_the_checkout() {
     let desk = Desk::new();
-    let (old, new) = tampered(&desk);
-    let r = desk.run_with(
-        &["omarchy", "install"],
-        &[("OMADDONS_FAILPOINTS", "fsx.renameat2.einval,omarchy.parked")],
-    );
-    assert_eq!(r.code, -1, "{}", r.context());
-    assert!(!desk.plugin().exists());
-    let parked: Vec<String> = desk
-        .leftovers()
-        .into_iter()
-        .filter(|n| n.starts_with(".a44.omaddons.old-"))
-        .collect();
-    assert_eq!(parked.len(), 1, "{:?}", desk.leftovers());
-    assert_eq!(tree(&desk.plugins().join(&parked[0])), old);
-    assert_eq!(stages(&desk).len(), 1);
-
-    let d = desk.install();
-    assert_eq!(d["data"]["installed"], "fresh", "{d}");
-    assert_eq!(tree(&desk.plugin()), new);
-    assert_eq!(desk.leftovers(), Vec::<String>::new());
-    assert_eq!(desk.inflight_locks(), 0);
-
-    // Uninterrupted, the fallback replaces and says it used two renames.
-    let (_, new) = tampered(&desk);
+    desk.rendered();
+    desk.placed("left");
+    let reason = "migrate the widget";
     let d = desk
-        .run_with(
-            &["omarchy", "install"],
-            &[("OMADDONS_FAILPOINTS", "fsx.renameat2.einval")],
-        )
+        .run(&["omarchy", "install", "--reason", reason])
         .expect(0);
     assert_eq!(d["data"]["installed"], "replaced", "{d}");
-    assert_eq!(d["warnings"][0]["code"], "atomic_swap_unavailable");
-    assert_eq!(tree(&desk.plugin()), new);
-    assert_eq!(desk.leftovers(), Vec::<String>::new());
-}
-
-/// Two installers: the first, paused after staging, keeps its stage while the second
-/// publishes, then finds the widget current; exactly one render and one history line,
-/// naming the second.
-#[test]
-fn two_installers_never_touch_each_others_stage() {
-    let desk = Desk::new();
-    let pause = Pause::new(desk.root());
-    let first = desk.spawn(&[("OMADDONS_FAILPOINTS", "omarchy.staged=pause"), pause.env()]);
-    pause.reached("omarchy.staged");
-    let theirs = stages(&desk);
-    assert_eq!(theirs.len(), 1);
-
-    let d = desk.install();
-    assert_eq!(d["data"]["installed"], "fresh");
-    assert_eq!(stages(&desk), theirs, "a live stage is never reclaimed");
-    let published = tree(&desk.plugin());
-
-    pause.resume("omarchy.staged");
-    let r = wait(first, &["omarchy", "install"]);
-    let d = r.expect(0);
-    assert_eq!(d["data"]["installed"], "unchanged", "{d}");
     assert_eq!(d["data"]["enabled"], "already");
-    assert_eq!(tree(&desk.plugin()), published);
+    assert_eq!(d["data"]["plugin"]["outdated"], false);
+    assert_eq!(d["data"]["plugin"]["section"], "left");
+    assert_eq!(tree(&desk.plugin()), desk.checkout());
     let lines = desk.widget_lines();
     assert_eq!(lines.len(), 1);
-    let first_op = theirs[0].trim_start_matches(".a44.omaddons.stage-");
-    assert_ne!(lines[0]["tx"], first_op);
+    assert_eq!(lines[0]["reason"], reason);
+    assert_eq!(
+        desk.calls(),
+        [format!(
+            "omarchy-plugin-add {} --yes",
+            desk.repo().display()
+        )]
+    );
     assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.inflight_locks(), 0);
 }
 
-/// An install racing a removal (`omarchy remove` completing while it waits) publishes as
-/// a first install; the remove leaves the waiting install's stage alone, and once each
-/// has pruned its own nothing hidden is left.
+/// What a run killed between moving an older widget out and pruning it leaves, the
+/// moved-out folder of a dead operation, the next install prunes; a live one it leaves.
 #[test]
-fn an_install_racing_a_removal_publishes_as_a_first_install() {
+fn a_dead_runs_moved_out_widget_is_reclaimed() {
     let desk = Desk::new();
-    let (_, new) = tampered(&desk);
-    let pause = Pause::new(desk.root());
-    let child = desk.spawn(&[("OMADDONS_FAILPOINTS", "omarchy.staged=pause"), pause.env()]);
-    pause.reached("omarchy.staged");
-    let staged = stages(&desk);
-    let d = desk.run(&["omarchy", "remove"]).expect(0);
-    assert_eq!(d["data"]["removed"], true);
-    assert!(!desk.plugin().exists());
-    assert_eq!(stages(&desk), staged, "a live stage is never reclaimed");
-    pause.resume("omarchy.staged");
-    let d = wait(child, &["omarchy", "install"]).expect(0);
-    assert_eq!(d["data"]["installed"], "fresh", "{d}");
-    assert_eq!(tree(&desk.plugin()), new);
+    let dead = desk
+        .plugins()
+        .join(".a44.omaddons.old-01M8Q2ZZZZZZZZZZZZZZZZZZZZ");
+    fs::create_dir_all(dead.join("r-0123456789abcdef")).unwrap();
+    fs::write(dead.join("manifest.json"), "{}").unwrap();
+    let stage = desk
+        .plugins()
+        .join(".a44.omaddons.stage-01M8Q2YYYYYYYYYYYYYYYYYYYY");
+    fs::create_dir_all(&stage).unwrap();
+    desk.install();
     assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.inflight_locks(), 0);
 }
 
-/// A stage whose installer was killed is reclaimed by the next install.
+/// A folder in the widget's place that is neither its checkout nor a render (files
+/// copied by hand, another plugin's checkout) is refused, never moved.
 #[test]
-fn an_abandoned_stage_is_reclaimed() {
+fn a_folder_omaddons_did_not_install_is_refused() {
     let desk = Desk::new();
-    let pause = Pause::new(desk.root());
-    let mut child = desk.spawn(&[("OMADDONS_FAILPOINTS", "omarchy.staged=pause"), pause.env()]);
-    pause.reached("omarchy.staged");
-    child.kill().unwrap();
-    child.wait().unwrap();
-    assert_eq!(stages(&desk).len(), 1);
-    assert_eq!(desk.inflight_locks(), 1);
+    let copied = desk.planted(ID, ID);
+    let before = tree(&copied);
+    let d = desk.run(&["omarchy", "install"]).expect(4);
+    assert_eq!(d["error"]["code"], "file_exists", "{d}");
+    assert_eq!(d["error"]["details"]["reason"], "plugin_folder_foreign");
+    assert_eq!(tree(&copied), before);
+    assert_eq!(desk.calls(), Vec::<String>::new());
+    assert_eq!(desk.widget_lines().len(), 0);
 
-    let d = desk.install();
-    assert_eq!(d["data"]["installed"], "fresh");
-    assert_eq!(desk.leftovers(), Vec::<String>::new());
-    assert_eq!(desk.inflight_locks(), 0);
+    let desk = Desk::new();
+    let other = desk.planted(ID, "someone.else");
+    fs::create_dir_all(other.join(".git")).unwrap();
+    let d = desk.run(&["omarchy", "install"]).expect(4);
+    assert_eq!(d["error"]["details"]["reason"], "plugin_folder_foreign");
+    assert!(other.join("Panel.qml").is_file());
 }
 
-/// The marketplace's setup plugin (omad-zhiq): a git checkout with the widget's id in the
-/// widget's folder, already on the bar. The install replaces it whole, `.git` included,
-/// and the widget keeps the place the owner gave the setup plugin.
+/// The marketplace's setup plugin (omad-zhiq): a git checkout with the widget's id and a
+/// bar widget only, in the widget's folder, already on the bar. The install moves it out
+/// for the widget's checkout, which keeps the place the owner gave the setup plugin.
 #[test]
 fn the_setup_plugin_is_replaced_in_place() {
     let desk = Desk::new();
     let setup = desk.planted(ID, ID);
+    fs::write(
+        setup.join("manifest.json"),
+        format!(
+            r#"{{"schemaVersion": 1, "id": "{ID}", "kinds": ["bar-widget"], "entryPoints": {{"barWidget": "Panel.qml"}}}}"#
+        ),
+    )
+    .unwrap();
     fs::create_dir_all(setup.join(".git/objects")).unwrap();
     fs::write(setup.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     desk.placed("left");
@@ -721,23 +678,17 @@ fn the_setup_plugin_is_replaced_in_place() {
     assert_eq!(d["data"]["enabled"], "already");
     assert_eq!(d["data"]["plugin"]["outdated"], false);
     assert_eq!(d["data"]["plugin"]["section"], "left");
-    let files = tree(&desk.plugin());
-    assert!(
-        !files
-            .keys()
-            .any(|rel| rel.starts_with(".git") || rel == "Panel.qml"),
-        "{:?}",
-        files.keys()
-    );
-    assert!(files.keys().any(|rel| rel.ends_with("/Build.js")));
+    assert_eq!(tree(&desk.plugin()), desk.checkout());
     assert!(!desk.calls().iter().any(|c| c.starts_with("omarchy-bar")));
+    assert_eq!(desk.widget_lines().len(), 1);
     assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.inflight_locks(), 0);
 }
 
-/// A widget a build before omad-o8g4 left in `<plugins>/omaddons` would claim the id
-/// beside the new folder: the install parks and prunes it, so exactly one is left, and
-/// an install beside one is never a no-op.
+/// A widget a build before omad-o8g4 left in `<plugins>/omaddons` claims the id, which
+/// Omarchy's add refuses: the install moves it out first, so exactly one is left. Beside
+/// the checkout, an install still moves it out (recorded), and leaves the checkout as it
+/// is.
 #[test]
 fn an_install_moves_a_legacy_widget_out() {
     let desk = Desk::new();
@@ -745,20 +696,24 @@ fn an_install_moves_a_legacy_widget_out() {
     let d = desk.install();
     assert_eq!(d["data"]["installed"], "fresh", "{d}");
     assert!(!desk.legacy().exists());
-    assert!(desk.plugin().join("manifest.json").is_file());
+    assert_eq!(tree(&desk.plugin()), desk.checkout());
     assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.inflight_locks(), 0);
 
     desk.planted("omaddons", ID);
+    let lines = desk.widget_lines().len();
     let d = desk.install();
-    assert_eq!(d["data"]["installed"], "replaced", "{d}");
+    assert_eq!(d["data"]["installed"], "unchanged", "{d}");
     assert!(!desk.legacy().exists());
+    assert_eq!(tree(&desk.plugin()), desk.checkout());
+    assert_eq!(desk.widget_lines().len(), lines + 1);
     assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.inflight_locks(), 0);
 }
 
 /// `<plugins>/omaddons` holding another plugin, or a developer's symlink, is not a
-/// legacy widget: the install leaves it alone.
+/// legacy widget: the install leaves it alone. A symlink there that names the widget's
+/// id holds the id, so Omarchy refuses the add, as it would anyone's.
 #[test]
 fn a_legacy_folder_that_is_not_the_widget_is_left_alone() {
     let desk = Desk::new();
@@ -777,9 +732,18 @@ fn a_legacy_folder_that_is_not_the_widget_is_left_alone() {
     .unwrap();
     fs::create_dir_all(desk.plugins()).unwrap();
     std::os::unix::fs::symlink(&checkout, desk.legacy()).unwrap();
-    desk.install();
+    let d = desk.run(&["omarchy", "install"]).expect(1);
+    assert_eq!(d["error"]["details"]["reason"], "plugin_add_failed", "{d}");
+    assert!(
+        d["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is already used by"),
+        "{d}"
+    );
     assert!(desk.legacy().is_symlink());
     assert!(checkout.join("manifest.json").is_file());
+    assert!(!desk.plugin().exists());
 }
 
 /// `omarchy remove` takes away a widget an older build left in `<plugins>/omaddons`,
@@ -865,26 +829,6 @@ fn actions(d: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Rewrites one `Build.js` line of the installed widget.
-fn restamp(desk: &Desk, prefix: &str, value: &str) {
-    let (rel, bytes) = tree(&desk.plugin())
-        .into_iter()
-        .find(|(rel, _)| rel.ends_with("/Build.js"))
-        .unwrap();
-    let text = String::from_utf8(bytes).unwrap();
-    let text: Vec<String> = text
-        .lines()
-        .map(|line| {
-            if line.starts_with(prefix) {
-                format!("{prefix}{value};")
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect();
-    fs::write(desk.plugin().join(rel), text.join("\n") + "\n").unwrap();
-}
-
 #[test]
 fn status_reports_omarchy_and_the_installed_widget() {
     let desk = Desk::new();
@@ -910,12 +854,15 @@ fn status_reports_omarchy_and_the_installed_widget() {
     assert_eq!(p["installed"], true);
     assert_eq!(p["path"], desk.plugin().display().to_string());
     assert_eq!(p["id"], ID);
-    assert_eq!(p["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(p["binary"], this_binary().display().to_string());
+    assert_eq!(p["version"], repo_version());
+    assert_eq!(
+        p["binary"],
+        Value::Null,
+        "the checkout finds omaddons itself"
+    );
     assert_eq!(p["outdated"], false);
     assert_eq!(p["enabled"], true);
     assert_eq!(p["section"], "right");
-    assert_eq!(p["context_matches"], true);
     assert_eq!(
         d["data"]["validation"],
         serde_json::json!({"ok": true, "errors": []})
@@ -931,17 +878,6 @@ fn status_reports_omarchy_and_the_installed_widget() {
         "the ping alone"
     );
 
-    // Another omaddons state: no recommendation, and still current.
-    let elsewhere = desk.root().join("other-state");
-    fs::create_dir_all(&elsewhere).unwrap();
-    let other = elsewhere.display().to_string();
-    let d = desk
-        .run_with(&["omarchy"], &[("XDG_STATE_HOME", other.as_str())])
-        .expect(0);
-    assert_eq!(d["data"]["plugin"]["context_matches"], false);
-    assert_eq!(d["data"]["plugin"]["outdated"], false);
-    assert_eq!(actions(&d), Vec::<String>::new());
-
     // Off the bar: enable it.
     fs::write(desk.config_omarchy().join("shell.json"), "{}").unwrap();
     let d = desk.run(&["omarchy"]).expect(0);
@@ -949,29 +885,21 @@ fn status_reports_omarchy_and_the_installed_widget() {
     assert_eq!(d["data"]["plugin"]["section"], Value::Null);
     assert_eq!(actions(&d), ["enable_widget"]);
 
-    // Another code hash stamped: outdated, reinstall it (which also places it).
-    restamp(
-        &desk,
-        "var CONTENT_SHA256 = ",
-        &format!("\"{}\"", "0".repeat(64)),
-    );
+    // A widget an older omaddons rendered: outdated, and the install replaces it.
+    fs::remove_dir_all(desk.plugin()).unwrap();
+    desk.rendered();
     let d = desk.run(&["omarchy"]).expect(0);
     assert_eq!(d["data"]["plugin"]["outdated"], true);
+    assert_eq!(d["data"]["plugin"]["context_matches"], true);
+    assert_eq!(
+        d["data"]["plugin"]["binary"],
+        "/opt/omaddons-0.2.1/omaddons"
+    );
     assert_eq!(actions(&d), ["reinstall_widget"]);
     let d = desk.install();
     assert_eq!(d["data"]["installed"], "replaced");
     let d = desk.run(&["omarchy"]).expect(0);
     assert_eq!(d["data"]["plugin"]["outdated"], false);
-
-    // No `Build.js` at all is outdated too.
-    let (rel, _) = tree(&desk.plugin())
-        .into_iter()
-        .find(|(rel, _)| rel.ends_with("/Build.js"))
-        .unwrap();
-    fs::remove_file(desk.plugin().join(rel)).unwrap();
-    let d = desk.run(&["omarchy"]).expect(0);
-    assert_eq!(d["data"]["plugin"]["outdated"], true);
-    assert_eq!(d["data"]["plugin"]["binary"], Value::Null);
 
     // An installed widget that does not validate.
     fs::write(
@@ -1064,10 +992,12 @@ fn a_timed_out_tool_leaves_no_process_of_its_own_behind() {
     );
 }
 
+/// A widget an older omaddons rendered for another state is noted, with nothing
+/// recommended; one rendered for this state is outdated, with its reinstall.
 #[test]
 fn status_and_its_human_output_note_another_state() {
     let desk = Desk::new();
-    desk.install();
+    desk.rendered();
     let elsewhere = desk.root().join("other-state");
     fs::create_dir_all(&elsewhere).unwrap();
     let binary = Path::new(env!("CARGO_BIN_EXE_omaddons"));
@@ -1098,17 +1028,13 @@ fn status_and_its_human_output_note_another_state() {
         "nothing is recommended for another state's widget: {text}"
     );
 
-    // Without its `Build.js` it serves no state: no such note, and its reinstall is
-    // recommended.
-    let (rel, _) = tree(&desk.plugin())
-        .into_iter()
-        .find(|(rel, _)| rel.ends_with("/Build.js"))
-        .unwrap();
-    fs::remove_file(desk.plugin().join(rel)).unwrap();
+    // For this state: no such note, outdated, and its reinstall is recommended.
     let text = human(&desk, &["omarchy"], &[]);
     assert!(!text.contains("serves another omaddons state"), "{text}");
     assert!(
-        text.contains("\n  outdated: this omaddons renders another widget\n"),
+        text.contains(
+            "\n  outdated: an older omaddons rendered it; omarchy install replaces it with the widget's checkout\n"
+        ),
         "{text}"
     );
     assert!(text.contains("\n  → omaddons omarchy install\n"), "{text}");
@@ -1168,10 +1094,12 @@ fn status_reports_the_bar_widget() {
     let calls = desk.calls().len();
     for args in [&["status"][..], &["status", "--cached"]] {
         let d = desk.run(args).expect(0);
+        // The checkout's files say nothing of whose state it serves (null): it runs in its
+        // desktop session (omad-widget-plugin-3bcbh.10 asks it).
         assert_eq!(
             widget(&d),
             serde_json::json!({"omarchy": true, "installed": true, "enabled": true,
-                "version": env!("CARGO_PKG_VERSION"), "outdated": false, "context_matches": true,
+                "version": repo_version(), "outdated": false, "context_matches": null,
                 "binary": binary, "doorbell_dir": doorbell})
         );
         assert_eq!(d["data"]["summary"]["widget_outdated"], false);
@@ -1190,12 +1118,10 @@ fn status_reports_the_bar_widget() {
     fs::write(desk.config_omarchy().join("shell.json"), "{}").unwrap();
     assert_eq!(widget(&desk.run(&["status"]).expect(0))["enabled"], false);
 
-    // Another build's code hash: outdated, and the triage says so.
-    restamp(
-        &desk,
-        "var CONTENT_SHA256 = ",
-        &format!("\"{}\"", "0".repeat(64)),
-    );
+    // A widget an older omaddons rendered for this state: outdated, and the triage says
+    // so.
+    fs::remove_dir_all(desk.plugin()).unwrap();
+    desk.rendered();
     let d = desk.run(&["status", "--cached"]).expect(0);
     assert_eq!(widget(&d)["outdated"], true);
     assert_eq!(warning_codes(&d), ["widget_outdated"]);
@@ -1235,35 +1161,21 @@ fn status_reports_the_bar_widget() {
     );
     assert!(!text.contains("→ omaddons omarchy install"), "{text}");
 
+    // Replaced by the checkout: current, from either state, and nothing noted.
     desk.install();
-    let d = desk.run(&["status"]).expect(0);
-    assert_eq!(widget(&d)["outdated"], false);
-    assert!(warning_codes(&d).is_empty(), "{d:#}");
-    let text = human(&desk, &["status"], &other);
-    assert!(
-        text.contains(note) && !text.contains("from another omaddons build"),
-        "{text}"
-    );
-
-    // No `Build.js`: outdated, and serving no known state, so a reinstall from any run
-    // retargets nothing.
-    let (rel, _) = tree(&desk.plugin())
-        .into_iter()
-        .find(|(rel, _)| rel.ends_with("/Build.js"))
-        .unwrap();
-    fs::remove_file(desk.plugin().join(rel)).unwrap();
     for extra in [&[][..], &other] {
         let d = desk.run_with(&["status"], extra).expect(0);
         assert_eq!(
             (&widget(&d)["outdated"], &widget(&d)["context_matches"]),
-            (&Value::Bool(true), &Value::Null)
+            (&Value::Bool(false), &Value::Null)
         );
-        assert_eq!(warning_codes(&d), ["widget_outdated"]);
-        assert_eq!(actions(&d), ["reinstall_widget"]);
+        assert!(warning_codes(&d).is_empty(), "{d:#}");
+        assert_eq!(actions(&d), Vec::<String>::new());
     }
-    assert_eq!(
-        actions(&desk.run_with(&["omarchy"], &other).expect(0)),
-        ["reinstall_widget"]
+    let text = human(&desk, &["status"], &other);
+    assert!(
+        !text.contains(note) && !text.contains("from another omaddons build"),
+        "{text}"
     );
 }
 

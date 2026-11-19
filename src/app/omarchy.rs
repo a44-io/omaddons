@@ -34,7 +34,8 @@ pub enum OmarchyAction {
     Status,
     /// Install the bar widget and put it on the bar
     ///
-    /// Render it for this binary, swap it in, and place it on the bar.
+    /// Add its repository through omarchy plugin add, moving an older widget out first,
+    /// and place it on the bar. A checkout already there is left as it is.
     Install {
         /// Install the files and leave the bar as it is
         #[arg(long)]
@@ -111,9 +112,9 @@ impl Outcome for StatusOutcome {
         let d = &self.data;
         let p = &d.plugin;
         if p.installed {
-            // Installed under other HOME or XDG directories: it serves that state, and
-            // nothing is recommended from here. One whose context cannot be read
-            // (`Build.js` missing) serves none, and its reinstall is recommended.
+            // A widget an older omaddons rendered under other HOME or XDG directories: it
+            // serves that state, and nothing is recommended from here. One whose context
+            // cannot be read serves none, and its reinstall is recommended.
             let foreign = p.context_known && !p.context_matches;
             let state = if p.outdated { "outdated" } else { "current" };
             let place = match p.section {
@@ -126,7 +127,10 @@ impl Outcome for StatusOutcome {
                 writeln!(w, "  runs: {}", binary.display())?;
             }
             if p.outdated {
-                writeln!(w, "  outdated: this omaddons renders another widget")?;
+                writeln!(
+                    w,
+                    "  outdated: an older omaddons rendered it; omarchy install replaces it with the widget's checkout"
+                )?;
             }
             if foreign {
                 writeln!(

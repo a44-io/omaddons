@@ -554,7 +554,7 @@ impl RealEffects<'_> {
     /// `undo.sh`, for a committed repair: `None` when it could not be written.
     fn write_undo_script(&mut self, tx: TxId) -> std::result::Result<(), Error> {
         let binary = crate::binary::current_binary()?;
-        let ctx = crate::omarchy::render::Context::of(self.paths);
+        let ctx = crate::omarchy::context::Context::of(self.paths);
         let Some(runtime) = self.runtime.as_mut() else {
             return Err(Error::internal("the run's record was already written"));
         };

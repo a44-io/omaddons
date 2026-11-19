@@ -1,23 +1,26 @@
-//! `omaddons omarchy install` (M3-D6, M3-D7, M3-D8, M3-D38): renders the embedded
-//! widget for this binary and this run's context, stages it in a hidden folder this run
-//! owns, validates it, publishes it with one atomic rename under the global lock, records
-//! the install in history, rings the doorbell and puts the widget on the bar.
+//! `omaddons omarchy install` (M3-D6, M3-D8, M3-D38, omad-widget-plugin-3bcbh.9): puts the
+//! bar widget on this desktop through Omarchy's own plugin command, from the widget's
+//! repository ([`WIDGET_REPOSITORY`], or `OMADDONS_WIDGET_REPO`), and places it on the
+//! bar. omaddons never writes the widget's code: `omarchy plugin add` clones the reviewed
+//! repository, and `omarchy plugin update` updates it.
 //!
-//! The widget's folder is `<plugins>/a44.omaddons`, the one Omarchy's `omarchy plugin
-//! add` gives its id (omad-o8g4). Whatever is there is replaced as a whole, so the
-//! marketplace's setup plugin, which has the same id, becomes the real widget in place.
+//! What the widget's folder, `<plugins>/a44.omaddons`, holds decides the rest:
 //!
-//! Each run owns `<plugins>/.a44.omaddons.stage-<op>` under an in-flight lock, taken
-//! before the global lock and never waited on while holding it. A stage is reclaimed only
-//! when its lock is free (its process is gone), never by age. The swap is a
-//! `RENAME_EXCHANGE`, or a first install's `RENAME_NOREPLACE`; where the filesystem has
-//! neither, the live widget is parked as `.a44.omaddons.old-<op>` first, so a crash
-//! between the two renames leaves the widget absent until the next install, which
-//! finishes. A widget an older build left in `<plugins>/omaddons` would claim the id
-//! beside the new one, so the publish parks it the same way, under the same lock, before
-//! the rescan.
+//! - nothing: `omarchy-plugin-add <url> --yes` adds it (installed `fresh`);
+//! - a git checkout of the widget, or a symlink (a developer's own link): nothing under
+//!   it is written (`unchanged`); it is placed on the bar if it is on none;
+//! - a widget an older omaddons rendered, or the setup button that installed one (a
+//!   checkout of the widget's id with no service): moved out first, because Omarchy
+//!   refuses an id in use, then added (`replaced`), and a `widget` history line
+//!   recorded. If the add fails the older widget is moved back, and nothing is recorded;
+//! - anything else: refused, and never moved.
+//!
+//! Moving out works as `remove` does: owning an operation under an in-flight lock, one
+//! rename under the global lock to the hidden `<plugins>/.a44.omaddons.old-<op>`, which
+//! Omarchy's registry ignores, pruned after the add. A widget a build before omad-o8g4
+//! left in `<plugins>/omaddons` would claim the id beside the new one, so it is moved out
+//! the same way.
 
-use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -25,19 +28,26 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::render::{self, Context as WidgetContext, Rendered};
-use super::{shell, validate};
+use super::context::Context as WidgetContext;
+use super::{legacy, shell};
 use crate::cli::Context;
 use crate::engine::fence;
-use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
+use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::fsx::{
-    self, Content, FsxError, GlobalLock, InflightLock, LockUse, Op, PruneReason, RenameMode,
-    ScopeTable, WriteSession, Writer, ensure_dir_all, failpoint, mutate,
+    self, FsxError, GlobalLock, InflightLock, LockUse, Op, PruneReason, RenameMode, ScopeTable,
+    WriteSession, Writer, mutate,
 };
 use crate::limits::OMARCHY_SHELL_JSON_MAX_BYTES;
 use crate::model::{TxId, TxKind};
 use crate::state::history::{self, SettingEntry};
 use crate::state::paths::Paths;
+
+/// The widget's repository, which the Omarchy plugin marketplace reviews.
+pub const WIDGET_REPOSITORY: &str = "https://github.com/a44-io/omaddons-omarchy.git";
+/// The variable whose git URL or local path stands for [`WIDGET_REPOSITORY`]: a local
+/// export, for development builds, tests and real-machine steps. Read by its literal
+/// name, as every variable is (the registry's scan).
+const WIDGET_REPO_ENV: &str = "OMADDONS_WIDGET_REPO";
 
 /// The bar sections a widget can be placed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, clap::ValueEnum, Default)]
@@ -63,11 +73,11 @@ impl Section {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Installed {
-    /// There was none.
+    /// There was none: Omarchy added the widget's repository.
     Fresh,
-    /// Another render was replaced.
+    /// A widget an older omaddons rendered, or its setup button, was moved out first.
     Replaced,
-    /// The installed files are already these; nothing was written.
+    /// The widget's checkout is there already; nothing under it was written.
     Unchanged,
 }
 
@@ -93,17 +103,21 @@ pub struct PluginInfo {
     pub id: String,
     /// The installed manifest's `version`; `null` when none is installed.
     pub version: Option<String>,
-    /// The binary its commands run; `null` when none is installed.
+    /// The binary a widget an older omaddons rendered runs; `null` for the widget's
+    /// checkout, which finds omaddons itself, and when none is installed.
     pub binary: Option<PathBuf>,
-    /// The installed code is not what this binary renders for the installed context.
+    /// A widget an older omaddons rendered, or its setup button, which `omarchy install`
+    /// replaces with the widget's checkout.
     pub outdated: bool,
     /// It is in a section of the bar.
     pub enabled: bool,
     pub section: Option<Section>,
-    /// It was installed under this run's `HOME` and XDG directories.
+    /// It serves this run's `HOME` and XDG directories: a widget an older omaddons
+    /// rendered by what its `Build.js` records; the checkout runs in its desktop session,
+    /// taken to be this run's (omad-widget-plugin-3bcbh.10 asks the session).
     pub context_matches: bool,
-    /// Its `Build.js` says which directories it serves. Without that it serves no state,
-    /// so a reinstall from any run retargets nothing (not on the wire).
+    /// Its files say which directories it serves: a rendered widget's `Build.js` does,
+    /// a checkout's do not (not on the wire).
     #[serde(skip)]
     pub context_known: bool,
 }
@@ -125,49 +139,90 @@ pub struct Report {
     pub warnings: Vec<Warning>,
 }
 
-/// Debug-only failpoints (DEC-7), outside the engine's list: a pause after staging and
-/// validating, before the global lock (concurrency tests), the publishing rename and the
-/// gap between the two renames of a swap without exchange (crash tests), and a switch
-/// that plants an invalid render.
-const STAGED: &str = "omarchy.staged";
-const SWAP: &str = "omarchy.swap";
-const PARKED: &str = "omarchy.parked";
-const INVALID: &str = "omarchy.invalid";
+/// What the widget's folder holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Folder {
+    Absent,
+    /// A git checkout of the widget: a `.git` and a manifest with a service.
+    Checkout,
+    /// A symlink, a developer's own link: never touched.
+    Link,
+    /// A widget an older omaddons rendered, or the setup button (a checkout with the
+    /// widget's id and no service): moved out for the checkout.
+    Older,
+    /// Anything else: refused.
+    Foreign,
+}
+
+/// What `dir`, the widget `id`'s folder, holds.
+fn folder(dir: &Path, id: &str) -> Folder {
+    let Ok(meta) = std::fs::symlink_metadata(dir) else {
+        return Folder::Absent;
+    };
+    if meta.file_type().is_symlink() {
+        return Folder::Link;
+    }
+    if !meta.is_dir() {
+        return Folder::Foreign;
+    }
+    let manifest = legacy::installed_manifest(dir);
+    let ours = manifest
+        .as_ref()
+        .and_then(|m| m.get("id"))
+        .and_then(Value::as_str)
+        == Some(id);
+    let service = manifest
+        .as_ref()
+        .and_then(|m| m.get("entryPoints"))
+        .and_then(|e| e.get("service"))
+        .is_some();
+    if std::fs::symlink_metadata(dir.join(".git")).is_ok() {
+        return match (ours, service) {
+            (_, true) => Folder::Checkout,
+            (true, false) => Folder::Older,
+            (false, false) => Folder::Foreign,
+        };
+    }
+    if ours && legacy::is_rendered(dir) {
+        Folder::Older
+    } else {
+        Folder::Foreign
+    }
+}
 
 /// Installs the widget; see the module docs.
 pub fn install(ctx: &Context, opts: Options) -> Result<Report> {
     let paths = Paths::from_env()?;
     require_omarchy(&paths)?;
-    let binary = crate::binary::widget_binary()?;
     let id = paths.omarchy_plugin_id();
-    let rendered = render::render(&binary, &WidgetContext::of(&paths), &id)?;
     let plugin_dir = paths.omarchy_plugin_dir();
-    // A legacy widget still has to go, so the install is never a no-op beside one.
-    let same = legacy_widget(&paths).is_none() && matches_installed(&plugin_dir, &rendered);
+    let state = folder(&plugin_dir, &id);
+    if state == Folder::Foreign {
+        return Err(foreign(&plugin_dir));
+    }
+    let current = matches!(state, Folder::Checkout | Folder::Link);
+    let legacy = legacy_widget(&paths);
     let placed = placed_in(&paths, &id);
     let enabled_now = |placed: Option<Section>| match (opts.enable, placed) {
         (false, _) => Enabled::Skipped,
         (true, Some(_)) => Enabled::Already,
         (true, None) => Enabled::Yes,
     };
-    let unchanged = |paths: &Paths| Report {
-        installed: Installed::Unchanged,
-        enabled: enabled_now(placed),
-        plugin: describe(paths),
-        warnings: Vec::new(),
+    let installed = match state {
+        Folder::Absent => Installed::Fresh,
+        Folder::Older => Installed::Replaced,
+        _ => Installed::Unchanged,
     };
-    if same && (!opts.enable || placed.is_some()) {
-        return Ok(unchanged(&paths));
+    let url = repository()?;
+    if !current && ctx.offline {
+        return Err(Error::new(
+            ErrorCode::Offline,
+            format!("offline: not adding the widget from {url}, which omarchy plugin add clones"),
+            Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset"),
+        )
+        .details(json!({ "reason": "plugin_add_offline" })));
     }
-    if ctx.dry_run {
-        dry_run(&paths, &rendered)?;
-        let installed = if same {
-            Installed::Unchanged
-        } else if plugin_dir.exists() {
-            Installed::Replaced
-        } else {
-            Installed::Fresh
-        };
+    if ctx.dry_run || (current && legacy.is_none() && (!opts.enable || placed.is_some())) {
         return Ok(Report {
             installed,
             enabled: enabled_now(placed),
@@ -177,14 +232,24 @@ pub fn install(ctx: &Context, opts: Options) -> Result<Report> {
     }
 
     let mut warnings = Vec::new();
-    let installed = if same {
-        Installed::Unchanged
-    } else {
-        publish(ctx, &paths, &rendered, &mut warnings)?
-    };
-    if installed != Installed::Unchanged {
+    let mut older = Vec::new();
+    if state == Folder::Older {
+        older.push(plugin_dir.clone());
+    }
+    older.extend(legacy);
+    if !older.is_empty() || !current {
+        replace(
+            ctx,
+            &paths,
+            &older,
+            (!current).then_some(url.as_str()),
+            &mut warnings,
+        )?;
         crate::state::doorbell::ring(&paths, ctx.command, ctx.actor);
-        shell::rescan();
+        if current {
+            // Only the legacy folder went: Omarchy's add, which rescans, did not run.
+            shell::rescan();
+        }
     }
     let placed = placed_in(&paths, &id);
     let enabled = match enabled_now(placed) {
@@ -193,7 +258,7 @@ pub fn install(ctx: &Context, opts: Options) -> Result<Report> {
             shell::Placed::Unreachable(why) => {
                 warnings.push(
                     Warning::new(
-                        WarningCode::OmarchyShellUnreachable,
+                        crate::error::WarningCode::OmarchyShellUnreachable,
                         format!(
                             "the widget is installed, but Omarchy's shell could not put it on the bar ({why}); run it from the desktop session"
                         ),
@@ -213,32 +278,87 @@ pub fn install(ctx: &Context, opts: Options) -> Result<Report> {
     })
 }
 
-/// Stages, validates and publishes `rendered`; what it did to the plugin folder.
-fn publish(
+/// The repository to add: `OMADDONS_WIDGET_REPO` when set, else [`WIDGET_REPOSITORY`].
+/// One that is empty or reads as an option is refused (`usage`) before anything runs.
+fn repository() -> Result<String> {
+    let Some(given) = std::env::var_os("OMADDONS_WIDGET_REPO") else {
+        return Ok(WIDGET_REPOSITORY.to_owned());
+    };
+    match given.to_str() {
+        Some(url) if !url.is_empty() && !url.starts_with('-') => Ok(url.to_owned()),
+        _ => Err(Error::new(
+            ErrorCode::Usage,
+            format!("{WIDGET_REPO_ENV} is not a git URL or path"),
+            Suggestion::text(format!(
+                "set {WIDGET_REPO_ENV} to a git URL or a local path, or unset it to add {WIDGET_REPOSITORY}"
+            )),
+        )),
+    }
+}
+
+/// Moves `older` out (one rename each under the global lock), then, when given, adds
+/// the repository at `add` through Omarchy and records a `widget` history line; if the
+/// add fails, the older widgets go back where they were and nothing is recorded. With
+/// nothing to add (the checkout is there; only a legacy folder went), the history line
+/// is recorded with the move.
+fn replace(
     ctx: &Context,
     paths: &Paths,
-    rendered: &Rendered,
+    older: &[PathBuf],
+    add: Option<&str>,
     warnings: &mut Vec<Warning>,
-) -> Result<Installed> {
+) -> Result<()> {
     let op = TxId::new();
     let inflight = InflightLock::create(paths, &op)?;
     let scopes = fence::table(paths, &[], None)?;
     reclaim(paths, &scopes, &op);
-    let stage = paths.omarchy_stage(&op);
-    let staged = stage_and_validate(paths, &scopes, &stage, rendered);
-    if let Err(err) = staged {
-        prune_own(&scopes, &[stage], &inflight, paths, &op);
-        return Err(err);
-    }
-    let failed = |err: std::io::Error| {
-        Error::io(
-            &stage,
-            &err,
-            Suggestion::command(["omaddons", "omarchy", "install"]),
-        )
+    let parked = match park(ctx, paths, &scopes, older, &op, add.is_none(), warnings) {
+        Ok(parked) => parked,
+        Err(err) => {
+            prune_own(&scopes, &[], &inflight, paths, &op);
+            return Err(err);
+        }
     };
-    failpoint::hit(STAGED).map_err(failed)?;
+    if let Some(url) = add {
+        let added = shell::plugin_add(url);
+        // A tool that failed after moving the checkout into place (its rescan) added it.
+        let id = paths.omarchy_plugin_id();
+        let in_place = folder(&paths.omarchy_plugin_dir(), &id) == Folder::Checkout;
+        match added {
+            Err(said) if !in_place => {
+                let back = unpark(ctx, paths, &scopes, &parked);
+                prune_own(&scopes, &[], &inflight, paths, &op);
+                back?;
+                return Err(add_failed(url, &said));
+            }
+            Err(said) => warnings.push(Warning::new(
+                crate::error::WarningCode::OmarchyShellUnreachable,
+                format!("the widget was added, but Omarchy's plugin add then failed ({said})"),
+            )),
+            Ok(()) => {}
+        }
+        if let Err(err) = record(ctx, paths, &scopes, &op, warnings) {
+            prune_own(&scopes, &[], &inflight, paths, &op);
+            return Err(err);
+        }
+    }
+    let leftovers: Vec<PathBuf> = parked.into_iter().map(|(_, to)| to).collect();
+    prune_own(&scopes, &leftovers, &inflight, paths, &op);
+    Ok(())
+}
 
+/// Renames each of `older` to a hidden `.old-<op>` name under the global lock, recording
+/// the history line there too when `record_now`; `(from, to)` for each. A failed rename
+/// moves back those already parked.
+fn park(
+    ctx: &Context,
+    paths: &Paths,
+    scopes: &ScopeTable,
+    older: &[PathBuf],
+    op: &TxId,
+    record_now: bool,
+    warnings: &mut Vec<Warning>,
+) -> Result<Vec<(PathBuf, PathBuf)>> {
     let guard = GlobalLock::acquire(paths, ctx.command)?;
     {
         use crate::engine::journal::{no_saved_variables, recover_under};
@@ -250,49 +370,69 @@ fn publish(
             ctx.actor,
         ));
     }
-    let plugin_dir = paths.omarchy_plugin_dir();
-    let legacy = legacy_widget(paths);
-    // A competing install may have published since the render: the same bytes are
-    // this run's work done; other bytes are replaced, this render being validated and
-    // the newest request.
-    if legacy.is_none() && matches_installed(&plugin_dir, rendered) {
-        drop(guard);
-        prune_own(&scopes, &[stage], &inflight, paths, &op);
-        return Ok(Installed::Unchanged);
-    }
-    let mut s = WriteSession::untracked(Writer::Omarchy, &scopes, ctx.command);
-    failpoint::hit(SWAP).map_err(failed)?;
-    let (installed, leftover) = if plugin_dir.exists() {
-        let exchange = Op::Rename {
-            to: &plugin_dir,
-            mode: RenameMode::Exchange,
-        };
-        match mutate(&mut s, &stage, exchange) {
-            // The old widget is now at the stage's name.
-            Ok(_) => (Installed::Replaced, stage.clone()),
-            // Two renames: a crash between them leaves no widget and a hidden parked
-            // one, which the next install prunes as it publishes a first install.
-            Err(FsxError::Unsupported) => {
-                warnings.push(two_renames());
-                let old = paths.omarchy_old(&op);
-                rename_onto_absent(&mut s, &plugin_dir, &old)?;
-                failpoint::hit(PARKED).map_err(failed)?;
-                rename_onto_absent(&mut s, &stage, &plugin_dir)?;
-                (Installed::Replaced, old)
+    let mut s = WriteSession::untracked(Writer::Omarchy, scopes, ctx.command);
+    let mut parked: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for dir in older {
+        let to = paths.omarchy_old(&TxId::new());
+        if let Err(err) = rename_onto_absent(&mut s, dir, &to) {
+            for (from, to) in parked.iter().rev() {
+                let _ = rename_onto_absent(&mut s, to, from);
             }
-            Err(err) => return Err(err.into()),
+            return Err(err);
         }
-    } else {
-        rename_onto_absent(&mut s, &stage, &plugin_dir)?;
-        (Installed::Fresh, stage.clone())
-    };
-    let mut leftovers = vec![leftover];
-    if let Some(dir) = legacy {
-        // Its own parked name: `old(&op)` may already hold the replaced widget.
-        let parked = paths.omarchy_old(&TxId::new());
-        rename_onto_absent(&mut s, &dir, &parked)?;
-        leftovers.push(parked);
+        parked.push((dir.clone(), to));
     }
+    if record_now {
+        history_line(ctx, paths, &mut s, op, warnings);
+    }
+    drop(s);
+    drop(guard);
+    Ok(parked)
+}
+
+/// Moves parked widgets back where they were, under the global lock, unless something
+/// took a place since.
+fn unpark(
+    ctx: &Context,
+    paths: &Paths,
+    scopes: &ScopeTable,
+    parked: &[(PathBuf, PathBuf)],
+) -> Result<()> {
+    let guard = GlobalLock::acquire(paths, ctx.command)?;
+    let mut s = WriteSession::untracked(Writer::Omarchy, scopes, ctx.command);
+    for (from, to) in parked.iter().rev() {
+        if std::fs::symlink_metadata(from).is_err() {
+            rename_onto_absent(&mut s, to, from)?;
+        }
+    }
+    drop(s);
+    drop(guard);
+    Ok(())
+}
+
+/// The `widget` history line, under the global lock.
+fn record(
+    ctx: &Context,
+    paths: &Paths,
+    scopes: &ScopeTable,
+    op: &TxId,
+    warnings: &mut Vec<Warning>,
+) -> Result<()> {
+    let guard = GlobalLock::acquire(paths, ctx.command)?;
+    let mut s = WriteSession::untracked(Writer::Omarchy, scopes, ctx.command);
+    history_line(ctx, paths, &mut s, op, warnings);
+    drop(s);
+    drop(guard);
+    Ok(())
+}
+
+fn history_line(
+    ctx: &Context,
+    paths: &Paths,
+    s: &mut WriteSession<'_>,
+    op: &TxId,
+    warnings: &mut Vec<Warning>,
+) {
     let mut entry = SettingEntry::now(
         TxKind::Widget,
         None,
@@ -300,14 +440,35 @@ fn publish(
         ctx.reason.clone(),
         ctx.argv.clone(),
     );
-    entry.tx = op;
-    if let Some(warning) = history::record_setting(&mut s, paths, &entry) {
+    entry.tx = *op;
+    if let Some(warning) = history::record_setting(s, paths, &entry) {
         warnings.push(warning);
     }
-    drop(s);
-    drop(guard);
-    prune_own(&scopes, &leftovers, &inflight, paths, &op);
-    Ok(installed)
+}
+
+/// `omarchy plugin add` failed, and the older widget, if any, is back.
+fn add_failed(url: &str, said: &str) -> Error {
+    Error::new(
+        ErrorCode::DownloadFailed,
+        format!("Omarchy could not add the widget from {url}: {said}"),
+        Suggestion::command(["omaddons", "omarchy", "install"]),
+    )
+    .details(json!({ "reason": "plugin_add_failed", "url": url, "said": said }))
+}
+
+/// The widget's folder holds something omaddons did not install.
+fn foreign(dir: &Path) -> Error {
+    Error::new(
+        ErrorCode::FileExists,
+        format!(
+            "{} holds a plugin that is neither the widget's checkout nor one omaddons rendered, so it is left alone",
+            dir.display()
+        ),
+        Suggestion::text(
+            "remove that plugin with Omarchy's plugin remove, or move the folder aside, then install again",
+        ),
+    )
+    .details(json!({ "reason": "plugin_folder_foreign", "file": dir }))
 }
 
 /// The widget a build before omad-o8g4 installed in `<plugins>/omaddons`: that folder
@@ -319,7 +480,7 @@ pub(super) fn legacy_widget(paths: &Paths) -> Option<PathBuf> {
     if !std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
         return None;
     }
-    let manifest = render::installed_manifest(&dir)?;
+    let manifest = legacy::installed_manifest(&dir)?;
     let id = manifest.get("id")?.as_str()?;
     (id == paths.omarchy_plugin_id()).then_some(dir)
 }
@@ -339,108 +500,8 @@ pub(super) fn rename_onto_absent(s: &mut WriteSession<'_>, from: &Path, to: &Pat
     }
 }
 
-/// The swap took two renames (`atomic_swap_unavailable`, as for addons).
-fn two_renames() -> Warning {
-    Warning::new(
-        WarningCode::AtomicSwapUnavailable,
-        "this filesystem cannot swap folders atomically, so the widget was replaced with two renames",
-    )
-    .with_fix(Suggestion::text(
-        "nothing to do: an install interrupted between the two renames leaves the widget absent until the next install, which finishes it",
-    ))
-}
-
-/// Writes every rendered file into `stage` and validates it with omaddons' port of
-/// Omarchy's validator and, when it is on `PATH`, Omarchy's own.
-fn stage_and_validate(
-    paths: &Paths,
-    scopes: &ScopeTable,
-    stage: &Path,
-    rendered: &Rendered,
-) -> Result<()> {
-    let mut s = WriteSession::untracked(Writer::Omarchy, scopes, "omarchy install");
-    ensure_dir_all(&mut s, &paths.omarchy_plugins_dir())?;
-    write_tree(&mut s, stage, rendered)?;
-    if failpoint::enabled(INVALID) {
-        // The planted invalid render of the tests: a string schemaVersion.
-        let manifest = stage.join(super::assets::MANIFEST);
-        let op = Op::WriteFile {
-            content: Content::Bytes(br#"{"schemaVersion": "1"}"#),
-            mode: Some(0o644),
-        };
-        mutate(&mut s, &manifest, op)?;
-    }
-    check(stage)
-}
-
-/// The rendered files under `dir` (which must not exist).
-fn write_tree(s: &mut WriteSession<'_>, dir: &Path, rendered: &Rendered) -> Result<()> {
-    mutate(s, dir, Op::CreateDir)?;
-    for (path, bytes) in &rendered.files {
-        let target = dir.join(path);
-        if let Some(parent) = target.parent() {
-            ensure_dir_all(s, parent)?;
-        }
-        let op = Op::WriteFile {
-            content: Content::Bytes(bytes.as_slice()),
-            mode: Some(0o644),
-        };
-        mutate(s, &target, op)?;
-    }
-    Ok(())
-}
-
-/// Both validators over `dir`: their problems make an `internal` error, since the
-/// files are embedded in the binary.
-fn check(dir: &Path) -> Result<()> {
-    let mut problems = validate::validate(dir);
-    if let Some(theirs) = shell::validate(dir) {
-        problems.extend(
-            theirs
-                .into_iter()
-                .map(|p| format!("{}: {p}", shell::VALIDATOR)),
-        );
-    }
-    if problems.is_empty() {
-        return Ok(());
-    }
-    Err(Error::internal(format!(
-        "the widget this build renders is not a valid Omarchy plugin: {}",
-        problems.join("; ")
-    ))
-    .details(json!({ "reason": "plugin_invalid", "problems": problems })))
-}
-
-/// `--dry-run`: the render staged and validated in this run's cache scratch, nothing
-/// under `<plugins>`.
-fn dry_run(paths: &Paths, rendered: &Rendered) -> Result<()> {
-    let tx = TxId::new();
-    let lock = InflightLock::create_scratch(paths, &tx)?;
-    let scopes = fence::table(paths, &[], None)?;
-    let scratch = paths.cache_tmp(&tx);
-    let result = (|| {
-        let mut s = WriteSession::untracked(Writer::Derived, &scopes, "omarchy install");
-        ensure_dir_all(&mut s, &scratch)?;
-        let dir = scratch.join(paths.omarchy_plugin_name());
-        write_tree(&mut s, &dir, rendered)?;
-        check(&dir)
-    })();
-    let victims: Vec<PathBuf> = [scratch, paths.cache_inflight_lock(&tx)]
-        .into_iter()
-        .filter(|p| p.exists())
-        .collect();
-    let _ = fsx::prune(
-        &scopes,
-        PruneReason::PostCommitCleanup,
-        &victims,
-        LockUse::Own(&lock),
-    );
-    drop(lock);
-    result
-}
-
-/// Prunes what this run leaves (its stage, or the old widget it parked) and its
-/// in-flight lock file, then drops the lock. Best effort: the next install reclaims.
+/// Prunes what this run leaves (the widgets it moved out) and its in-flight lock file,
+/// then drops the lock. Best effort: the next install reclaims.
 pub(super) fn prune_own(
     scopes: &ScopeTable,
     leftovers: &[PathBuf],
@@ -465,9 +526,9 @@ pub(super) fn prune_own(
     );
 }
 
-/// Prunes the stages and parked old widgets of installs whose process is gone (their
-/// in-flight lock free or missing), with their lock files. A live one is never touched,
-/// whatever its age.
+/// Prunes the stages (an older omaddons rendered into them) and moved-out widgets of
+/// runs whose process is gone (their in-flight lock free or missing), with their lock
+/// files. A live one is never touched, whatever its age.
 pub(super) fn reclaim(paths: &Paths, scopes: &ScopeTable, own: &TxId) {
     let Ok(entries) = std::fs::read_dir(paths.omarchy_plugins_dir()) else {
         return;
@@ -504,48 +565,6 @@ pub(super) fn reclaim(paths: &Paths, scopes: &ScopeTable, own: &TxId) {
     }
 }
 
-/// Whether the folder at `dir` holds exactly `rendered`'s files, byte for byte (so a
-/// moved binary, whose `Build.js` differs, is restamped). Reads only files whose size
-/// matches.
-fn matches_installed(dir: &Path, rendered: &Rendered) -> bool {
-    let expected: BTreeMap<&str, &[u8]> = rendered
-        .files
-        .iter()
-        .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
-        .collect();
-    let mut seen = 0;
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(current) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(meta) = std::fs::symlink_metadata(&path) else {
-                return false;
-            };
-            if meta.is_dir() {
-                pending.push(path);
-                continue;
-            }
-            let Some(rel) = path.strip_prefix(dir).ok().and_then(Path::to_str) else {
-                return false;
-            };
-            let Some(bytes) = expected.get(rel) else {
-                return false;
-            };
-            if !meta.is_file() || meta.len() != bytes.len() as u64 {
-                return false;
-            }
-            if std::fs::read(&path).ok().as_deref() != Some(*bytes) {
-                return false;
-            }
-            seen += 1;
-        }
-    }
-    seen == expected.len()
-}
-
 /// The section of Omarchy's bar layout that holds the widget `id`, read from
 /// `shell.json` (bounded); `None` when it is in none, or the file cannot be read.
 pub fn placed_in(paths: &Paths, id: &str) -> Option<Section> {
@@ -580,23 +599,17 @@ pub fn layout_entry(paths: &Paths, id: &str) -> Option<(Section, Value)> {
 }
 
 /// The installed widget as this run sees it. File reads only, all bounded, and no
-/// subprocess: `status` reads it on every call (E4).
+/// subprocess: `status` reads it on every call (E4). A widget an older omaddons rendered
+/// is outdated (`omarchy install` replaces it), and its `Build.js` says which binary it
+/// runs and whose directories it serves. The widget's checkout finds omaddons itself in
+/// its desktop session, so its files say neither (omad-widget-plugin-3bcbh.10 gives
+/// `status` the rest).
 pub fn describe(paths: &Paths) -> PluginInfo {
     let dir = paths.omarchy_plugin_dir();
     let id = paths.omarchy_plugin_id();
-    let manifest = render::installed_manifest(&dir);
+    let manifest = legacy::installed_manifest(&dir);
     let installed = manifest.is_some();
-    let context = render::installed_context(&dir);
-    // What this binary renders for the installed context (M3-D7): another build or
-    // other assets, never merely another context. A missing or foreign `Build.js` in an
-    // installed widget is outdated.
-    let outdated = installed
-        && match (&context, render::installed_sha256(&dir)) {
-            (Some(context), Some(sha)) => {
-                render::content_sha256(context, &id).map_or(true, |own| own != sha)
-            }
-            _ => true,
-        };
+    let context = legacy::installed_context(&dir);
     let section = placed_in(paths, &id);
     PluginInfo {
         installed,
@@ -605,11 +618,12 @@ pub fn describe(paths: &Paths) -> PluginInfo {
             .and_then(|m| m.get("version"))
             .and_then(Value::as_str)
             .map(str::to_owned),
-        binary: render::installed_binary(&dir),
-        outdated,
+        binary: legacy::installed_binary(&dir),
+        outdated: installed && folder(&dir, &id) == Folder::Older,
         enabled: section.is_some(),
         section,
-        context_matches: installed && context == Some(WidgetContext::of(paths)),
+        context_matches: installed
+            && (!legacy::is_rendered(&dir) || context == Some(WidgetContext::of(paths))),
         context_known: installed && context.is_some(),
         path: dir,
         id,
@@ -698,40 +712,52 @@ mod tests {
         assert_eq!(placed_in(&p, id), None);
     }
 
-    /// Every rendered file, byte for byte, and nothing else: a changed, missing or extra
-    /// file is a difference.
+    /// What the folder holds: a checkout of the widget, the setup button, a render, a
+    /// link, nothing, or another plugin's files.
     #[test]
-    fn the_installed_tree_matches_only_exactly() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = paths(dir.path());
-        let ctx = WidgetContext::of(&p);
-        let rendered = render::render(Path::new("/opt/omaddons"), &ctx, WIDGET).unwrap();
-        let plugin = dir.path().join("plugin");
-        assert!(!matches_installed(&plugin, &rendered));
-        for (path, bytes) in &rendered.files {
-            let target = plugin.join(path);
-            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-            std::fs::write(target, bytes).unwrap();
-        }
-        assert!(matches_installed(&plugin, &rendered));
-        let moved = render::render(Path::new("/usr/bin/omaddons"), &ctx, WIDGET).unwrap();
-        assert!(
-            !matches_installed(&plugin, &moved),
-            "a moved binary is restamped"
+    fn the_folder_says_what_install_does() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("a44.omaddons");
+        let id = "a44.omaddons";
+        let manifest = |text: &str| {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("manifest.json"), text).unwrap();
+        };
+        assert_eq!(folder(&dir, id), Folder::Absent);
+        // The widget's checkout: a service, a .git.
+        manifest(
+            r#"{"id":"a44.omaddons","entryPoints":{"service":"Service.qml","barWidget":"BarWidget.qml"}}"#,
         );
-
-        let (first, bytes) = rendered.files.first().unwrap();
-        let mut changed = bytes.clone();
-        changed[0] ^= 1;
-        std::fs::write(plugin.join(first), &changed).unwrap();
-        assert!(!matches_installed(&plugin, &rendered));
-        std::fs::write(plugin.join(first), bytes).unwrap();
-        std::fs::write(plugin.join("extra.qml"), b"").unwrap();
-        assert!(!matches_installed(&plugin, &rendered));
-        std::fs::remove_file(plugin.join("extra.qml")).unwrap();
-        std::fs::remove_file(plugin.join(first)).unwrap();
-        assert!(!matches_installed(&plugin, &rendered));
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        assert_eq!(folder(&dir, id), Folder::Checkout);
+        // The setup button: a checkout of the same id with a bar widget only.
+        manifest(r#"{"id":"a44.omaddons","entryPoints":{"barWidget":"BarWidget.qml"}}"#);
+        assert_eq!(folder(&dir, id), Folder::Older);
+        // Another plugin's checkout with no service, in this folder: never moved.
+        manifest(r#"{"id":"someone.else","entryPoints":{"barWidget":"BarWidget.qml"}}"#);
+        assert_eq!(folder(&dir, id), Folder::Foreign);
+        // Files copied by hand, no .git and no Build.js: never moved either.
+        std::fs::remove_dir_all(dir.join(".git")).unwrap();
+        manifest(r#"{"id":"a44.omaddons","entryPoints":{"service":"Service.qml"}}"#);
+        assert_eq!(folder(&dir, id), Folder::Foreign);
+        // A render: its service in a code folder beside a Build.js.
+        manifest(
+            r#"{"id":"a44.omaddons","entryPoints":{"service":"r-0123456789abcdef/Service.qml"}}"#,
+        );
+        std::fs::create_dir_all(dir.join("r-0123456789abcdef")).unwrap();
+        std::fs::write(
+            dir.join("r-0123456789abcdef/Build.js"),
+            "var BINARY = \"/o\"\n",
+        )
+        .unwrap();
+        assert_eq!(folder(&dir, id), Folder::Older);
+        // A symlink is a developer's own link, whatever it points at.
+        let link = root.path().join("linked");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert_eq!(folder(&link, id), Folder::Link);
+        // A plain file is no plugin.
+        let file = root.path().join("file");
+        std::fs::write(&file, "x").unwrap();
+        assert_eq!(folder(&file, id), Folder::Foreign);
     }
-
-    const WIDGET: &str = crate::state::paths::WIDGET_ID;
 }

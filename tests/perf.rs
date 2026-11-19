@@ -683,21 +683,11 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     common::backups::seed_many(&home.client("_retail_"), 200);
     home.run(&["backup", "list"]).expect(0);
 
-    // The bar widget, installed and current (E4): `status` hashes what this binary would
-    // render for it and compares, on every call. Written from E1's render, so no Omarchy
-    // tool runs.
+    // The bar widget, installed as its checkout (E4, omad-widget-plugin-3bcbh.9): `status`
+    // reads its manifest and folder on every call. Written as a clone holds it, so no
+    // Omarchy tool runs.
     let state = paths(&home.env);
-    let rendered = omaddons::omarchy::render::render(
-        std::path::Path::new(env!("CARGO_BIN_EXE_omaddons")),
-        &omaddons::omarchy::render::Context::of(&state),
-        &state.omarchy_plugin_id(),
-    )
-    .unwrap();
-    for (rel, bytes) in &rendered.files {
-        let path = state.omarchy_plugin_dir().join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, bytes).unwrap();
-    }
+    common::omarchy::write_widget_repo(&state.omarchy_plugin_dir());
     if let Some(dir) = &kept {
         let lines = home.env.env_lines();
         fs::write(dir.join("status.env"), lines.join("\n") + "\n").unwrap();

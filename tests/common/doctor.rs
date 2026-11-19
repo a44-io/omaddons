@@ -424,20 +424,34 @@ pub mod plant {
     }
 
     /// `fm-plugins-widget-version-drift` (P3, about the machine): Omarchy present (with
-    /// [`omarchy_path`]) and a bar widget installed without its `Build.js`, which no build
-    /// renders: outdated, serving no known state, so its evidence's `reason` is
-    /// `context_unknown`. Its bare manifest also breaks Omarchy's plugin rules, so
-    /// `fm-plugins-widget-invalid` (P2) is found beside it. [`widget_other_build`] is a
-    /// whole widget from another build instead (`code_differs`).
+    /// [`omarchy_path`]) and the setup button's checkout in the widget's folder (a `.git`,
+    /// the widget's id and no service), which `omarchy install` replaces: outdated,
+    /// serving no known state, so its evidence's `reason` is `context_unknown`. Its bare
+    /// manifest also breaks Omarchy's plugin rules, so `fm-plugins-widget-invalid` (P2) is
+    /// found beside it. [`widget_other_build`] is a whole widget an older omaddons
+    /// rendered instead (`code_differs`).
     pub fn widget_version_drift(home: &Home) {
         fs::create_dir_all(omarchy_path(home).join("shell")).unwrap();
         let plugin = home.env.config().join("omarchy/plugins/a44.omaddons");
-        fs::create_dir_all(&plugin).unwrap();
+        fs::create_dir_all(plugin.join(".git")).unwrap();
         fs::write(
             plugin.join("manifest.json"),
             r#"{"id": "a44.omaddons", "version": "0.0.9"}"#,
         )
         .unwrap();
+    }
+
+    /// A widget an older omaddons rendered, for `home`'s directories, in the widget's
+    /// folder of the stub desk: outdated (`omarchy install` replaces it with the widget's
+    /// checkout), serving this state, and valid.
+    fn rendered(home: &Home) -> StubDesk {
+        let desk = stub_desk(&home.env);
+        crate::common::omarchy::plant_rendered(
+            &desk.plugin(),
+            Path::new("/opt/omaddons-0.2.1/omaddons"),
+            &crate::common::omarchy::context_json(&home.env),
+        );
+        desk
     }
 
     /// No finding: this binary's bar widget installed for `home`'s directories through
@@ -449,14 +463,18 @@ pub mod plant {
         desk
     }
 
-    /// `fm-plugins-widget-invalid` (P2, about the machine): [`widget_current`], then
-    /// `barWidget.defaultSection` set to `"top"` in `manifest.json` (parsed, set and
-    /// written back) and the symlink `views/link → ../manifest.json` made inside the
-    /// plugin folder. `Build.js` is untouched, so the widget is not outdated. The finding:
-    /// evidence `{path: <plugins>/a44.omaddons, count: 2, rules: ["default_section",
-    /// "symlink"]}`, remediation `omaddons omarchy install`; no drift finding.
+    /// `fm-plugins-widget-invalid` (P2, about the machine): a widget an older omaddons
+    /// rendered for this state, then `barWidget.defaultSection` set to `"top"` in
+    /// `manifest.json` (parsed, set and written back) and the symlink `views/link →
+    /// ../manifest.json` made inside the plugin folder. The finding: evidence `{path:
+    /// <plugins>/a44.omaddons, count: 2, rules: ["default_section", "symlink"]}`,
+    /// remediation `omaddons omarchy install`, which replaces it with the widget's
+    /// checkout. Being a render it is outdated too, so the drift finding is beside it
+    /// (omad-widget-plugin-3bcbh.9: the widget's checkout, the only current widget, is
+    /// Omarchy's to update, and omad-widget-plugin-3bcbh.10 gives its validation its own
+    /// remediation).
     pub fn widget_invalid(home: &Home) -> StubDesk {
-        let desk = widget_current(home);
+        let desk = rendered(home);
         let manifest = desk.plugin().join("manifest.json");
         let mut doc: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
         doc["barWidget"]["defaultSection"] = json!("top");
@@ -466,19 +484,16 @@ pub mod plant {
         desk
     }
 
-    /// `fm-plugins-widget-version-drift` (P3, about the machine), as another build leaves
-    /// it: [`widget_current`], then its `Build.js` stamped with another code hash (64
-    /// zeros). The widget serves this state and still validates, so the finding's
-    /// evidence is `{path, observed: <this version>, expected: <this version>, reason:
-    /// code_differs}` (a rebuild of one version keeps the version), and no
-    /// `widget-invalid`.
+    /// `fm-plugins-widget-version-drift` (P3, about the machine), as an older omaddons
+    /// leaves it: a widget it rendered for this state. It serves this state and still
+    /// validates, so the finding's evidence is `{path, observed: <this version>,
+    /// expected: <this version>, reason: code_differs}` (a render of this version, by its
+    /// manifest), and no `widget-invalid`.
     pub fn widget_other_build(home: &Home) -> StubDesk {
-        let desk = widget_current(home);
-        other_build(&desk.plugin());
-        desk
+        rendered(home)
     }
 
-    /// The installed widget at `plugin` stamped with another code hash (64 zeros), as
+    /// The rendered widget at `plugin` stamped with another code hash (64 zeros), as
     /// another build's render carries: outdated, its state and its files otherwise kept.
     pub fn other_build(plugin: &Path) {
         restamp(

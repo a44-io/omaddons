@@ -525,8 +525,13 @@ pub(crate) const FILESYSTEM_UNSUPPORTED: DetailSpec = DetailSpec::Object(&[
 ]);
 
 /// `backup/export.rs::file_exists` and the equivalent dry-run check in `app/backup.rs`;
-/// `app/install_completions.rs`'s refusal of a completion file it did not write.
-pub(crate) const FILE_EXISTS: DetailSpec = DetailSpec::Object(&[Field::req("file", &STR)]);
+/// `app/install_completions.rs`'s refusal of a completion file it did not write;
+/// `omarchy/install.rs::foreign`, the widget's folder holding a plugin omaddons did not
+/// install (`reason`).
+pub(crate) const FILE_EXISTS: DetailSpec = DetailSpec::Object(&[
+    Field::req("file", &STR),
+    Field::opt("reason", &DetailSpec::Enum(&["plugin_folder_foreign"])),
+]);
 
 /// `fsx/lock.rs::busy`, and `apply`'s plan lease (`lease`, the plan id); item
 /// aggregation can discard its holder evidence.
@@ -545,8 +550,14 @@ pub(crate) const CHECK_FAILED: DetailSpec = DetailSpec::Object(&[
 pub(crate) const NETWORK: DetailSpec = DetailSpec::EMPTY;
 /// `Error::rate_limited`; item aggregation retains reset_at.
 pub(crate) const RATE_LIMITED: DetailSpec = DetailSpec::Object(&[Field::req("reset_at", &INSTANT)]);
-/// Git subprocess download failures carry no own details.
-pub(crate) const DOWNLOAD_FAILED: DetailSpec = DetailSpec::EMPTY;
+/// Git subprocess download failures carry no own details; `omarchy/install.rs::add_failed`,
+/// Omarchy's plugin add failing to clone the widget's repository, names it (`url`) and
+/// quotes what the tool said (`said`).
+pub(crate) const DOWNLOAD_FAILED: DetailSpec = DetailSpec::Object(&[
+    Field::opt("reason", &DetailSpec::Enum(&["plugin_add_failed"])),
+    Field::opt("said", &STR),
+    Field::opt("url", &STR),
+]);
 /// `Error::http_status`; item aggregation can discard status.
 pub(crate) const HTTP_STATUS: DetailSpec = DetailSpec::Object(&[Field::opt("status", &INT)]);
 
@@ -593,9 +604,13 @@ pub(crate) const PLAN_STALE: DetailSpec = DetailSpec::Object(&[
     Field::opt("txs", &STRINGS),
 ]);
 
-/// `engine/plan.rs::offline_archive`; other offline refusals have no own details.
+/// `engine/plan.rs::offline_archive`, and `omarchy install`'s refusal to clone the
+/// widget's repository (`plugin_add_offline`); other offline refusals have no own details.
 pub(crate) const OFFLINE: DetailSpec = DetailSpec::Object(&[
-    Field::opt("reason", &DetailSpec::Enum(&["not_cached"])),
+    Field::opt(
+        "reason",
+        &DetailSpec::Enum(&["not_cached", "plugin_add_offline"]),
+    ),
     Field::opt("ref", &STR),
 ]);
 
@@ -715,8 +730,10 @@ pub(crate) const DOCTOR_REFUSED: DetailSpec = DetailSpec::Object(&[
     Field::opt("resources", &STRINGS),
 ]);
 
-/// Omarchy plugin validation and journal unexpected/unrecognized states (a repair's name
-/// no single target: `target: null`); other bugs `{}`.
+/// Journal unexpected/unrecognized states (a repair's name no single target: `target:
+/// null`); other bugs `{}`. `problems` and `plugin_invalid` (the rendered widget failing
+/// validation) are no longer produced: the render is gone (omad-widget-plugin-3bcbh.9).
+/// They stay declared, since removing them breaks contract 1.x.
 pub(crate) const INTERNAL: DetailSpec = DetailSpec::Object(&[
     Field::opt("problems", &STRINGS),
     Field::opt(

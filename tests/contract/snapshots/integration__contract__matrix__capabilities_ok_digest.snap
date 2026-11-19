@@ -268,11 +268,11 @@ expression: digest
     "actions": 29,
     "client_rules": 18,
     "commands": 61,
-    "env_vars": 14,
+    "env_vars": 15,
     "error_codes": 43,
     "families": 14,
     "features": 14,
-    "limits": 144,
+    "limits": 145,
     "sources": 9,
     "target_id_forms": 8,
     "warning_codes": 57

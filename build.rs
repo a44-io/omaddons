@@ -1,11 +1,6 @@
-//! Four outputs, computed separately:
+//! Three outputs, computed separately (the bar widget is no longer embedded, so its
+//! digest is gone, omad-widget-plugin-3bcbh.9):
 //!
-//! - The digest of the widget's runtime files under `omarchy/` (its tests, its
-//!   repository's README and pictures in `publish/`, a generated `Build.js` and the
-//!   manifest aside: the same set as `src/omarchy/assets.rs`), so
-//!   `status` can compare an installed widget with this build on every call without
-//!   hashing some 230 KB each time (E4). `src/omarchy/render.rs` holds it equal to a
-//!   digest of the embedded assets in a unit test.
 //! - `OMADDONS_BUILD_ID`, the build's identity (M4-D19): a digest of the explicit input
 //!   manifest in `src/build_info/inputs.rs` and the toolchain. It never covers `skills/`
 //!   (M4-D7).
@@ -20,8 +15,6 @@
 use std::error::Error;
 use std::fs;
 use std::path::Path;
-
-use sha2::{Digest, Sha256};
 
 #[path = "src/build_info/inputs.rs"]
 #[allow(
@@ -43,7 +36,6 @@ mod stamp;
 const SKILL: &str = "skills/omaddons/SKILL.md";
 
 fn main() -> Result<(), Box<dyn Error>> {
-    widget_digest()?;
     build_id()?;
     guide_digest();
     catalog_folders()?;
@@ -122,13 +114,10 @@ fn guide_digest() {
 /// `OMADDONS_BUILD_ID` from the input manifest and the toolchain Cargo describes.
 fn build_id() -> Result<(), Box<dyn Error>> {
     let root = Path::new(".");
-    // `omarchy` is watched by the widget digest already. `.cargo/config.toml` is watched
-    // only while it exists: creating it later is picked up the next time any other
-    // input changes.
+    // `.cargo/config.toml` is watched only while it exists: creating it later is picked
+    // up the next time any other input changes.
     for path in inputs::rerun_paths(root) {
-        if path != "omarchy" {
-            println!("cargo::rerun-if-changed={path}");
-        }
+        println!("cargo::rerun-if-changed={path}");
     }
     let var = |key: &str| std::env::var(key).unwrap_or_default();
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
@@ -157,64 +146,4 @@ fn build_id() -> Result<(), Box<dyn Error>> {
     let id = inputs::input_digest(root, &toolchain)?;
     println!("cargo::rustc-env=OMADDONS_BUILD_ID={id}");
     Ok(())
-}
-
-/// `OUT_DIR/assets_digest.rs`: the widget's runtime files' digest.
-fn widget_digest() -> Result<(), Box<dyn Error>> {
-    println!("cargo::rerun-if-changed=omarchy");
-    let root = Path::new("omarchy");
-    let mut files = Vec::new();
-    collect(root, root, &mut files)?;
-    files.sort();
-    let mut digest = Sha256::new();
-    field(&mut digest, b"omaddons widget assets 1");
-    for (path, bytes) in &files {
-        field(&mut digest, path.as_bytes());
-        field(&mut digest, bytes);
-    }
-    let out = Path::new(&std::env::var("OUT_DIR")?).join("assets_digest.rs");
-    fs::write(
-        out,
-        format!(
-            "/// The digest of the widget's runtime files, the manifest aside (`build.rs`).\n\
-             pub const ASSETS_DIGEST: [u8; 32] = {:?};\n",
-            digest.finalize().as_slice()
-        ),
-    )?;
-    Ok(())
-}
-
-/// Every file under `dir` by its path from `root`, as `assets.rs` embeds them.
-fn collect(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<(String, Vec<u8>)>,
-) -> Result<(), Box<dyn Error>> {
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        let relative = path
-            .strip_prefix(root)?
-            .to_str()
-            .ok_or("a widget file name that is not UTF-8")?
-            .to_owned();
-        // `publish/` is the plugin repository's README and pictures, never embedded.
-        if matches!(
-            relative.as_str(),
-            "tests" | "publish" | "Build.js" | "manifest.json"
-        ) {
-            continue;
-        }
-        if path.is_dir() {
-            collect(root, &path, out)?;
-        } else {
-            out.push((relative, fs::read(&path)?));
-        }
-    }
-    Ok(())
-}
-
-/// One length-prefixed field, as `render.rs`'s `Fields` frames them.
-fn field(digest: &mut Sha256, bytes: &[u8]) {
-    digest.update((bytes.len() as u64).to_be_bytes());
-    digest.update(bytes);
 }

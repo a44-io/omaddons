@@ -844,28 +844,13 @@ fn an_outdated_widget_is_widget_version_drift() {
             .env("OMARCHY_PATH", &omarchy)
             .run()
     };
-    log.step("install the widget");
-    run(&["omarchy", "install", "--json"]).ok();
-    log.step("plant another build's widget");
+    log.step("plant a widget an older omaddons rendered, for this state");
     let plugin = home.env.config().join("omarchy/plugins/a44.omaddons");
-    let code = fs::read_dir(&plugin)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.is_dir())
-        .unwrap();
-    let build_js = code.join("Build.js");
-    let stamped: Vec<String> = fs::read_to_string(&build_js)
-        .unwrap()
-        .lines()
-        .map(|line| {
-            if line.starts_with("var CONTENT_SHA256 = ") {
-                format!("var CONTENT_SHA256 = \"{}\";", "0".repeat(64))
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect();
-    fs::write(&build_js, stamped.join("\n") + "\n").unwrap();
+    common::omarchy::plant_rendered(
+        &plugin,
+        std::path::Path::new("/opt/omaddons-0.2.1/omaddons"),
+        &common::omarchy::context_json(&home.env),
+    );
     let mut trees = trees(&home, &[]);
     trees.push((
         "omarchy config".to_owned(),

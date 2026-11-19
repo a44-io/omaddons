@@ -1,4 +1,4 @@
-//! A port of Omarchy's `omarchy-plugin-validate` (4.0.6), so a rendered widget is
+//! A port of Omarchy's `omarchy-plugin-validate` (4.0.6), so the installed widget is
 //! validated whether or not Omarchy's bash script is on the machine. Re-read the script
 //! when Omarchy changes its rules. Unlike the script, every violation is reported, not
 //! only the first, each with its [`Rule`] code.
@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::assets::MANIFEST;
+use super::legacy::MANIFEST;
 use crate::limits::WIDGET_READBACK_MAX_BYTES;
 
 /// The rule a problem breaks: one per message the port reports. Declared in the order of
@@ -348,23 +348,29 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::omarchy::render::{Context, render};
 
+    /// The widget as a checkout of its repository holds it: `omarchy/`, its tests aside
+    /// (omad-widget-plugin-3bcbh.9).
     fn rendered() -> tempfile::TempDir {
-        let ctx = Context {
-            home: "/h".into(),
-            xdg_config_home: "/h/.config".into(),
-            xdg_state_home: "/h/.local/state".into(),
-            xdg_cache_home: "/h/.cache".into(),
-            xdg_data_home: "/h/.local/share".into(),
-        };
-        let r = render(std::path::Path::new("/o/omaddons"), &ctx, "a44.omaddons").unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        for (path, bytes) in &r.files {
-            let target = dir.path().join(path);
-            fs::create_dir_all(target.parent().unwrap()).unwrap();
-            fs::write(target, bytes).unwrap();
+        fn copy(from: &Path, to: &Path) {
+            fs::create_dir_all(to).unwrap();
+            for entry in fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let (path, name) = (entry.path(), entry.file_name());
+                if path.is_dir() {
+                    if name != "tests" {
+                        copy(&path, &to.join(&name));
+                    }
+                } else {
+                    fs::copy(&path, to.join(&name)).unwrap();
+                }
+            }
         }
+        let dir = tempfile::tempdir().unwrap();
+        copy(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy"),
+            dir.path(),
+        );
         dir
     }
 

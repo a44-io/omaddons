@@ -337,6 +337,9 @@ pub const WIDGET_READBACK_MAX_BYTES: u64 = 64 * 1024;
 /// One run of an Omarchy tool (`omarchy-plugin-validate`, `omarchy-shell`,
 /// `omarchy-bar`) is killed after this long.
 pub const OMARCHY_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// `omarchy-plugin-add`, which clones the widget's repository over the network, is killed
+/// after this long (omad-widget-plugin-3bcbh.9).
+pub const OMARCHY_PLUGIN_ADD_TIMEOUT: Duration = Duration::from_secs(120);
 /// Bytes read of Omarchy's `shell.json` to see where the bar places the widget; past
 /// it, the widget counts as not placed (placing it again leaves it where it is).
 pub const OMARCHY_SHELL_JSON_MAX_BYTES: u64 = 4 * MIB;
@@ -1229,6 +1232,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "An Omarchy tool (plugin validator, shell IPC, bar placement) is killed after this long",
     ),
     limit(
+        "OMARCHY_PLUGIN_ADD_TIMEOUT",
+        LimitValue::Millis(ms(OMARCHY_PLUGIN_ADD_TIMEOUT)),
+        LimitUnit::Ms,
+        None,
+        "omarchy-plugin-add, which clones the widget's repository, is killed after this long",
+    ),
+    limit(
         "OMARCHY_SHELL_JSON_MAX_BYTES",
         LimitValue::Bytes(OMARCHY_SHELL_JSON_MAX_BYTES),
         LimitUnit::Bytes,
@@ -1637,6 +1647,7 @@ mod tests {
         "DEFAULT_UPDATE_MIN_AGE",
         "WIDGET_READBACK_MAX_BYTES",
         "OMARCHY_COMMAND_TIMEOUT",
+        "OMARCHY_PLUGIN_ADD_TIMEOUT",
         "OMARCHY_SHELL_JSON_MAX_BYTES",
         "OMARCHY_PING_TIMEOUT",
         "OMARCHY_KILL_GRACE",

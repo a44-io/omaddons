@@ -2443,16 +2443,26 @@ fn errors_dismiss() {
 fn omarchy() {
     let s = Scene::new();
     let root = s.home.env.root().to_path_buf();
-    // `PATH` holds a stub `omarchy-shell` alone: no real Omarchy tool is reachable.
+    // `PATH` holds a stub `omarchy-shell` and the stub `omarchy-plugin-add` alone: no real
+    // Omarchy tool is reachable, and the widget is added from a local export.
     let bin = root.join("omarchy-bin");
     fs::create_dir_all(&bin).unwrap();
     let shell = bin.join("omarchy-shell");
     crate::common::exec::write_executable(&shell, "#!/bin/sh\n");
-    let (bin, omarchy) = (
-        bin.display().to_string(),
+    fs::create_dir_all(root.join("bin")).unwrap();
+    crate::common::omarchy::write_tool(&root, "omarchy-plugin-add");
+    let repo = root.join("widget-repo");
+    crate::common::omarchy::write_widget_repo(&repo);
+    let (path, omarchy, repo) = (
+        format!("{}:{}", bin.display(), root.join("bin").display()),
         root.join("omarchy").display().to_string(),
+        repo.display().to_string(),
     );
-    let env = [("PATH", bin.as_str()), ("OMARCHY_PATH", omarchy.as_str())];
+    let env = [
+        ("PATH", path.as_str()),
+        ("OMARCHY_PATH", omarchy.as_str()),
+        (crate::common::omarchy::WIDGET_REPO_ENV, repo.as_str()),
+    ];
 
     let c = s.json_env(&["omarchy", "install"], &env, 3);
     insta::assert_json_snapshot!("omarchy_install_missing", s.stable(&c.envelope));
