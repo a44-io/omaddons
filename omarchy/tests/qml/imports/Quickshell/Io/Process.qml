@@ -39,7 +39,7 @@ QtObject {
   onRunningChanged: {
     if (!running) return
     ProcessRegistry.launched(root)
-    if (ProcessRegistry.missingBinary) {
+    if (ProcessRegistry.missing(root)) {
       Qt.callLater(function() { root.running = false })
       return
     }

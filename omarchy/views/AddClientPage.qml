@@ -4,7 +4,6 @@ import qs.Commons as Commons
 import qs.Ui
 import ".."
 import "../Model.js" as Model
-import "../Build.js" as Build
 
 // Add a client by its folder, with no terminal (1n2p.32, design doc §6.4): the page the
 // welcome card's Add a client folder pushes. One path box (KEYMAP's "pathbox" rows:
@@ -55,7 +54,8 @@ Item {
 
   // `targets add -- <path>`, after the path is checked here; false when nothing ran.
   function add() {
-    var checked = Model.clientPath(field.text, Build.CONTEXT.HOME)
+    // A leading "~" is the session's home, as the shell that runs omaddons sees it.
+    var checked = Model.clientPath(field.text, svc ? svc.home : "")
     if (checked.error !== "") {
       note = checked.error
       return false

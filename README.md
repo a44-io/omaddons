@@ -2193,7 +2193,7 @@ The Settings sheet (`,`, or the cog) explains each setting.
 | `notifyUpdates` | Notify about new updates | `On` or `Off`; `Off` | updates |
 | `notifyWhilePlaying` | Notify while a game runs | `On` or `Off`; `Off` | notify during play |
 | `autoUpdateWidget` | Update the widget by itself | `On` or `Off`; `On` | see [Install and upgrade](#install-and-upgrade) |
-| `binary` | omaddons binary | a full path, or empty; empty | empty: the omaddons that installed the widget |
+| `binary` | omaddons binary | a full path, or empty; empty | empty: `omaddons` on the session's `PATH`, then the path its `status` names (`widget.binary`); a named path that no longer starts goes back to `PATH` once |
 | `keyHint` | not in the sheet | `On` or `Off`; `On` | the first run's keybinding tip; `On` brings it back after the next open by mouse |
 
 **omaddons.** `default_channel`, `running_policy`, `auto_backup` and `check_interval_hours`, read with `omaddons config`, set one at a time with `omaddons config set <key> -- <value>` (only values it offers); they live only in `config.toml`.
@@ -2251,7 +2251,7 @@ A left click (or the bar's keybinding) opens the panel, a middle click its most 
 
 **A first run** shows one card at a time, each with **Not now** (until the shell restarts): take over a client managing nothing but `adoptable` folders; **Install BugGrabber** (previewed) where no Lua errors are recorded and a build is known; after the first open by mouse, the `~/.config/hypr/bindings.lua` line with **Copy the line** and **Got it** (either turns `keyHint` `Off`). With no client, the welcome card comes first.
 
-**When omaddons can't answer**, a card replaces the scope and tabs with Retry and: **Copy command** (`omaddons omarchy install`) for a missing binary; **Copy details** (what ran, how it ended, exit code, last output lines, home as `~`; never on the card) for unreadable or oversized output, a status read past 20 seconds, or a child alive after SIGKILL (let go so its lane runs the next request); **Update the panel** for a panel from another version or out of date, read-only meanwhile. A missing or silent binary is asked again after 5 seconds, 15 seconds, then every minute. A change cut off by a crash or reload is announced from `status`, with **See what to do** opening its problem in Issues.
+**When omaddons can't answer**, a card replaces the scope and tabs with Retry and: for no omaddons on `PATH` (or none at the `binary` setting's path), the command that installs it, `mise use -g github:a44-io/omaddons`, shown on the card with **Copy command**, never run; **Copy details** (what ran, how it ended, exit code, last output lines, home as `~`; never on the card) for unreadable or oversized output, a status read past 20 seconds, or a child alive after SIGKILL (let go so its lane runs the next request); **Update the panel** for a panel from another version or out of date, read-only meanwhile. A missing or silent binary is asked again after 5 seconds, 15 seconds, then every minute. A change cut off by a crash or reload is announced from `status`, with **See what to do** opening its problem in Issues.
 
 **The views.**
 
@@ -2287,7 +2287,7 @@ Every gate checks these:
 - Only a checked pasted addon list (plain text, at most 64 KB, family and client sections only) goes to an omaddons child's standard input, to the preview of `sync -`; nothing pasted runs before the plan sheet's Yes. The one other child given standard input is `wl-copy`, with the text it copies.
 - It never gives consent: never `doctor gc`, `doctor undo`, or a command line holding `--force` or `--yes` anywhere; a CLI-printed `doctor fix` is text too. Its own repairs run bound to their preview (`doctor fix --only <id> --if-match <token>`), their undo through `undo`'s stored plan.
 - It never runs a change no undo brings back: an argv holding `--purge` before `--` is never a button, even behind a confirmation; its row shows the command and what it deletes.
-- Every omaddons process runs under the `HOME` and XDG directories the widget was installed for.
+- Every omaddons process, and every desktop tool, runs in the desktop session's environment as it is: the widget sets no variable of a child's, so nothing it holds (a setting, an answer, a pasted list) can. It runs `omaddons` through the session's `PATH` until a `status` answer names the path to run it by (the `binary` setting, when set, before both).
 - It writes no file; `keyHint`, the one setting it changes itself, is saved through Omarchy's shell.
 - While `status` reports an interrupted change, it runs none of its silent changes (the after-play checkpoint, an automatic update), each of which would recover it.
 - It changes addons with no key pressed only for an automatic update.
@@ -3483,7 +3483,7 @@ A source turned off in `config.toml` refuses its refs, and `fix_argv` turns it b
 The widget has nothing current to show; its mark and tooltip say why, and its panel's card says what to do:
 
 - **A clock mark, "Last heard from omaddons … ago":** no answer for longer than the refresh interval plus a status read's deadline; the count is the last one given.
-- **An urgent `!` mark, "Can't find omaddons":** the binary moved or was removed. **Copy command** copies `omaddons omarchy install` to run from the binary you use now, or `omarchy bar set a44.omaddons binary <path>` points the widget at another one.
+- **An urgent `!` mark, "Can't find omaddons":** no omaddons on the desktop session's `PATH`, or none at the `binary` setting's path. **Copy command** copies `mise use -g github:a44-io/omaddons`, which installs it; or `omarchy bar set a44.omaddons binary <path>` points the widget at another one. A path a `status` answer named that stopped starting (mise moved its link) goes back to `PATH` by itself.
 - **An urgent `!` mark, "omaddons didn't answer":** no envelope, over 20 seconds, or it would not end; **Copy details** copies its last output for a bug report.
 - **An urgent `!` mark, "omaddons ran into a problem":** `status` failed (a `config.toml` that does not parse, say); the panel shows its error and fix.
 - **An urgent `!` mark, "The panel is from another omaddons version":** see below.
@@ -3629,7 +3629,7 @@ Generating schemas needs schemars, built only by the package's `schemas` feature
 
 ### Tests
 
-The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests in about 130 suites under `tests/`. Every suite is a module of one test binary, `integration` (`tests/main.rs`), with tests named `<suite>::…`, so `cargo test --test integration restore::` runs one suite (one binary links the library once). Debug and test builds carry line tables only, and dependencies no debuginfo (`CARGO_PROFILE_DEV_DEBUG=true` for a debugger). About 98 more are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine checks, time budgets and bench homes (`tests/perf.rs`), the compatibility suites (`tests/compat_m2.rs`, `tests/compat_m3.rs`, `tests/compat_v021.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. The widget adds 493 `bun` tests and 511 QML test functions in `omarchy/tests/qml/`. `cargo test -- --list` counts today's.
+The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests in about 130 suites under `tests/`. Every suite is a module of one test binary, `integration` (`tests/main.rs`), with tests named `<suite>::…`, so `cargo test --test integration restore::` runs one suite (one binary links the library once). Debug and test builds carry line tables only, and dependencies no debuginfo (`CARGO_PROFILE_DEV_DEBUG=true` for a debugger). About 98 more are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine checks, time budgets and bench homes (`tests/perf.rs`), the compatibility suites (`tests/compat_m2.rs`, `tests/compat_m3.rs`, `tests/compat_v021.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. The widget adds 517 `bun` tests and 515 QML test functions in `omarchy/tests/qml/`. `cargo test -- --list` counts today's.
 
 | Suite | What it covers |
 |---|---|

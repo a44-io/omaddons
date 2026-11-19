@@ -12,9 +12,11 @@ import "Build.js" as Build
 // fallback poll and the IPC target, and decides nothing itself: Model.js's pure
 // functions choose what runs next, which answers apply and what they mean.
 //
-// Every omaddons child runs under the stamped context (M3-D7), with argv only from
-// Model.buildArgv (templates) or Model.cliArgv (CLI argv the classifier accepted).
-// The service writes no file (M3-D3).
+// Every omaddons child inherits the desktop session's environment, with argv only from
+// Model.buildArgv (templates) or Model.cliArgv (CLI argv the classifier accepted). The
+// widget finds omaddons itself (omad-widget-plugin-3bcbh.3): the `binary` setting, else
+// `omaddons` through the session's PATH until a status answer names the path to run it
+// by and the directory its doorbell rings in. The service writes no file (M3-D3).
 Item {
   id: root
 
@@ -191,10 +193,19 @@ Item {
   property int followUpStep: 0
   readonly property bool anyRunning: targets.some(function(t) { return t.running === true })
   readonly property bool canAct: phase === "ok"
-  readonly property string binary: {
-    var chosen = Model.setting(root.settings, "binary")
-    return chosen !== "" ? chosen : Build.BINARY
-  }
+  // How the widget finds omaddons (Model.emptyResolution): the path the status answers
+  // name, and one that failed to start.
+  property var resolution: Model.emptyResolution()
+  // What runs (Model.binaryFor): the `binary` setting, else the path the last answer
+  // named, else `omaddons` through the session's PATH.
+  readonly property string binary: Model.binaryFor(root.settings, root.resolution)
+  // The directories the session's omaddons resolves (Model.sessionContext), which paths
+  // shorten by (`~`, `<config>`); null without an absolute HOME.
+  readonly property var context: Model.sessionContext(function(name) { return Quickshell.env(name) })
+  readonly property string home: context ? context.HOME : ""
+  // The directory the doorbell rings in, as the last answer named it: no watcher before
+  // one (the refresh timers cover the gap), and a new one when it names another.
+  property string bellDir: ""
   readonly property string ipcTarget: ipc.target
 
   // A request finished (applied or not), with its resource; F8 and the tests listen.
@@ -264,10 +275,13 @@ Item {
   // What the open confirmation runs on Yes, and the generation it was previewed in.
   property var pendingConfirm: null
   property bool bellStarted: false
+  // The watcher was stopped to move to another directory (moveBell).
+  property bool bellMoving: false
 
+  // The first status runs through PATH (or the setting's path); its answer names the
+  // path for later runs and starts the doorbell's watcher (learn).
   Component.onCompleted: {
     Store.set(root)
-    startBell()
     refresh()
   }
   Component.onDestruction: Store.clear(root)
@@ -704,7 +718,7 @@ Item {
       return
     }
     var decision = Model.previewDecision({ "mode": "match", "shown": [], "again": false, "path": "install",
-      "context": Build.CONTEXT, "targets": targets }, env)
+      "context": root.context, "targets": targets }, env)
     // Each client's plan is exactly its own preview's (M4-D28): applied later, in turn.
     // A client with nothing to do has it installed already: the sheet says so there,
     // and with nothing to do anywhere the view refreshes, saying nothing (omad-vqkd).
@@ -857,7 +871,7 @@ Item {
     // with something to repair exits 1, so Model.doctorPreviewDecision reads it before
     // anything generic does. Yes runs the same argv bound to the preview's token.
     if ((outcome === "ok" || outcome === "failed") && r.spec && r.spec.mode === "bind") {
-      var repair = Model.doctorPreviewDecision(r.spec, env, Build.CONTEXT, targets)
+      var repair = Model.doctorPreviewDecision(r.spec, env, root.context, targets)
       lastPreview = { "resource": r.resource, "decision": repair.kind, "planId": null }
       if (repair.kind === "dialog") {
         confirm = { "sheet": Model.withStale(repair.sheet, r.stale), "heading": "", "stale": r.stale }
@@ -888,14 +902,15 @@ Item {
     var path = r.cli ? Model.classifyCliArgv(r.cli).path : Model.templateShape(r.template, templates).path
     if (!Model.storesPlan(path)) {
       var token = env.data && typeof env.data.precondition === "string" ? env.data.precondition : ""
-      confirm = { "sheet": Model.withStale(Model.confirmSheet(r.template || path, env, Build.CONTEXT, targets), r.stale),
+      confirm = { "sheet": Model.withStale(Model.confirmSheet(r.template || path, env, root.context, targets), r.stale),
         "heading": "", "stale": r.stale }
       pendingConfirm = { "spec": r.spec, "token": token, "binds": Model.CLI_PATHS[path].binds, "plan": null, "contextGeneration": r.contextGeneration }
       return
     }
-    // The context and clients shorten the paths a repair's undo lists (`<config>/…`).
+    // The session's directories and the clients shorten the paths a repair's undo lists
+    // (`<config>/…`).
     var decision = Model.previewDecision({ "mode": r.mode, "shown": r.shown, "again": r.again === true, "path": path,
-      "context": Build.CONTEXT, "targets": targets, "pins": r.template === "install_version" }, env)
+      "context": root.context, "targets": targets, "pins": r.template === "install_version" }, env)
     lastPreview = { "resource": r.resource, "decision": decision.kind, "planId": decision.plan ? decision.plan.planId : null }
     if (decision.kind === "direct") {
       runPlan(decision.plan, r.spec, r.contextGeneration)
@@ -1023,7 +1038,7 @@ Item {
 
   function argvOf(r) {
     var opts = {
-      "binary": root.binary, "label": r.label || r.template || "omaddons", "context": Build.CONTEXT,
+      "binary": root.binary, "label": r.label || r.template || "omaddons",
       "templates": root.templates, "preview": r.preview === true, "token": r.token || "", "confirmed": r.confirmed === true,
       "plan": r.plan || null, "stdin": typeof r.stdin === "string" ? r.stdin : null
     }
@@ -1063,7 +1078,7 @@ Item {
       // asked meanwhile queues behind it ("next: …").
       if (r.kind === "mutation" && r.priority !== "background") startAction(r)
       setActivity(name, Model.activityStart(r, Date.now(), lists))
-      laneNamed(name).run(r, built.argv, built.env, built.stdin)
+      laneNamed(name).run(r, built.argv, built.stdin)
     }
     queuedAction = queuedLabel()
     queuedText = Model.queuedText(queues)
@@ -1095,7 +1110,7 @@ Item {
     var next = Model.barState(status, { "phase": phase, "working": Model.barWorking(activities, queues),
       "nowMs": now, "answeredAtMs": lastRefreshMs, "staleAfterMs": Model.barStaleAfterMs(root.settings) })
     if (!Model.jsonEqual(bar, next)) bar = next
-    var card = Model.phaseCard(phase, { "binary": root.binary, "home": Build.CONTEXT.HOME,
+    var card = Model.phaseCard(phase, { "binary": root.binary, "home": root.home,
       "outcome": statusFailure ? statusFailure.outcome : "", "failure": statusFailure,
       "deadlineSec": Math.max(1, Math.round(localDeadlineMs / 1000)), "mine": Build.TOOL_VERSION, "incompatible": incompatible,
       "reinstalledAtMs": reinstalledAtMs, "nowMs": now })
@@ -1106,7 +1121,7 @@ Item {
   // (Model.failureWords) and the details a bug report needs (Model.failureDetails).
   function failureOf(r, outcome, tail) {
     return { "message": Model.failureWords(r.label, outcome), "code": outcome, "fixes": [], "fixText": "", "choices": [],
-      "folder": "", "details": Model.failureDetails(failureFacts(r, outcome, tail), Build.CONTEXT, Build.TOOL_VERSION) }
+      "folder": "", "details": Model.failureDetails(failureFacts(r, outcome, tail), root.context, Build.TOOL_VERSION) }
   }
 
   function failureFacts(r, outcome, tail) {
@@ -1219,14 +1234,23 @@ Item {
       eachInstall = null
       pendingInstalls = []
       eachOutcome = null
-      phase = "missing"
-      statusFailure = failureFacts(r, outcome, tail)
-      scheduleRetry()
+      // A path an answer named that no longer starts goes back to PATH once
+      // (Model.resolutionAfterMissing): a status through it says at once whether omaddons
+      // is still there, and only PATH or the setting's path missing is the missing card.
+      var back = Model.resolutionAfterMissing(resolution, Model.listOf(r.argv)[0])
+      resolution = back.resolution
+      if (back.retry) refresh()
+      else {
+        phase = "missing"
+        statusFailure = failureFacts(r, outcome, tail)
+        scheduleRetry()
+      }
       refreshBar()
       if (r.kind === "mutation") lastError = failureOf(r, outcome, tail)
       // An automatic update goes no further without its binary (1n2p.36).
       if (r.spec && r.spec.auto === true) autoUpdateStage = ""
     } else if (outcome === "incompatible") {
+      if (r.resource === "status") learn(r, env)
       enterIncompatible(env)
     } else if (Model.acceptResult(r, lastApplied, selectionFor(r), contextGeneration)) {
       if (r.kind !== "mutation") lastApplied = Model.markApplied(lastApplied, r)
@@ -1328,7 +1352,7 @@ Item {
     } else if (r.resource === "addon_releases") {
       addonReleases = { "selection": r.selection, "data": Model.reduceInfo(env), "failed": "" }
     } else if (r.resource === "explain") {
-      explanation = { "selection": r.selection, "lines": Model.explainLines(env, Build.CONTEXT, targets), "failed": "" }
+      explanation = { "selection": r.selection, "lines": Model.explainLines(env, root.context, targets), "failed": "" }
     } else if (r.resource === "check") {
       // A background check asks for an automatic update (1n2p.36); the status after it
       // says whether there is one to make (afterStatus). A list read asked for the last
@@ -1343,6 +1367,7 @@ Item {
 
   function applyStatus(r, outcome, env, tail) {
     if (outcome === "ok" || outcome === "failed") {
+      learn(r, env)
       var model = Model.reduceStatus(env)
       statusFailed = model.failed
       targets = model.targets
@@ -1438,14 +1463,14 @@ Item {
         // a partial repair and a rolled-back one, M4-D34): its line says what happened, and
         // only its error (a refusal, the lock, a changed subject) is the failure card.
         // `statusAfter`: the last request asked before it, for its Undo (applyStatus).
-        lastResult = { "ok": repair.exitCode === 0, "line": Model.resultLine(env, Build.CONTEXT, targets),
+        lastResult = { "ok": repair.exitCode === 0, "line": Model.resultLine(env, root.context, targets),
           "partial": repair.state === "DONE_PARTIAL", "commands": commandsOf, "fixes": [],
           "repair": repair.repaired, "statusSeen": false, "statusAfter": lastRequestId }
         lastError = repair.error ? errorOf(env, r.label + " failed") : null
       } else {
         // A plan's apply reads as the command it ran ("Updated 1 addon").
         var view = r.purpose === "planned" ? (Model.applyResult(env) || env) : env
-        lastResult = { "ok": outcome === "ok", "line": Model.resultLine(view, Build.CONTEXT, targets), "partial": !!env && env.partial === true,
+        lastResult = { "ok": outcome === "ok", "line": Model.resultLine(view, root.context, targets), "partial": !!env && env.partial === true,
           "commands": commandsOf, "fixes": Model.itemFixes(view) }
         lastError = outcome === "ok" ? null : errorOf(env, r.label + " failed")
         // A client added by its folder (1n2p.32): the clients read with their scan, which
@@ -1477,7 +1502,7 @@ Item {
     // A change asked in the panel that finished after every panel closed: its result
     // line as a toast; a click opens the panel.
     if (!chaining && r.kind === "mutation" && r.priority !== "background" && !panelOpen && canAct) {
-      Quickshell.execDetached(Model.resultToastArgv(lastResult.line, lastResult.ok, Build.PLUGIN_ID))
+      Quickshell.execDetached(Model.resultToastArgv(lastResult.line, lastResult.ok, Model.PLUGIN_ID))
     }
     changed()
     // `d` across clients: the next dismissal, after this one succeeded.
@@ -1516,7 +1541,7 @@ Item {
       "tried": selfUpdatedFor })
     if (update.run) {
       selfUpdatedFor = update.version
-      Quickshell.execDetached(Model.resultToastArgv(Model.copy("widget.self_update", { "version": update.version }), true, Build.PLUGIN_ID))
+      Quickshell.execDetached(Model.resultToastArgv(Model.copy("widget.self_update", { "version": update.version }), true, Model.PLUGIN_ID))
       reinstallWidget()
     }
     refreshBar()
@@ -1596,13 +1621,13 @@ Item {
       "whilePlaying": switchOn("notifyWhilePlaying"), "nowMs": Date.now() })
     toastState = plan.state
     if (canAct && plan.toast === "errors") {
-      Quickshell.execDetached(Model.errorToastArgv(Model.errorFacts(targets), Build.PLUGIN_ID))
+      Quickshell.execDetached(Model.errorToastArgv(Model.errorFacts(targets), Model.PLUGIN_ID))
     }
     if (canAct && plan.toast === "updates") {
-      Quickshell.execDetached(Model.updateToastArgv(Model.updateFacts(targets, summary), Build.PLUGIN_ID))
+      Quickshell.execDetached(Model.updateToastArgv(Model.updateFacts(targets, summary), Model.PLUGIN_ID))
     }
     if (canAct && plan.toast === "digest") {
-      Quickshell.execDetached(Model.digestToastArgv(Model.errorFacts(targets), Model.updateFacts(targets, summary), plan.kinds, Build.PLUGIN_ID))
+      Quickshell.execDetached(Model.digestToastArgv(Model.errorFacts(targets), Model.updateFacts(targets, summary), plan.kinds, Model.PLUGIN_ID))
     }
     observed = { "generation": contextGeneration, "targets": targets, "updates": updatesNow, "errorsNew": errorsNow }
     autoCheck()
@@ -1673,7 +1698,7 @@ Item {
   function autoUpdatePreviewed(r, outcome, env) {
     var path = Model.templateShape(r.template, templates).path
     var decision = Model.previewDecision({ "mode": "match", "shown": r.shown, "again": r.again === true, "path": path,
-      "context": Build.CONTEXT, "targets": targets }, env)
+      "context": root.context, "targets": targets }, env)
     var act = Model.autoUpdatePreviewAct(outcome, env, decision)
     if (act === "run") {
       autoUpdateStage = "plan"
@@ -1690,7 +1715,7 @@ Item {
   function autoUpdateApplied(r, outcome, env, tail) {
     autoUpdateStage = ""
     var act = Model.autoUpdateApplyAct(outcome, env)
-    if (act === "done" && canAct) Quickshell.execDetached(Model.autoUpdateToastArgv(Model.autoUpdateFacts(env, targets), Build.PLUGIN_ID))
+    if (act === "done" && canAct) Quickshell.execDetached(Model.autoUpdateToastArgv(Model.autoUpdateFacts(env, targets), Model.PLUGIN_ID))
     if (act === "stop") stopAutoUpdate(env ? errorOf(env, r.label + " failed") : failureOf(r, outcome, tail))
     changed()
   }
@@ -1706,16 +1731,15 @@ Item {
       lastResult = { "ok": false, "line": error.message, "partial": false, "commands": [] }
     }
     settingRequested("autoUpdate", "Off")
-    if (canAct) Quickshell.execDetached(Model.autoUpdateStoppedToastArgv(Model.updateFacts(targets, summary), Build.PLUGIN_ID))
+    if (canAct) Quickshell.execDetached(Model.autoUpdateStoppedToastArgv(Model.updateFacts(targets, summary), Model.PLUGIN_ID))
   }
 
   // ------------------------------------------------------------- reinstall and show
 
-  // `omaddons omarchy install` detached, under the stamped context: the reload it causes
-  // destroys this service and its children.
+  // `omaddons omarchy install` detached, in the session's environment: the reload it
+  // causes destroys this service and its children.
   function reinstallWidget() {
     reinstallProc.command = [root.binary, "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"]
-    reinstallProc.environment = Build.CONTEXT
     reinstallProc.startDetached()
     // A reinstall that works reloads the widget, and this service with it; one that
     // does not leaves the card saying when it was tried (Model.phaseCard).
@@ -1750,8 +1774,8 @@ Item {
   function show(view) {
     requestedView = String(view || "")
     var host = root.shell
-    if (host && typeof host.summon === "function" && host.summon(Build.PLUGIN_ID, "") === true) return "ok"
-    Quickshell.execDetached(["omarchy-shell", "shell", "summon", Build.PLUGIN_ID, "{}"])
+    if (host && typeof host.summon === "function" && host.summon(Model.PLUGIN_ID, "") === true) return "ok"
+    Quickshell.execDetached(["omarchy-shell", "shell", "summon", Model.PLUGIN_ID, "{}"])
     return "ok"
   }
 
@@ -1790,27 +1814,61 @@ Item {
 
   // ------------------------------------------------------------- freshness (M3-D4)
 
+  // The watcher on the directory the last answer named; none before one names it.
   function startBell() {
+    bellRetry.stop()
+    if (bellDir === "") return
     bellStarted = false
     bellProc.running = true
   }
 
-  // A plain desktop helper: no stamped context.
+  // An answer named another doorbell directory: the watcher moves there at once. One
+  // running is stopped first (SIGTERM, as a lane stops its child) and starts again on
+  // the new directory once it ended.
+  function moveBell() {
+    bellRetry.stop()
+    if (bellProc.running) {
+      bellMoving = true
+      bellProc.signal(15)
+    } else startBell()
+  }
+
+  // A status answer (`r.argv` is what ran) names the path to run omaddons by and the
+  // doorbell's directory (omad-widget-plugin-3bcbh.3): Model.resolutionAfterAnswer and
+  // Model.doorbellDirOf say what the widget takes from it.
+  function learn(r, env) {
+    resolution = Model.resolutionAfterAnswer(resolution, env, Model.listOf(r.argv)[0])
+    var dir = Model.doorbellDirOf(env)
+    if (dir !== "" && dir !== bellDir) {
+      bellDir = dir
+      moveBell()
+    }
+  }
+
+  // A plain desktop helper, in the session's environment like every child. A new
+  // `command` takes effect at its next start.
   Process {
     id: bellProc
-    command: ["inotifywait", "-m", "-q", "-e", "moved_to", "--format", "%f", Build.CACHE_DIR]
+    command: ["inotifywait", "-m", "-q", "-e", "moved_to", "--format", "%f", root.bellDir]
     stdout: SplitParser {
       onRead: function(name) { if (name === "doorbell.json") bellDebounce.restart() }
     }
     onStarted: root.bellStarted = true
     onExited: function(exitCode, exitStatus) {
+      // One stopped to move starts again once it stopped running.
+      if (root.bellMoving) return
       // inotifywait exits 1 at once on a missing directory.
       bellRetry.interval = exitCode === 1 ? root.bellMissingRetryMs : root.bellRetryMs
       bellRetry.restart()
     }
-    onRunningChanged: if (!running && !root.bellStarted) {
-      bellRetry.interval = root.bellMissingRetryMs
-      bellRetry.restart()
+    onRunningChanged: if (!running) {
+      if (root.bellMoving) {
+        root.bellMoving = false
+        Qt.callLater(root.startBell)
+      } else if (!root.bellStarted) {
+        bellRetry.interval = root.bellMissingRetryMs
+        bellRetry.restart()
+      }
     }
   }
 
@@ -2043,7 +2101,7 @@ Item {
 
   IpcHandler {
     id: ipc
-    target: Build.PLUGIN_ID
+    target: Model.PLUGIN_ID
 
     function state(): string { return root.stateJson() }
     function refresh(): string { root.refresh(); return "ok" }
@@ -2086,7 +2144,7 @@ Item {
     // The running request's standard input (buildArgv's `stdin`), or null for none.
     property var input: null
 
-    function run(r, argv, env, stdin) {
+    function run(r, argv, stdin) {
       started = false
       exitedSeen = false
       streamSeen = false
@@ -2100,7 +2158,7 @@ Item {
       runDeadlineMs = own ? r.deadlineMs : deadlineMs
       runInactivity = own ? r.inactivity === true : inactivity
       input = typeof stdin === "string" ? stdin : null
-      proc = processComponent.createObject(lane, { "stdinEnabled": input !== null, "command": argv, "environment": env })
+      proc = processComponent.createObject(lane, { "stdinEnabled": input !== null, "command": argv })
       if (runDeadlineMs > 0) deadline.restart()
       proc.running = true
     }

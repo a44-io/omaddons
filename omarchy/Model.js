@@ -239,6 +239,100 @@ var restoreRequest = View.restoreRequest
 var managedAddons = View.managedAddons
 var restoreChooser = View.restoreChooser
 
+// -------------------------------------------------- the widget, and how it finds omaddons
+
+// The widget's id, as its manifest.json names it: the one literal of it in the widget's
+// code (security scan check 8), for its service, IPC target, panel and notifications.
+// `omaddons omarchy install` stamps a debug checkpoint widget's own id here and in its
+// manifest alone.
+var PLUGIN_ID = "a44.omaddons"
+
+// The name the widget runs omaddons by until an answer names its path: the session's
+// PATH finds it, as a terminal would (omad-widget-plugin-3bcbh.3).
+var BINARY_NAME = "omaddons"
+
+// The command the missing card shows and copies: it installs omaddons, as the README
+// does. The widget never runs it.
+var INSTALL_COMMAND = "mise use -g github:a44-io/omaddons"
+
+// How the widget finds omaddons (omad-widget-plugin-3bcbh.3): `{reported, refused,
+// version}`. `reported` is the path the last answer named to run omaddons by ("" runs
+// BINARY_NAME through PATH); `refused` a named path that failed to start, never taken
+// again until another version answers; `version` the tool version that answered last.
+function emptyResolution() {
+  return { "reported": "", "refused": "", "version": "" }
+}
+
+function resolutionOf(resolution) {
+  var r = resolution && typeof resolution === "object" ? resolution : {}
+  return { "reported": reportedPath(r.reported), "refused": str(r.refused), "version": str(r.version) }
+}
+
+// A path `status` names for the widget (`widget.binary`, `widget.doorbell_dir`):
+// absolute, one line, at most PATH_MAX_BYTES; "" for anything else.
+function reportedPath(value) {
+  return typeof value === "string" && PATH_PATTERN.test(value) && utf8Length(value) <= PATH_MAX_BYTES ? value : ""
+}
+
+// `status`'s `widget` object in `env`, or null.
+function widgetOf(env) {
+  var data = env && env.data && typeof env.data === "object" ? env.data : null
+  return data && data.widget && typeof data.widget === "object" ? data.widget : null
+}
+
+// The binary a run starts: the `binary` setting when set, else the path the last answer
+// named, else BINARY_NAME through the session's PATH.
+function binaryFor(settings, resolution) {
+  var chosen = setting(settings, "binary")
+  if (chosen !== "") return chosen
+  var reported = resolutionOf(resolution).reported
+  return reported !== "" ? reported : BINARY_NAME
+}
+
+// The resolution after a status answer `env` from a run of `ran` (its argv[0]). An answer
+// through PATH, or through the named path, names the path to run from now on; one from
+// another version than the last sends the next run through PATH again, which then names
+// its own. A named path that failed to start is not taken again (the runs stay on PATH)
+// until another version answers. An answer from any other binary (the setting's)
+// teaches nothing.
+function resolutionAfterAnswer(resolution, env, ran) {
+  var r = resolutionOf(resolution)
+  var viaPath = ran === BINARY_NAME
+  if (!viaPath && (r.reported === "" || ran !== r.reported)) return r
+  var version = env && typeof env.tool_version === "string" ? env.tool_version : ""
+  var changed = version !== "" && r.version !== "" && version !== r.version
+  if (version !== "") r.version = version
+  if (changed) {
+    r.refused = ""
+    if (!viaPath) {
+      r.reported = ""
+      return r
+    }
+  }
+  var widget = widgetOf(env)
+  var named = widget ? reportedPath(widget.binary) : ""
+  if (named !== "") r.reported = named === r.refused ? "" : named
+  return r
+}
+
+// After a run of `ran` did not start (outcome "missing"): `{resolution, retry}`. A named
+// path goes back to PATH once, `retry` saying to ask through PATH at once; PATH or the
+// setting's path missing changes nothing, and the missing card says so.
+function resolutionAfterMissing(resolution, ran) {
+  var r = resolutionOf(resolution)
+  if (r.reported === "" || ran !== r.reported) return { "resolution": r, "retry": false }
+  r.refused = r.reported
+  r.reported = ""
+  return { "resolution": r, "retry": true }
+}
+
+// The directory the doorbell rings in, as answer `env` names it, or "" when it names
+// none (no Omarchy config directory, so no `widget`).
+function doorbellDirOf(env) {
+  var widget = widgetOf(env)
+  return widget ? reportedPath(widget.doorbell_dir) : ""
+}
+
 // ---------------------------------------------------------------- settings (M3-D10)
 
 // Omarchy ignores manifest defaults, so they live here too; a test holds them equal to
@@ -295,7 +389,8 @@ function setting(settings, key) {
     if (value === false) return "Off"
     return DEFAULT_SETTINGS[key]
   }
-  // A path is empty (the stamped binary) or absolute; a bare name would go to PATH.
+  // A path is empty (the widget finds omaddons itself, binaryFor) or absolute; a bare
+  // name would go to PATH.
   return typeof value === "string" && (value === "" || value.charAt(0) === "/") ? value : DEFAULT_SETTINGS[key]
 }
 
@@ -338,7 +433,7 @@ function settingText(key, value) {
   if (rule.type === "switch") return copy(value === "On" ? "settings.value.on" : "settings.value.off")
   if (key === "panelWidth") return copy("settings.value.px", { "n": value })
   if (key === "refreshIntervalSec") return secondsText(value)
-  return value === "" ? copy("settings.value.binary_stamped") : str(value)
+  return value === "" ? copy("settings.value.binary_found") : str(value)
 }
 
 // The Panel section's rows (design doc §2.7): each setting's label, what it does, its
@@ -370,7 +465,7 @@ function steppedSetting(settings, key, step, wrap) {
   return next
 }
 
-// A typed binary path: "" (the stamped binary) or an absolute path, trimmed; null for
+// A typed binary path: "" (the one on PATH, binaryFor) or an absolute path, trimmed; null for
 // anything else, which `setting` would turn back into the default anyway.
 function typedPath(text) {
   var s = str(text).trim()
@@ -784,9 +879,33 @@ var PATH_MAX_BYTES = 4096
 var FM_ID_PATTERN = /^fm-[a-z0-9_-]+$/
 var TARGET_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/
 var TOKEN_PATTERN = /^pc1:[0-9a-f]{64}$/
-// What `Paths::from_env` reads, so a child given them resolves the installing run's
-// state (M3-D7).
+// What `Paths::from_env` reads, with each XDG directory's default below HOME. Every
+// child inherits the desktop session's environment as it is (omad-widget-plugin-3bcbh.3),
+// so the widget reads these only to show paths as the session's omaddons resolves them
+// (sessionContext).
 var CONTEXT_KEYS = ["HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"]
+var XDG_DEFAULTS = { "XDG_CONFIG_HOME": ".config", "XDG_STATE_HOME": ".local/state", "XDG_CACHE_HOME": ".cache",
+  "XDG_DATA_HOME": ".local/share" }
+
+// The directories the session's omaddons resolves, from the session's environment
+// (`lookup(name)`, Quickshell.env), as `Paths::from_env` resolves them: HOME as set, each
+// XDG directory as set when absolute, else its default below HOME. Null when HOME is no
+// absolute path: omaddons then refuses to run, and paths show as they are.
+function sessionContext(lookup) {
+  var read = function(name) {
+    var value = typeof lookup === "function" ? lookup(name) : null
+    return typeof value === "string" && value.charAt(0) === "/" ? value : ""
+  }
+  var home = read("HOME")
+  if (home === "") return null
+  var context = { "HOME": home }
+  var base = home.replace(/\/+$/, "")
+  for (var i = 1; i < CONTEXT_KEYS.length; i++) {
+    var key = CONTEXT_KEYS[i]
+    context[key] = read(key) || base + "/" + XDG_DEFAULTS[key]
+  }
+  return context
+}
 
 // Every refusal is an Error whose `reason` names the rule, and whose message starts
 // with it.
@@ -934,9 +1053,12 @@ function checkSlot(name, slot, value, template, part) {
   if (slot === "query" && template.mutates) throw refuse("query_in_mutation", name)
 }
 
+// The binary a run starts: an absolute path, or BINARY_NAME for the session's PATH to
+// find; any other name would go to PATH too, and is refused.
 function binaryOf(opts) {
+  if (opts.binary === BINARY_NAME) return BINARY_NAME
   if (typeof opts.binary !== "string" || opts.binary.charAt(0) !== "/") {
-    throw refuse("bad_binary", "the binary must be an absolute path")
+    throw refuse("bad_binary", "the binary is an absolute path, or " + BINARY_NAME + " for PATH to find")
   }
   return opts.binary
 }
@@ -951,21 +1073,6 @@ function reasonOf(opts) {
   }
   if (label.length > LABEL_MAX_CHARS) label = label.slice(0, LABEL_MAX_CHARS - 1) + "…"
   return label + " (bar widget)"
-}
-
-// A copy of the stamped context, the child's environment overlay.
-function contextOf(context) {
-  if (!context || typeof context !== "object") throw refuse("bad_context", "no context")
-  var env = {}
-  for (var i = 0; i < CONTEXT_KEYS.length; i++) {
-    var key = CONTEXT_KEYS[i]
-    var value = context[key]
-    if (typeof value !== "string" || value.charAt(0) !== "/") {
-      throw refuse("bad_context", key + " must be an absolute path")
-    }
-    env[key] = value
-  }
-  return env
 }
 
 // The `--if-match` value a run carries ("" for none), after the preview rules (M3-D9,
@@ -1002,11 +1109,12 @@ function standardFlags(opts, progress, preview, ifMatch, anonymous) {
   return argv
 }
 
-// Template `name` with `slots` filled: `{argv, env}`, where `argv` starts with the
-// binary and the standard flags, and `env` is the stamped context. Options: `binary`,
-// `label` (the button's), `context`, `preview`, `token` or `confirmed` for the preview
-// flow, and `templates` in place of COMMANDS. Throws on anything the template does not
-// allow; a `preview` template builds only as its preview (its Yes is its plan's apply).
+// Template `name` with `slots` filled: `{argv}` (and `stdin` for a template that takes
+// one), where `argv` starts with the binary and the standard flags. No environment: the
+// child inherits the desktop session's (omad-widget-plugin-3bcbh.3). Options: `binary`,
+// `label` (the button's), `preview`, `token` or `confirmed` for the preview flow, and
+// `templates` in place of COMMANDS. Throws on anything the template does not allow; a
+// `preview` template builds only as its preview (its Yes is its plan's apply).
 function buildArgv(name, slots, opts) {
   var o = opts || {}
   var shape = templateShape(name, o.templates)
@@ -1053,7 +1161,7 @@ function buildArgv(name, slots, opts) {
   // Every change, and every read that asks the sources: the activity bar counts them, and
   // their progress keeps a network read's inactivity deadline alive (1n2p.18).
   var progress = template.mutates === true || template.lane === "network"
-  var built = { argv: standardFlags(o, progress, preview, ifMatch, template.actor === false).concat(filled), env: contextOf(o.context) }
+  var built = { argv: standardFlags(o, progress, preview, ifMatch, template.actor === false).concat(filled) }
   if (stdin !== null) built.stdin = stdin
   return built
 }
@@ -1254,7 +1362,7 @@ function classifyCliArgv(argv, plan) {
   return verdict
 }
 
-// An accepted CLI argv as `{argv, env}`: the binary for `omaddons` and the standard
+// An accepted CLI argv as `{argv}`: the binary for `omaddons` and the standard
 // flags right after it. The options are buildArgv's, and `plan` for the `apply` it
 // offered; a destructive path runs only as a preview or after one.
 function cliArgv(argv, opts) {
@@ -1265,7 +1373,7 @@ function cliArgv(argv, opts) {
   // its plan's own), with the standard flags and progress only.
   if (verdict.path === "apply") {
     if (o.preview === true || !!o.token) throw refuse("apply_outside_plan", "a plan runs as offered, never previewed or bound")
-    return { argv: standardFlags(o, true, false, "").concat(argv.slice(1)), env: contextOf(o.context) }
+    return { argv: standardFlags(o, true, false, "").concat(argv.slice(1)) }
   }
   // A plan-storing path confirms through its preview's plan (M4-D28), never a token.
   if (storesPlan(verdict.path) && !!o.token) throw refuse("runs_through_apply", verdict.path + " confirms through its preview's apply, never --if-match")
@@ -1282,7 +1390,7 @@ function cliArgv(argv, opts) {
   // As buildArgv: every change, and the reads that ask the sources (the network lane's).
   var progress = verdict.mutates || verdict.path === "outdated" || verdict.path === "search"
     || (verdict.path === "info" && rest.indexOf("--changelog") !== -1)
-  return { argv: standardFlags(o, progress, preview && !dryRun, ifMatch).concat(rest), env: contextOf(o.context) }
+  return { argv: standardFlags(o, progress, preview && !dryRun, ifMatch).concat(rest) }
 }
 
 // --------------------------------------------------------- compatibility (M3-D42)
@@ -2309,7 +2417,7 @@ function migrateSettings(settings, renames) {
   return out
 }
 
-// `text` with the stamped home shown as "~" (Copy details, design doc §6.5): a path of
+// `text` with the session's home shown as "~" (Copy details, design doc §6.5): a path of
 // the player's own home says nothing more, and no other environment value is read.
 function homeless(text, home) {
   var s = String(text)
@@ -2325,7 +2433,7 @@ function shellWord(arg) {
 
 // A failure's details for a bug report (Copy details): what ran, how it ended and the
 // child's last lines, with the panel's version. Built from the request's own argv and
-// codes, never from the environment: the binary is "omaddons" and the stamped home "~".
+// codes, never from the environment: the binary is "omaddons" and the session's home "~".
 // `f` is `{label, argv, exitCode, outcome, tail}`.
 function failureDetails(f, context, widgetVersion) {
   var x = f && typeof f === "object" ? f : {}
@@ -2356,12 +2464,13 @@ function failureWords(label, outcome) {
 // The card shown in place of the views when omaddons cannot be used (design doc §6.4):
 // `{kind, title, sentence, notes[], actions[], details}`. `phase` is the service's;
 // `info` is `{binary, home, outcome, failure, deadlineSec, mine, incompatible,
-// reinstalledAtMs, nowMs}`: the binary's path, the stamped home, the last status
-// read's outcome and its failure facts (failureDetails), the local deadline, this
-// panel's version, incompatibleOf's answer, and when Update the panel last ran. The
-// kinds: missing, malformed, oversized, timeout, stuck (no answer), version, outdated
-// (another build); null when the phase has no card. Actions: retry, reinstall,
-// copy_command, copy_details.
+// reinstalledAtMs, nowMs}`: the binary run (BINARY_NAME through PATH, or the setting's
+// path), the session's home, the last status read's outcome and its failure facts
+// (failureDetails), the local deadline, this panel's version, incompatibleOf's answer,
+// and when Update the panel last ran. The kinds: missing, malformed, oversized,
+// timeout, stuck (no answer), version, outdated (another build); null when the phase
+// has no card. Actions: retry, reinstall, copy_command (INSTALL_COMMAND, which the
+// missing card's sentence shows), copy_details.
 function phaseCard(phase, info) {
   var i = info && typeof info === "object" ? info : {}
   var kind = ""
@@ -2373,8 +2482,11 @@ function phaseCard(phase, info) {
   if (!kind) return null
   var theirs = i.incompatible ? str(i.incompatible.theirs) : ""
   var slots = { "path": homeless(str(i.binary), i.home), "seconds": num(i.deadlineSec), "mine": str(i.mine) || copy("details.unknown"),
-    "theirs": theirs || copy("card.version.unreadable") }
-  var card = { "kind": kind, "title": copy("card." + kind + ".title"), "sentence": copy("card." + kind + ".sentence", slots),
+    "theirs": theirs || copy("card.version.unreadable"), "command": INSTALL_COMMAND }
+  // A missing binary the setting names says so: PATH found none, or that path is gone.
+  var sentence = kind === "missing" && str(i.binary) !== "" && i.binary !== BINARY_NAME ? copy("card.missing.set", slots)
+    : copy("card." + kind + ".sentence", slots)
+  var card = { "kind": kind, "title": copy("card." + kind + ".title"), "sentence": sentence,
     "notes": [], "actions": [], "details": "" }
   if (kind === "version" || kind === "outdated") {
     card.actions = ["reinstall", "retry"]
@@ -2393,10 +2505,10 @@ function phaseCard(phase, info) {
   return card
 }
 
-// The command a missing binary's card copies: run from the binary the player uses now,
-// it installs the panel for it (`omarchy install`).
+// The command a missing binary's card shows and copies: it installs omaddons
+// (INSTALL_COMMAND), for the player to run; the widget never does.
 function missingBinaryCommand() {
-  return "omaddons omarchy install"
+  return INSTALL_COMMAND
 }
 
 // An interrupted change, from `status` alone (journal, each client's attention): `{clients,
@@ -2504,7 +2616,7 @@ function needsCaptureRead(targets, errors) {
 }
 
 // The path a player typed into the path box, made usable: surrounding blanks gone, a
-// leading "~" as the stamped home; `{path, error}`, the error a sentence when it cannot
+// leading "~" as the session's home; `{path, error}`, the error a sentence when it cannot
 // be a client folder (not absolute, more than one line, too long). The CLI judges what
 // the folder holds.
 function clientPath(text, home) {
@@ -5852,6 +5964,16 @@ if (typeof module !== "undefined") {
     IRREVERSIBLE_FLAGS: IRREVERSIBLE_FLAGS,
     IRREVERSIBLE_NOTE: IRREVERSIBLE_NOTE,
     CONTEXT_KEYS: CONTEXT_KEYS,
+    sessionContext: sessionContext,
+    PLUGIN_ID: PLUGIN_ID,
+    BINARY_NAME: BINARY_NAME,
+    INSTALL_COMMAND: INSTALL_COMMAND,
+    emptyResolution: emptyResolution,
+    reportedPath: reportedPath,
+    binaryFor: binaryFor,
+    resolutionAfterAnswer: resolutionAfterAnswer,
+    resolutionAfterMissing: resolutionAfterMissing,
+    doorbellDirOf: doorbellDirOf,
     pathOf: pathOf,
     templateShape: templateShape,
     buildArgv: buildArgv,

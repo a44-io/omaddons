@@ -4,7 +4,6 @@ import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
 import "../.."
-import "../../Build.js" as Build
 import "../../Model.js" as Model
 import "../../Store.js" as Store
 
@@ -135,8 +134,8 @@ TestCase {
   function test_the_bar_draws_the_service_model() {
     var widget = make()
     compare(widget.svc, svc)
-    compare(widget.moduleName, Build.PLUGIN_ID)
-    compare(widget.ipcTarget, Build.PLUGIN_ID)
+    compare(widget.moduleName, Model.PLUGIN_ID)
+    compare(widget.ipcTarget, Model.PLUGIN_ID)
     compare(widget.manageIpc, false)
     // Idle: the gamepad, plain and still, no badge, no mark.
     compare(look(widget), ["gamepad", false, false, false, false, "", false, 0, false])
@@ -237,7 +236,7 @@ TestCase {
     api.service = svc
     widget.bar = api
     compare(widget.svc, svc)
-    compare(api.asked, [Build.PLUGIN_ID])
+    compare(api.asked, [Model.PLUGIN_ID])
     api.destroy()
   }
 
@@ -325,8 +324,8 @@ TestCase {
     compare(widget.settings.panelWidth, 640, "the other settings stay")
     compare(svc.pushed[svc.pushed.length - 1].keyHint, "Off")
     compare(saved.length, 1)
-    compare(saved[0][0], Build.PLUGIN_ID)
-    compare([saved[0][1].id, saved[0][1].keyHint, saved[0][1].panelWidth], [Build.PLUGIN_ID, "Off", 640])
+    compare(saved[0][0], Model.PLUGIN_ID)
+    compare([saved[0][1].id, saved[0][1].keyHint, saved[0][1].panelWidth], [Model.PLUGIN_ID, "Off", 640])
     api.destroy()
   }
 
@@ -367,7 +366,7 @@ TestCase {
     field.text = " /opt/omaddons-dev/omaddons "
     sheet.commit()
     compare([saved.length, saved[saved.length - 1][1].binary, sheet.editing], [count + 1, "/opt/omaddons-dev/omaddons", ""])
-    compare(saved.every(function(s) { return s[0] === Build.PLUGIN_ID }), true)
+    compare(saved.every(function(s) { return s[0] === Model.PLUGIN_ID }), true)
     api.destroy()
   }
 

@@ -668,11 +668,15 @@ TestCase {
     var info = { "binary": "/opt/omaddons-fixture/omaddons", "home": "/opt", "mine": "0.0.0-fixture", "deadlineSec": 20,
       "failure": { "label": "Refresh", "outcome": "timeout", "argv": ["/opt/omaddons-fixture/omaddons", "status"], "exitCode": -1,
         "tail": ["thread 'main' panicked"] } }
-    // A missing binary: Retry, and the command to run from the binary in use, copied.
+    // No omaddons on PATH (omad-widget-plugin-3bcbh.3): Retry, and the command that
+    // installs it, shown and copied, never run.
+    var onPath = JSON.parse(JSON.stringify(info))
+    onPath.binary = "omaddons"
     svc.phase = "missing"
-    svc.phaseCard = Model.phaseCard("missing", info)
+    svc.phaseCard = Model.phaseCard("missing", onPath)
     compare(child("cardTitle").text, "Can't find omaddons")
-    verify(child("cardDetail").text.indexOf("It was at ~/omaddons-fixture/omaddons.") === 0)
+    verify(child("cardDetail").text.indexOf("Install it with mise use -g github:a44-io/omaddons, then press Retry.") !== -1,
+      child("cardDetail").text)
     compare(child("cardNotes").count, 1)
     compare(child("cardNotes").itemAt(0).text, "The panel tries again by itself.")
     verify(findChild(view, "card_reinstall") === null)
@@ -683,7 +687,7 @@ TestCase {
     keyClick("j")
     compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
-    compare(svc.copies, ["omaddons omarchy install"])
+    compare(svc.copies, ["mise use -g github:a44-io/omaddons"])
     compare(child("cardCopied").text, "Copied")
     // wl-copy missing (omad-phcg): the card says nothing was copied, never "Copied".
     svc.copyOk = false

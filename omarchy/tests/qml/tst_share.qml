@@ -126,7 +126,7 @@ TestCase {
     verify(reads.length > 0, "the clipboard was read: " + launchLog())
     var read = reads[reads.length - 1]
     compare(read.command, ["wl-paste", "--no-newline", "--type", "text"])
-    compare(read.environment, {}, "a desktop helper: no stamped context")
+    compare(read.environment, {}, "a desktop helper, in the session's environment")
     read.process.finish(code || 0, text)
   }
 
@@ -143,7 +143,7 @@ TestCase {
     var exported = lastRun("export")
     compare(words(exported.command), ["export", "-t", "retail"])
     verify(exported.command.indexOf("--dry-run") === -1 && exported.command.indexOf("--progress") === -1, "a read")
-    compare(exported.environment, Build.CONTEXT)
+    compare(exported.environment, {}, "the session's environment, inherited")
     compare(exported.stdinEnabled, false)
     compare(answers, [], "nothing said before the export answers")
     answer(exported, "share-export-retail")
@@ -199,7 +199,7 @@ TestCase {
     var preview = lastRun("sync")
     compare(words(preview.command), ["sync", "-v", "-"])
     verify(preview.command.indexOf("--dry-run") !== -1, "its preview")
-    compare(preview.environment, Build.CONTEXT)
+    compare(preview.environment, {}, "the session's environment, inherited")
     compare(preview.stdinEnabled, true)
     started(preview)
     compare(preview.process.written, list, "the list, whole, on its standard input")

@@ -15,13 +15,15 @@ TestCase {
     compare(Model.classifyCliArgv(["omaddons", "status", "--json"]).reason, "widget_flag")
   }
 
-  function test_argv_builds_with_the_stamped_context() {
-    // An update runs as its preview (M4-D28).
+  function test_argv_builds_with_no_environment_of_its_own() {
+    // An update runs as its preview (M4-D28), `omaddons` through PATH, and its child
+    // inherits the session's environment (omad-widget-plugin-3bcbh.3).
     var built = Model.buildArgv("update_addon", { "target": "retail", "addon": "$&-x" },
-      { "binary": Build.BINARY, "label": "Update", "context": Build.CONTEXT, "preview": true })
-    compare(built.argv[0], Build.BINARY)
+      { "binary": "omaddons", "label": "Update", "preview": true })
+    compare(built.argv[0], "omaddons")
     compare(built.argv[built.argv.length - 1], "$&-x")
-    compare(built.env.XDG_CACHE_HOME, Build.CONTEXT.XDG_CACHE_HOME)
+    compare(Object.keys(built), ["argv"])
+    compare(Model.sessionContext(function(name) { return name === "HOME" ? "/home/q" : null }).XDG_CACHE_HOME, "/home/q/.cache")
   }
 
   function test_reducers_run() {

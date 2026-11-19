@@ -4,7 +4,6 @@ import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 import "Store.js" as Store
-import "Build.js" as Build
 import "ui"
 
 // The bar button: one per monitor, owning nothing. It binds to the shared service
@@ -15,8 +14,8 @@ import "ui"
 // panel holds the frame (PanelView.qml). Every action is a service call.
 Panel {
   id: root
-  moduleName: Build.PLUGIN_ID
-  ipcTarget: Build.PLUGIN_ID
+  moduleName: Model.PLUGIN_ID
+  ipcTarget: Model.PLUGIN_ID
   // The service owns the IPC target: only one handler per target works.
   manageIpc: false
 
@@ -29,7 +28,7 @@ Panel {
   readonly property bool turning: spinning && Style.reduceMotion !== true
   property real spinAngle: 0
   // This copy's key in the service's set of open panels.
-  readonly property string panelKey: Build.PLUGIN_ID + "@" + String(root)
+  readonly property string panelKey: Model.PLUGIN_ID + "@" + String(root)
 
   // U+F0297 nf-md-gamepad_variant and U+F04E6 nf-md-sync (JetBrainsMono Nerd Font),
   // written as code points so the source survives editors that mangle private-use
@@ -49,7 +48,7 @@ Panel {
   // store the service set when it completed (a copy completes before `bar` is set, F0).
   function bindService() {
     var host = root.bar && root.bar.shell ? root.bar.shell : null
-    var found = host && typeof host.serviceFor === "function" ? host.serviceFor(Build.PLUGIN_ID) : null
+    var found = host && typeof host.serviceFor === "function" ? host.serviceFor(Model.PLUGIN_ID) : null
     if (!found) found = Store.get()
     if (!found || found === svc) return
     svc = found

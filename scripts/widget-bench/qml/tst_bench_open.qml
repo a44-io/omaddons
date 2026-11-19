@@ -101,8 +101,10 @@ TestCase {
   }
 
   function test_panel_open() {
+    // The release binary by its path, as the `binary` setting names one: the runner runs
+    // only it, on the bench home's environment (the widget sets none of its own).
     service = serviceComponent.createObject(testCase, {
-      "settings": { "autoCheck": "Off", "notifyErrors": "Off", "notifyUpdates": "Off" },
+      "settings": { "autoCheck": "Off", "notifyErrors": "Off", "notifyUpdates": "Off", "binary": Build.BINARY },
       "localDeadlineMs": 600000, "networkDeadlineMs": 600000
     })
     verify(service !== null)

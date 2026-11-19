@@ -19,6 +19,10 @@ QtObject {
   property var stdout: null
   property var stderr: null
   property var signals: []
+  // Standard input, as Quickshell's (a copy's wl-copy, a pasted list's `sync -`): the
+  // bench runs reads only, so what is written is kept here and never sent to the runner.
+  property bool stdinEnabled: false
+  property string written: ""
 
   signal started()
   signal exited(int exitCode, int exitStatus)
@@ -75,6 +79,10 @@ QtObject {
 
   function startDetached() {
     ProcessRegistry.detachedStart(root)
+  }
+
+  function write(data) {
+    if (running && stdinEnabled) written = written + String(data)
   }
 
   Component.onCompleted: ProcessRegistry.add(root)

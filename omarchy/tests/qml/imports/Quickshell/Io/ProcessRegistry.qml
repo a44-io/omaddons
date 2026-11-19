@@ -2,18 +2,28 @@ pragma Singleton
 import QtQml
 
 // Every mock Process alive, every launch (command and environment as they were, since
-// the service destroys a process after it completes), and every detached start.
+// the service destroys a process after it completes), and every detached start. A
+// missing binary never starts: every one (`missingBinary`), or those whose argv[0] is in
+// `missingPrograms`, as PATH or a moved file would leave them.
 QtObject {
   property var processes: []
   property var launches: []
   property var detached: []
   property bool missingBinary: false
+  property var missingPrograms: []
   property int pid: 1000
 
   function reset() {
     launches = []
     detached = []
     missingBinary = false
+    missingPrograms = []
+  }
+
+  // Whether `process` would not start.
+  function missing(process) {
+    var command = process.command || []
+    return missingBinary || missingPrograms.indexOf(String(command[0])) !== -1
   }
 
   function add(process) {

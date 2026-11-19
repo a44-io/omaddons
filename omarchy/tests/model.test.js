@@ -57,7 +57,7 @@ const NOW = Date.parse("2100-01-01T00:00:00Z")
 const PLAN_ID = "01M8Q2ZZZZZZZZZZZZZZZZZZZZ"
 
 function opts(extra) {
-  return Object.assign({ binary: BINARY, label: "Test", context: CONTEXT }, extra || {})
+  return Object.assign({ binary: BINARY, label: "Test" }, extra || {})
 }
 
 function reasonOf(fn) {
@@ -93,7 +93,7 @@ describe("settings", () => {
     expect(rows.map((r) => [r.key, r.kind, r.text])).toEqual([
       ["panelWidth", "integer", "600 px"], ["refreshIntervalSec", "integer", "1 min 30 s"], ["autoCheck", "switch", "Off"],
       ["autoUpdate", "switch", "Off"], ["notifyErrors", "switch", "On"], ["notifyUpdates", "switch", "Off"],
-      ["notifyWhilePlaying", "switch", "Off"], ["autoUpdateWidget", "switch", "On"], ["binary", "path", "the one that installed the panel"]])
+      ["notifyWhilePlaying", "switch", "Off"], ["autoUpdateWidget", "switch", "On"], ["binary", "path", "the one on your PATH"]])
     expect(rows.every((r) => r.label !== "" && r.about !== "" && !r.label.startsWith("settings."))).toBe(true)
     expect([30, 60, 300, 3600].map(M.secondsText)).toEqual(["30 s", "1 min", "5 min", "60 min"])
     expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6, 7, 8]],
@@ -450,8 +450,11 @@ describe("buildArgv", () => {
       BINARY, "--json", "--actor", "widget", "--reason", "Update (bar widget)", "--progress", "json", "--dry-run",
       "update", "-t", "retail", "--", "DBM",
     ])
-    expect(built.env).toEqual(CONTEXT)
-    expect(built.env).not.toBe(CONTEXT)
+    // No environment: the child inherits the session's (omad-widget-plugin-3bcbh.3).
+    expect(Object.keys(built)).toEqual(["argv"])
+    expect(Object.keys(M.cliArgv(["omaddons", "list"], opts()))).toEqual(["argv"])
+    // `omaddons` through PATH builds too, as argv[0] as it is.
+    expect(M.buildArgv("update_all", {}, opts({ preview: true, binary: "omaddons" })).argv[0]).toBe("omaddons")
   })
 
   test("--progress json goes on mutations and every read that asks the sources", () => {
@@ -517,10 +520,12 @@ describe("buildArgv", () => {
     expect(reasonOf(() => M.buildArgv("update_target", { target: "retail", evil: "x" }, opts()))).toBe("unknown_slot")
     expect(reasonOf(() => M.buildArgv("update_addon", { target: "retail", addon: "" }, opts()))).toBe("bad_value")
     expect(reasonOf(() => M.buildArgv("update_addon", { target: "retail", addon: "a\u0000b" }, opts()))).toBe("bad_value")
-    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, binary: "omaddons" })))).toBe("bad_binary")
+    // A bare name other than omaddons would go to PATH too; a relative path is refused.
+    for (const binary of ["omaddons-dev", "bin/omaddons", "", null]) {
+      expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, binary })))).toBe("bad_binary")
+    }
     expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, label: "" })))).toBe("bad_label")
     expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, label: "a\nb" })))).toBe("bad_label")
-    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, context: { HOME: "/h" } })))).toBe("bad_context")
   })
 
   // A client's name runs to 200 characters (the CLI keeps one that long): every action
@@ -837,6 +842,106 @@ describe("compatibility", () => {
     expect(M.compatible(outdated, build)).toBe(false)
     expect(M.incompatibleText(env, { TOOL_VERSION: "0.0.0-other" })).toContain("0.0.0-other")
     expect(M.compatible({ ok: true }, build)).toBe(false)
+  })
+})
+
+// omad-widget-plugin-3bcbh.3: the widget finds omaddons, its environment and its doorbell
+// by itself, from the setting, the session's PATH and what `status` names.
+describe("finding omaddons", () => {
+  const SHIM = "/home/fixture/.local/share/mise/installs/github-a44-io-omaddons/latest/omaddons"
+  const MOVED = "/home/fixture/.local/share/mise/installs/github-a44-io-omaddons/0.4.0/omaddons"
+  const answer = (version, widget) => ({ ok: true, schema_version: "1.2", tool_version: version, command: "status",
+    data: { widget: widget === undefined ? { binary: SHIM, doorbell_dir: "/home/fixture/.cache/omaddons" } : widget } })
+
+  test("the setting first, then the path an answer named, then omaddons through PATH", () => {
+    const named = { reported: SHIM, refused: "", version: "0.3.0" }
+    expect(M.binaryFor({}, M.emptyResolution())).toBe("omaddons")
+    expect(M.binaryFor({}, named)).toBe(SHIM)
+    expect(M.binaryFor({ binary: "/opt/dev/omaddons" }, named)).toBe("/opt/dev/omaddons")
+    // A setting that is no absolute path is the default, as everywhere (setting()).
+    expect(M.binaryFor({ binary: "omaddons-dev" }, named)).toBe(SHIM)
+    // A resolution with a path no answer could name runs through PATH.
+    for (const bad of ["relative/omaddons", "/a\nb", 7, null]) expect(M.binaryFor({}, { reported: bad })).toBe("omaddons")
+    expect(M.binaryFor(null, null)).toBe("omaddons")
+  })
+
+  test("the first answer through PATH names the path every later run takes", () => {
+    let r = M.resolutionAfterAnswer(M.emptyResolution(), answer("0.3.0"), "omaddons")
+    expect(r).toEqual({ reported: SHIM, refused: "", version: "0.3.0" })
+    // Answers through that path keep it, or move it where they say.
+    expect(M.resolutionAfterAnswer(r, answer("0.3.0"), SHIM)).toEqual(r)
+    r = M.resolutionAfterAnswer(r, answer("0.3.0", { binary: MOVED }), SHIM)
+    expect(r.reported).toBe(MOVED)
+    // An answer that names nothing (no Omarchy config directory, a failed status) keeps it.
+    expect(M.resolutionAfterAnswer(r, answer("0.3.0", null), MOVED).reported).toBe(MOVED)
+    expect(M.resolutionAfterAnswer(r, { ok: false, tool_version: "0.3.0" }, MOVED).reported).toBe(MOVED)
+    // A path that is no absolute one line is never taken.
+    for (const bad of ["omaddons", "relative/x", "/a\nb", "/" + "x".repeat(4096), 7]) {
+      expect(M.resolutionAfterAnswer(M.emptyResolution(), answer("0.3.0", { binary: bad }), "omaddons").reported).toBe("")
+    }
+  })
+
+  test("an answer from the setting's binary, or from a path no longer used, teaches nothing", () => {
+    const r = { reported: SHIM, refused: "", version: "0.3.0" }
+    expect(M.resolutionAfterAnswer(r, answer("0.9.0", { binary: "/opt/dev/omaddons" }), "/opt/dev/omaddons")).toEqual(r)
+    expect(M.resolutionAfterAnswer(M.emptyResolution(), answer("0.3.0"), "/opt/dev/omaddons")).toEqual(M.emptyResolution())
+  })
+
+  test("another version answering sends the next run through PATH, which names its own", () => {
+    let r = { reported: SHIM, refused: "", version: "0.3.0" }
+    r = M.resolutionAfterAnswer(r, answer("0.4.0", { binary: MOVED }), SHIM)
+    expect(r).toEqual({ reported: "", refused: "", version: "0.4.0" })
+    expect(M.binaryFor({}, r)).toBe("omaddons")
+    r = M.resolutionAfterAnswer(r, answer("0.4.0", { binary: MOVED }), "omaddons")
+    expect(r).toEqual({ reported: MOVED, refused: "", version: "0.4.0" })
+  })
+
+  test("a named path that fails to start goes back to PATH once, and is not taken again", () => {
+    const r = { reported: SHIM, refused: "", version: "0.3.0" }
+    const back = M.resolutionAfterMissing(r, SHIM)
+    expect(back).toEqual({ resolution: { reported: "", refused: SHIM, version: "0.3.0" }, retry: true })
+    // PATH missing too, or the setting's path: nothing changes, and the card says so.
+    expect(M.resolutionAfterMissing(back.resolution, "omaddons")).toEqual({ resolution: back.resolution, retry: false })
+    expect(M.resolutionAfterMissing(r, "/opt/dev/omaddons")).toEqual({ resolution: r, retry: false })
+    // PATH answers and names the path that failed: the runs stay on PATH.
+    const stay = M.resolutionAfterAnswer(back.resolution, answer("0.3.0"), "omaddons")
+    expect([stay.reported, M.binaryFor({}, stay)]).toEqual(["", "omaddons"])
+    // It names another: that one is taken.
+    expect(M.resolutionAfterAnswer(back.resolution, answer("0.3.0", { binary: MOVED }), "omaddons").reported).toBe(MOVED)
+    // Another version answers: the failed path may be named again.
+    expect(M.resolutionAfterAnswer(stay, answer("0.4.0"), "omaddons")).toEqual({ reported: SHIM, refused: "", version: "0.4.0" })
+  })
+
+  test("the doorbell rings where the last answer says", () => {
+    expect(M.doorbellDirOf(answer("0.3.0"))).toBe("/home/fixture/.cache/omaddons")
+    expect(M.doorbellDirOf(answer("0.3.0", null))).toBe("")
+    expect(M.doorbellDirOf(answer("0.3.0", { doorbell_dir: "cache/omaddons" }))).toBe("")
+    expect(M.doorbellDirOf(null)).toBe("")
+  })
+
+  test("the real status names both, as absolute paths", () => {
+    const widget = fixture("status-updates").data.widget
+    if (widget === null) return
+    expect(M.reportedPath(widget.doorbell_dir)).toBe(widget.doorbell_dir)
+    expect(widget.binary === null || M.reportedPath(widget.binary) === widget.binary).toBe(true)
+  })
+
+  test("the session's directories resolve as Paths::from_env does", () => {
+    const env = (vars) => (name) => (Object.prototype.hasOwnProperty.call(vars, name) ? vars[name] : null)
+    expect(M.sessionContext(env({ HOME: "/home/u" }))).toEqual({ HOME: "/home/u", XDG_CONFIG_HOME: "/home/u/.config",
+      XDG_STATE_HOME: "/home/u/.local/state", XDG_CACHE_HOME: "/home/u/.cache", XDG_DATA_HOME: "/home/u/.local/share" })
+    // Set and absolute: taken as is; relative or empty: the default below HOME.
+    const set = M.sessionContext(env({ HOME: "/home/u/", XDG_CONFIG_HOME: "/cfg", XDG_STATE_HOME: "state", XDG_CACHE_HOME: "" }))
+    expect([set.XDG_CONFIG_HOME, set.XDG_STATE_HOME, set.XDG_CACHE_HOME]).toEqual(["/cfg", "/home/u/.local/state", "/home/u/.cache"])
+    expect(M.sessionContext(env({ HOME: "/" })).XDG_CACHE_HOME).toBe("/.cache")
+    // No absolute HOME: omaddons refuses to run, and paths show as they are.
+    for (const home of [null, "", "relative", 7]) expect(M.sessionContext(env({ HOME: home }))).toBeNull()
+    expect(M.sessionContext(null)).toBeNull()
+  })
+
+  test("the widget's id is its manifest's", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
+    expect(M.PLUGIN_ID).toBe(manifest.id)
   })
 })
 
@@ -1267,11 +1372,17 @@ describe("failures and recovery", () => {
 
   test("each failure has its own card: words, one action besides Retry, and details where they help", () => {
     const card = (phase, extra) => M.phaseCard(phase, Object.assign({}, INFO, extra || {}))
-    const missing = card("missing")
+    // omad-widget-plugin-3bcbh.3: none on PATH, the card shows how to install omaddons,
+    // and Copy copies that; it never names omarchy install.
+    const missing = card("missing", { binary: "omaddons" })
     expect([missing.kind, missing.title, missing.actions]).toEqual(["missing", "Can't find omaddons", ["retry", "copy_command"]])
-    expect(missing.sentence).toContain("It was at ~/.cargo/bin/omaddons.")
+    expect(missing.sentence).toBe("The panel runs omaddons from your PATH and found none there. Install it with mise use -g github:a44-io/omaddons, then press Retry.")
     expect(missing.notes).toEqual(["The panel tries again by itself."])
-    expect(M.missingBinaryCommand()).toBe("omaddons omarchy install")
+    expect(M.missingBinaryCommand()).toBe("mise use -g github:a44-io/omaddons")
+    // The `binary` setting's path, gone: the card names it, home as ~.
+    expect(card("missing").sentence).toBe("Nothing starts at ~/.cargo/bin/omaddons, the binary set in the panel's settings. "
+      + "Install omaddons with mise use -g github:a44-io/omaddons, or clear that setting, then press Retry.")
+    for (const id of Object.keys(M.COPY).filter((k) => k.startsWith("card.missing."))) expect([id, M.COPY[id].includes("omarchy install")]).toEqual([id, false])
     const cases = [
       ["malformed", "omaddons didn't answer", "It stopped before it said anything the panel can read."],
       ["oversized", "omaddons didn't answer", "Its answer was larger than the panel reads."],
@@ -4404,7 +4515,7 @@ describe("classifyCliArgv's apply rule", () => {
   test("cliArgv builds it only with its plan, never previewed or bound", () => {
     expect(["cliArgv_builds_with_its_plan", M.cliArgv(argv, opts({ plan: plan })).argv]).toEqual(["cliArgv_builds_with_its_plan",
       [BINARY, "--json", "--actor", "widget", "--reason", "Test (bar widget)", "--progress", "json", "apply", PLAN_ID]])
-    expect(M.cliArgv(argv, opts({ plan: plan, confirmed: true })).env).toEqual(CONTEXT)
+    expect(Object.keys(M.cliArgv(argv, opts({ plan: plan, confirmed: true })))).toEqual(["argv"])
     table([
       ["cliArgv_without_plan", opts(), "apply_outside_plan"],
       ["cliArgv_refuses_preview", opts({ plan: plan, preview: true }), "apply_outside_plan"],

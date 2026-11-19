@@ -535,7 +535,7 @@ fn the_manifest_is_the_planned_one() {
         "defaultSection": "right",
         "defaults": { "binary": "", "panelWidth": 600, "autoCheck": "On", "notifyUpdates": "Off", "notifyErrors": "On", "notifyWhilePlaying": "Off", "refreshIntervalSec": 300, "keyHint": "On", "autoUpdateWidget": "On", "autoUpdate": "Off" },
         "schema": [
-          { "key": "binary", "type": "path", "label": "omaddons binary", "defaultValue": "", "description": "Empty runs the binary that installed the widget (omaddons omarchy install stamps its path). Set a path to run another build." },
+          { "key": "binary", "type": "path", "label": "omaddons binary", "defaultValue": "", "description": "Empty runs the omaddons on your PATH, then the path it reports. Set a path to run another build." },
           { "key": "panelWidth", "type": "integer", "label": "Panel width", "min": 400, "max": 800, "step": 20, "defaultValue": 600, "description": "How wide the panel opens, from 400 to 800 px; z in the panel fills the screen." },
           { "key": "autoCheck", "type": "enum", "label": "Check for updates when due", "options": ["On", "Off"], "defaultValue": "On", "description": "Run omaddons outdated in the background when a client's last check is older than check_interval_hours in omaddons' config.toml." },
           { "key": "autoUpdate", "type": "enum", "label": "Update addons by themselves", "options": ["On", "Off"], "defaultValue": "Off", "description": "After a background check, while no game runs, routine updates (exactly what the Updates view shows: nothing new, replaced or moved) install by themselves, and a notification offers Undo in History. A failure turns this Off. Off: updates wait for you." },
@@ -551,12 +551,13 @@ fn the_manifest_is_the_planned_one() {
     assert_eq!(manifest, expected);
 }
 
-/// The widget's id is a literal in manifest.json only; every other use goes through
-/// `Build.PLUGIN_ID`, so E1's debug id seam yields a separate widget (F7 check 8). It
-/// scans every QML and JS file under `omarchy/`, tests included, and must find a planted
+/// The widget's id is a literal in manifest.json and, once, in Model.js's `PLUGIN_ID`
+/// (omad-widget-plugin-3bcbh.3); every other use goes through `Model.PLUGIN_ID`, so E1's
+/// debug id seam, which stamps both, yields a separate widget (F7 check 8). It scans every
+/// QML and JS file under `omarchy/`, tests included, and must find a planted
 /// `serviceFor("<id>")`.
 #[test]
-fn the_plugin_id_is_a_literal_in_the_manifest_only() {
+fn the_plugin_id_is_a_literal_in_the_manifest_and_model_js_only() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy");
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(root.join("manifest.json")).unwrap()).unwrap();
@@ -575,21 +576,34 @@ fn the_plugin_id_is_a_literal_in_the_manifest_only() {
         }
     }
     assert!(!files.is_empty(), "no QML or JS under omarchy/");
-    assert_eq!(id_literals(&files, id), Vec::<String>::new());
+    let model = &files.iter().find(|(name, _)| name == "Model.js").unwrap().1;
+    let declared = format!("\nvar PLUGIN_ID = \"{id}\"\n");
+    let line = model
+        .find(&declared)
+        .map(|at| model[..=at].matches('\n').count() + 1);
+    assert_eq!(
+        model.matches(&declared).count(),
+        1,
+        "Model.js declares its id once"
+    );
+    let only = vec![format!("Model.js:{}", line.unwrap())];
+    assert_eq!(id_literals(&files, id), only);
 
     let bar = files
         .iter_mut()
         .find(|(name, _)| name == "BarWidget.qml")
         .unwrap();
-    assert!(bar.1.contains("serviceFor(Build.PLUGIN_ID)"));
+    assert!(bar.1.contains("serviceFor(Model.PLUGIN_ID)"));
     bar.1 = bar.1.replacen(
-        "serviceFor(Build.PLUGIN_ID)",
+        "serviceFor(Model.PLUGIN_ID)",
         &format!("serviceFor(\"{id}\")"),
         1,
     );
     let found = id_literals(&files, id);
     assert!(
-        found.len() == 1 && found[0].starts_with("BarWidget.qml:"),
+        found.len() == 2
+            && found.contains(&only[0])
+            && found.iter().any(|f| f.starts_with("BarWidget.qml:")),
         "{found:?}"
     );
 }

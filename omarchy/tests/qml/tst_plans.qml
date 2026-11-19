@@ -467,7 +467,7 @@ TestCase {
     var names = Model.sheetClient(service.targets, "era", "") + " and " + Model.sheetClient(service.targets, "retail", "")
     compare(toasts().length, 1, JSON.stringify(Quickshell.detachedCommands))
     compare(toasts()[0].slice(-6), ["-u", "low", "Addons updated", "Updated 3 addons on " + names + " · Undo is in History",
-      "--exec", "omarchy-shell " + Build.PLUGIN_ID + " show history"])
+      "--exec", "omarchy-shell " + Model.PLUGIN_ID + " show history"])
     compare([service.autoUpdateStage, service.autoUpdatePending, service.confirm], ["", false, null])
     compare(runs("apply").length, 1, "applied once")
   }

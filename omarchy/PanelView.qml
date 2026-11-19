@@ -7,7 +7,6 @@ import qs.Ui
 import "views"
 import "ui"
 import "Model.js" as Model
-import "Build.js" as Build
 
 // The panel frame (design doc §2.1, F4), top to bottom: the hero (the scope as title,
 // its glyph in the state colour, the meta line urgent first, and help, zoom, Check now,
@@ -162,7 +161,7 @@ Item {
   readonly property var onboarding: !svc || phase !== "ok" || !!interrupted || !!topPage ? null : Model.onboardingCard({
     "summary": svc.summary, "targets": targets, "errors": svc.errors || null,
     "dismissed": svc.onboardingDismissed || {}, "keyHint": Model.boolSetting(svc.settings, "keyHint", true),
-    "openedByMouse": svc.openedByMouse === true, "pluginId": Build.PLUGIN_ID })
+    "openedByMouse": svc.openedByMouse === true, "pluginId": Model.PLUGIN_ID })
   // What the onboarding card's Copy said a moment ago.
   property string onboardingNote: ""
 

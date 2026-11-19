@@ -294,7 +294,7 @@ TestCase {
   // The command words of the argv Model.buildArgv makes of a recorded run.
   function words(run) {
     // A previewed template builds as its preview (the dry run before its plan's apply).
-    var built = Model.buildArgv(run[0], run[1], { "binary": "/opt/omaddons", "label": run[2], "context": Build.CONTEXT,
+    var built = Model.buildArgv(run[0], run[1], { "binary": "/opt/omaddons", "label": run[2],
       "preview": !!Model.COMMANDS[run[0]].preview })
     var argv = built.argv
     var at = argv.indexOf("--reason") + 2

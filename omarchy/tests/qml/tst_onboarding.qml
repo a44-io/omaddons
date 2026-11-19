@@ -205,11 +205,11 @@ TestCase {
     compare(service.lastError.code, "target_not_found")
     compare(child("addClientNote", page).text, "", "no longer adding")
     verify(frame.topPage !== null, "still on the page")
-    // "~/" is the home; the client is added, the scan lists it, the page goes back.
+    // "~/" is the session's home; the client is added, the scan lists it, the page goes back.
     field.text = "~/pserver"
     child("addClient", page).clicked()
     var added = runningOf("targets")
-    compare(words(added.command), ["targets", "add", "--", Build.CONTEXT.HOME + "/pserver"])
+    compare(words(added.command), ["targets", "add", "--", Quickshell.env("HOME") + "/pserver"])
     var before = ProcessRegistry.launches.length
     added.process.finish(0, Fixtures.text("targets-add"), "streamFirst")
     wait(10)
@@ -324,7 +324,7 @@ TestCase {
     service.openedByMouse = true
     verify(onboardingCard().visible)
     compare(onboardingCard().title, "Open this panel with a key")
-    var line = 'o.bind("SUPER + ALT + W", "WoW addons", { panel = "' + Build.PLUGIN_ID + '" })'
+    var line = 'o.bind("SUPER + ALT + W", "WoW addons", { panel = "' + Model.PLUGIN_ID + '" })'
     verify(onboardingCard().body.indexOf(line) !== -1, onboardingCard().body)
     var spy = Qt.createQmlObject('import QtTest; SignalSpy { signalName: "settingRequested" }', testCase)
     spy.target = frame

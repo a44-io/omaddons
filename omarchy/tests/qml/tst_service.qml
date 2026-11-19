@@ -30,11 +30,13 @@ TestCase {
 
   readonly property var standardFlags: ["--json", "--actor", "widget", "--reason"]
 
-  function make(extra) {
+  // A fresh service; `missing` lists the programs that will not start (argv[0]).
+  function make(extra, missing) {
     if (service) service.destroy()
     service = null
     wait(0)
     ProcessRegistry.reset()
+    ProcessRegistry.missingPrograms = missing || []
     Quickshell.resetDetachedCommands()
     var props = { "bellDebounceMs": 10, "localDeadlineMs": 400, "networkDeadlineMs": 400, "killGraceMs": 60, "streamGraceMs": 60 }
     if (extra) for (var key in extra) props[key] = extra[key]
@@ -90,14 +92,24 @@ TestCase {
     return JSON.stringify(e)
   }
 
-  function statusEnvelope(available, extra) {
+  // The session's cache directory, where `status` says the doorbell rings.
+  readonly property string doorbellDir: "/home/fixture/.cache/omaddons"
+
+  // `status`'s widget, as an Omarchy desktop's answer has it: the doorbell's directory,
+  // and `binary` (null here, so every run stays on PATH unless a test names one).
+  function widgetInfo(binary, dir) {
+    return { "omarchy": true, "installed": true, "enabled": true, "version": Build.TOOL_VERSION, "outdated": false,
+      "context_matches": true, "binary": binary === undefined ? null : binary, "doorbell_dir": dir === undefined ? doorbellDir : dir }
+  }
+
+  function statusEnvelope(available, extra, widget) {
     return envelope("status", {
       "cached": true,
       "targets": [{ "id": "retail", "label": "retail (battlenet)", "running": false, "updates": { "available": available }, "issues": [] }],
       "summary": { "targets": 1, "running": [], "updates": { "available": available, "targets": available ? ["retail"] : [] },
         "issues": { "p0": 0, "p1": 0, "p2": 0, "p3": 0 }, "errors": { "new": 0, "targets": [] },
         "check_due": false, "widget_outdated": false, "state": available ? "updates" : "idle" },
-      "last_change": null, "last_change_state": "ok"
+      "last_change": null, "last_change_state": "ok", "widget": widget === undefined ? widgetInfo() : widget
     }, extra)
   }
 
@@ -205,26 +217,137 @@ TestCase {
     answer(lastRun("status"), statusEnvelope(available || 0))
   }
 
-  function bell() {
-    for (var i = 0; i < ProcessRegistry.launches.length; i++) {
-      if (ProcessRegistry.launches[i].command[0] === "inotifywait") return ProcessRegistry.launches[i]
-    }
-    return null
+  // The doorbell watcher's starts, in order (one Process, started again on a move).
+  function bells() {
+    return ProcessRegistry.launches.filter(function(l) { return l.command[0] === "inotifywait" })
   }
+
+  function bell() {
+    var all = bells()
+    return all.length ? all[0] : null
+  }
+
+  // ready(), with every answer naming `binary` as the path to run omaddons by.
+  function readyNamed(binary) {
+    answer(lastRun("status"), statusEnvelope(0, {}, widgetInfo(binary)))
+    answer(lastRun("backup"), envelope("backup create", { "targets": [] }))
+    answer(lastRun("status"), statusEnvelope(0, {}, widgetInfo(binary)))
+    compare(service.phase, "ok")
+  }
+
+  // The argv[0] of every omaddons run from launch `from` on, of command `word` only when
+  // given.
+  function binariesFrom(from, word) {
+    return runs(word).filter(function(l) { return ProcessRegistry.launches.indexOf(l) >= from }).map(function(l) { return l.command[0] })
+  }
+
+  // mise's link to the release it uses, as `status` names it (omad-widget-plugin-3bcbh.2).
+  readonly property string shim: "/home/fixture/.local/share/mise/installs/github-a44-io-omaddons/latest/omaddons"
 
   // ---- startup and freshness
 
-  function test_startup_runs_status_under_the_stamped_context() {
+  // omad-widget-plugin-3bcbh.3: the first status runs `omaddons` through the session's
+  // PATH, in the session's environment; its answer names the path every later run takes
+  // and the directory the doorbell's watcher watches. No watcher before that answer.
+  function test_startup_runs_status_through_path_then_the_path_it_names() {
     var launch = lastRun("status")
-    compare(launch.command, [Build.BINARY, "--json", "--actor", "widget", "--reason", "Refresh (bar widget)", "status", "--cached", "-v"])
-    compare(launch.environment, Build.CONTEXT)
+    compare(launch.command, ["omaddons", "--json", "--actor", "widget", "--reason", "Refresh (bar widget)", "status", "--cached", "-v"])
+    // No environment of the widget's own: the child inherits the session's.
+    compare(launch.environment, {})
+    compare(bell(), null, "no watcher before an answer names its directory")
+    compare(ProcessRegistry.launches.length, 1)
+    compare(service.ipcTarget, Model.PLUGIN_ID)
+    compare(service.home, "/home/fixture")
+    readyNamed(shim)
     var watcher = bell()
-    compare(watcher.command, ["inotifywait", "-m", "-q", "-e", "moved_to", "--format", "%f", Build.CACHE_DIR])
-    // A desktop helper keeps the desktop's own environment.
+    compare(watcher.command, ["inotifywait", "-m", "-q", "-e", "moved_to", "--format", "%f", doorbellDir])
     compare(watcher.environment, {})
-    compare(service.ipcTarget, Build.PLUGIN_ID)
-    ready(3)
-    compare(service.bar.badge, 3)
+    // Every run after the first, by itself or asked, starts the path the answer named.
+    service.check()
+    service.refresh()
+    wait(20)
+    var binaries = binariesFrom(1)
+    verify(binaries.length >= 4, JSON.stringify(binaries))
+    compare(binaries.filter(function(b) { return b !== shim }), [])
+    compare(JSON.parse(service.stateJson()).binary, shim)
+  }
+
+  // The `binary` setting runs before any path an answer names, and its answers name
+  // nothing the widget keeps.
+  function test_the_binary_setting_runs_before_the_path_an_answer_names() {
+    readyNamed(shim)
+    var from = ProcessRegistry.launches.length
+    service.applySettings({ "binary": "/opt/omaddons-dev/omaddons" })
+    answer(lastRun("status"), statusEnvelope(0, {}, widgetInfo("/opt/omaddons-dev/omaddons")))
+    compare(binariesFrom(from, "status"), ["/opt/omaddons-dev/omaddons"])
+    from = ProcessRegistry.launches.length
+    service.applySettings({ "binary": "" })
+    compare(binariesFrom(from, "status"), [shim])
+  }
+
+  // omad-widget-plugin-3bcbh.3: no omaddons on PATH and no setting: the one process is
+  // the failed probe, and the card says how to install omaddons, with Copy.
+  function test_no_omaddons_on_path_shows_how_to_install_it_and_runs_nothing_else() {
+    make({ "retryDelaysMs": [60000] }, ["omaddons"])
+    tryVerify(function() { return service.phase === "missing" }, 500, "the probe found no omaddons")
+    compare(ProcessRegistry.launches.map(function(l) { return l.command[0] }), ["omaddons"])
+    compare([ProcessRegistry.detached.length, Quickshell.detachedCommands.length], [0, 0])
+    compare([service.phaseCard.kind, service.phaseCard.actions], ["missing", ["retry", "copy_command"]])
+    compare(service.phaseCard.sentence,
+      "The panel runs omaddons from your PATH and found none there. Install it with mise use -g github:a44-io/omaddons, then press Retry.")
+    wait(50)
+    compare(ProcessRegistry.launches.length, 1, "nothing else ran")
+  }
+
+  // A named path that no longer starts (mise moved its link) goes back to PATH once, at
+  // once, with no missing card; PATH answering recovers, and only PATH missing too is
+  // the missing card.
+  function test_a_named_path_that_fails_to_start_goes_back_to_path_once_and_recovers() {
+    readyNamed(shim)
+    var from = ProcessRegistry.launches.length
+    ProcessRegistry.missingPrograms = [shim]
+    service.refresh()
+    tryVerify(function() { return binariesFrom(from, "status").length === 2 }, 500, "a status through PATH")
+    compare(binariesFrom(from, "status"), [shim, "omaddons"])
+    compare([service.phase, service.phaseCard, service.binary], ["ok", null, "omaddons"])
+    // PATH answers and names the path that failed: the runs stay on PATH.
+    answer(lastRun("status"), statusEnvelope(0, {}, widgetInfo(shim)))
+    compare([service.phase, service.binary], ["ok", "omaddons"])
+    from = ProcessRegistry.launches.length
+    service.refresh()
+    answer(lastRun("status"), statusEnvelope(0, {}, widgetInfo(shim)))
+    compare(binariesFrom(from, "status"), ["omaddons"])
+    // Once: PATH missing as well is the missing card, retried through PATH.
+    ProcessRegistry.missingPrograms = [shim, "omaddons"]
+    service.refresh()
+    tryVerify(function() { return service.phase === "missing" }, 500, "the missing card")
+    compare(service.phaseCard.kind, "missing")
+  }
+
+  // omad-widget-plugin-3bcbh.3: an answer naming another doorbell directory stops the
+  // watcher and starts it on the new one; the same directory again moves nothing.
+  function test_another_doorbell_directory_moves_the_watcher() {
+    ready(0)
+    compare(bells().length, 1)
+    var watcher = bell().process
+    var other = "/home/fixture/.cache-elsewhere/omaddons"
+    service.refresh()
+    answer(lastRun("status"), statusEnvelope(0, {}, widgetInfo(null, other)))
+    compare(watcher.signals, [15])
+    tryVerify(function() { return bells().length === 2 }, 500, "the watcher started again")
+    compare(bells()[1].command, ["inotifywait", "-m", "-q", "-e", "moved_to", "--format", "%f", other])
+    verify(watcher.running)
+    // It rings as before.
+    var before = runs("status").length
+    watcher.emitStdout("doorbell.json")
+    wait(50)
+    compare(runs("status").length, before + 1)
+    answer(lastRun("status"), statusEnvelope(0, {}, widgetInfo(null, other)))
+    // An answer naming none (no Omarchy config directory) keeps it too.
+    service.refresh()
+    answer(lastRun("status"), statusEnvelope(0, {}, null))
+    wait(20)
+    compare([bells().length, watcher.signals], [2, [15]])
   }
 
   function test_a_doorbell_burst_is_one_status() {
@@ -241,6 +364,7 @@ TestCase {
 
   function test_a_missing_directory_retries_the_watcher() {
     make({ "bellMissingRetryMs": 30, "bellRetryMs": 30 })
+    answer(lastRun("status"), statusEnvelope(0))
     var first = bell()
     first.process.exit(1, 0)
     wait(80)
@@ -481,7 +605,7 @@ TestCase {
     service.refresh()
     answer(lastRun("status"), upgradedStatus([]))
     compare(ProcessRegistry.detached.length, 1)
-    compare(ProcessRegistry.detached[0].command, [Build.BINARY, "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"])
+    compare(ProcessRegistry.detached[0].command, ["omaddons", "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"])
     compare(selfUpdateToasts().length, 1)
     // The bar has not reloaded yet: never a second time for this version.
     service.refresh()
@@ -805,7 +929,8 @@ TestCase {
   // envelope has the report's keys at the top level and no `data` (M4-D34).
 
   readonly property string credentialFm: "fm-secrets-credential-file-mode"
-  readonly property string credentialPath: Build.CONTEXT.XDG_CONFIG_HOME + "/omaddons/credentials/github"
+  // Under the session's config directory (the stub's HOME, its default below it).
+  readonly property string credentialPath: "/home/fixture/.config/omaddons/credentials/github"
   readonly property string repairToken: "pc1:" + "a".repeat(64)
   readonly property string repairRun: "01M9RVNRVNRVNRVNRVNRVNRVNR"
 
@@ -906,7 +1031,7 @@ TestCase {
     compare(bound.command[bound.command.indexOf("--if-match") + 1], repairToken)
     verify(bound.command.indexOf("--dry-run") === -1)
     compare(bound.command.slice(4, 8), ["--reason", "Repair: the token file (bar widget)", "--progress", "json"])
-    compare(bound.environment, Build.CONTEXT)
+    compare(bound.environment, {})
     compare(runs("apply").length, 0, "a repair stores no plan")
     answer(bound, fixReport({}))
     compare(service.lastResult.line, "Repaired: chmod 0600 <config>/credentials/github (was 0644)")
@@ -1759,18 +1884,18 @@ TestCase {
     verify(!service.checking)
     compare(state.phase, "ok")
     compare(state.bar.badge, 4)
-    compare(state.binary, Build.BINARY)
+    compare(state.binary, "omaddons")
     compare(state.toolVersion, Build.TOOL_VERSION)
     compare(Object.keys(state.lanes).sort(), ["local", "mutation", "network"])
     compare(state.lanes.mutation, { "running": null, "queued": 0 })
     verify(state.lastRefreshMs > 0)
   }
 
-  function test_reinstall_is_detached_under_the_stamped_context() {
+  function test_reinstall_is_detached_in_the_session_environment() {
     compare(service.reinstallWidget(), "ok")
     compare(ProcessRegistry.detached.length, 1)
-    compare(ProcessRegistry.detached[0].command, [Build.BINARY, "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"])
-    compare(ProcessRegistry.detached[0].environment, Build.CONTEXT)
+    compare(ProcessRegistry.detached[0].command, ["omaddons", "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"])
+    compare(ProcessRegistry.detached[0].environment, {})
   }
 
   // ---- the clipboard (omad-phcg, UX-36)
@@ -1868,16 +1993,16 @@ TestCase {
     verify(lastRun("status").process.running, "the read is untouched")
   }
 
-  function test_show_summons_the_widget_by_its_build_id() {
+  function test_show_summons_the_widget_by_its_id() {
     var calls = []
     service.shell = { "summon": function(id, payload) { calls.push([id, payload]); return true } }
     compare(service.show("updates"), "ok")
-    compare(calls, [[Build.PLUGIN_ID, ""]])
+    compare(calls, [[Model.PLUGIN_ID, ""]])
     compare(service.requestedView, "updates")
     compare(Quickshell.detachedCommands, [])
     service.shell = null
     service.show("issues")
-    compare(Quickshell.detachedCommands, [["omarchy-shell", "shell", "summon", Build.PLUGIN_ID, "{}"]])
+    compare(Quickshell.detachedCommands, [["omarchy-shell", "shell", "summon", Model.PLUGIN_ID, "{}"]])
   }
 
   function test_the_service_is_in_the_store_until_destroyed() {

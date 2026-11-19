@@ -198,16 +198,16 @@ var COPY = {
   // The widget updating itself (1n2p.35), said as it starts: the bar reloads next.
   "widget.self_update": "Updating the widget for omaddons {version}: the bar reloads.",
   "settings.panel.binary": "omaddons binary",
-  "settings.panel.binary.about": "Empty runs the omaddons that installed the panel. A full path runs another build.",
+  "settings.panel.binary.about": "Empty runs the omaddons on your PATH. A full path runs another build.",
   "settings.panel.binary.edit": "Type a full path, then Enter. Esc keeps the one before.",
-  "settings.panel.binary.invalid": "A full path starts with /. Empty runs the one that installed the panel.",
+  "settings.panel.binary.invalid": "A full path starts with /. Empty runs the one on your PATH.",
   "settings.value.on": "On",
   "settings.value.off": "Off",
   "settings.value.px": "{n} px",
   "settings.value.seconds": "{n} s",
   "settings.value.minutes": "{n} min",
   "settings.value.minutes_seconds": "{n} min {s} s",
-  "settings.value.binary_stamped": "the one that installed the panel",
+  "settings.value.binary_found": "the one on your PATH",
   "settings.value.hours": "{n} h",
   "settings.section.omaddons": "omaddons",
   "settings.omaddons.reading": "Reading omaddons' settings…",
@@ -754,7 +754,9 @@ var COPY = {
 
   // The cards shown when omaddons cannot be used (1n2p.34, design doc §6.4).
   "card.missing.title": "Can't find omaddons",
-  "card.missing.sentence": "It was at {path}. Reinstall the panel from the omaddons you use now, then press Retry.",
+  "card.missing.sentence": "The panel runs omaddons from your PATH and found none there. Install it with {command}, then press Retry.",
+  // The `binary` setting names a path where nothing starts.
+  "card.missing.set": "Nothing starts at {path}, the binary set in the panel's settings. Install omaddons with {command}, or clear that setting, then press Retry.",
   "card.malformed.title": "omaddons didn't answer",
   "card.malformed.sentence": "It stopped before it said anything the panel can read.",
   "card.oversized.title": "omaddons didn't answer",

@@ -1,8 +1,8 @@
 // The widget's security scans (F7, pipeline step 2): text lints over every runtime file
 // under omarchy/ (tests aside) that fail when a code path goes around a mechanism that
 // keeps the widget safe. The mechanisms are the guarantees (PlainLabel, Model.buildArgv,
-// Model.cliArgv with its classifier, the stamped context, the preview flow, a plan's
-// apply only from Model.planFrom); the scans only catch an accidental way around them,
+// Model.cliArgv with its classifier, the session's own environment, the preview flow, a
+// plan's apply only from Model.planFrom); the scans only catch an accidental way around them,
 // so each one also runs over an in-memory copy with one planted violation, which it
 // must report. Checks 3b, 9 and 10 (M4-D28, M4-D48) hold the plan runner: an apply argv
 // only from the preview the widget just ran, no decision from a warning's text, and no
@@ -11,9 +11,11 @@
 // `doctor undo`, a repair runs only through its bound template from the row's own
 // `fix`, and its Yes always carries its preview's token. Check 12 keeps a purge out.
 // Check 14 keeps what the widget copies out of wl-copy's argv, which /proc shows every
-// local account (omad-widget-plugin-3bcbh.5).
-// The plugin-id literal (check 8) is scanned again, over the
-// embedded assets, in tests/omarchy_widget.rs.
+// local account (omad-widget-plugin-3bcbh.5). Check 15 keeps every child in the desktop
+// session's environment: nothing the widget holds (a setting, an answer) can set a
+// child's variables (omad-widget-plugin-3bcbh.3).
+// The plugin-id literal (check 8) is scanned again, over every QML and JS file under
+// omarchy/, in tests/omarchy_widget.rs.
 
 const { describe, expect, test } = require("bun:test")
 const fs = require("fs")
@@ -188,13 +190,13 @@ const ARGV_BUILDERS = { "toastArgv": "omarchy-notification-send", "errorToastArg
   "autoUpdateStoppedToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open",
   "copyArgv": "wl-copy", "pasteArgv": "wl-paste", "configEditorArgv": "omarchy-launch-config-editor" }
 // Two argv outside the three sources, allowed exactly as written: `show()`'s fallback
-// when the shell's summon facade is missing, and the self-reinstall (a fixed literal
-// under the stamped context, check 2).
-const SUMMON_FALLBACK = '["omarchy-shell", "shell", "summon", Build.PLUGIN_ID, "{}"]'
+// when the shell's summon facade is missing, and the self-reinstall (a fixed literal,
+// detached, check 2).
+const SUMMON_FALLBACK = '["omarchy-shell", "shell", "summon", Model.PLUGIN_ID, "{}"]'
 const REINSTALL = '[root.binary, "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"]'
 
-// 2. Process launching (M3-D2, M3-D3, M3-D7): no shell, no string-form launch, and
-// every omaddons process under the stamped context.
+// 2. Process launching (M3-D2, M3-D3): no shell, no string-form launch, an imperative
+// launch only detached, and the lane's child from the run's argv alone.
 function checkLaunching(files) {
   const out = []
   const forbidden = [/\bUtil\.execDetached\b/, /\bbar\.run\(/, /"bash"/, /"-c"/, /"sh"/, /execDetached\(\s*["'`]/]
@@ -207,15 +209,7 @@ function checkLaunching(files) {
     const arg = c.args.slice(1).trimStart()
     if (!arg.startsWith("[") && !/^Model\.\w+\(/.test(arg)) out.push(violation(c.file, c.line, "execDetached takes an argv array or a Model argv builder"))
   }
-  // Process blocks: an omaddons command (the binary, or the lane's argv) needs the context.
-  for (const c of calls(files, /(^|\s)Process\s*\{/m, qmlNames(files))) {
-    const command = (c.args.match(/^\s*command:\s*(.*)$/m) || [])[1]
-    if (command && /\b(binary|argv)\b/.test(command) && !/^\s*environment:\s*Build\.CONTEXT\s*$/m.test(c.args)) {
-      out.push(violation(c.file, c.line, "an omaddons Process without environment: Build.CONTEXT"))
-    }
-  }
-  // Imperative launches: `x.command = …` needs `x.environment = Build.CONTEXT` and
-  // `x.startDetached()` in the same function.
+  // Imperative launches: `x.command = …` needs `x.startDetached()` in the same function.
   for (const name of qmlNames(files)) {
     const code = codeOf(files[name])
     const re = /(\w+)\.command\s*=/g
@@ -223,21 +217,49 @@ function checkLaunching(files) {
     while ((m = re.exec(code))) {
       const fn = code.slice(code.lastIndexOf("function ", m.index))
       const body = balanced(fn, fn.indexOf("{"))
-      if (!body.includes(m[1] + ".environment = Build.CONTEXT") || !body.includes(m[1] + ".startDetached()")) {
-        out.push(violation(name, lineAt(code, m.index), m[1] + " runs without the stamped context or startDetached()"))
+      if (!body.includes(m[1] + ".startDetached()")) {
+        out.push(violation(name, lineAt(code, m.index), m[1] + " runs without startDetached()"))
       }
     }
   }
-  // The lane: a child created with the run's argv and env, which come from argvOf
-  // under Build.CONTEXT.
+  // The lane: a child created with the run's argv (and whether it takes standard input),
+  // nothing else.
   for (const c of calls(files, /createObject\(/, qmlNames(files))) {
     if (!/"command"/.test(c.args)) continue
-    if (!/"command":\s*argv,\s*"environment":\s*env\s*\}/.test(c.args)) out.push(violation(c.file, c.line, "a child process without the run's env"))
+    if (!/^\(lane, \{ "stdinEnabled": input !== null, "command": argv \}\)$/.test(c.args)) {
+      out.push(violation(c.file, c.line, "a child process from more than the run's argv"))
+    }
   }
-  const service = codeOf(files["Service.qml"] || "")
-  const argvOf = service.slice(service.indexOf("function argvOf("))
-  if (!/"context":\s*Build\.CONTEXT/.test(balanced(argvOf, argvOf.indexOf("{")))) {
-    out.push(violation("Service.qml", lineAt(service, service.indexOf("function argvOf(")), "argvOf builds without Build.CONTEXT"))
+  return out
+}
+
+// 15. The environment (omad-widget-plugin-3bcbh.3): every child inherits the desktop
+// session's environment as it is. No runtime file sets a process's `environment` or
+// `clearEnvironment` (a property, an assignment or a createObject key), and the argv
+// builders return none, so nothing the widget holds (a setting, an answer, a pasted list)
+// can set a child's variables: no LD_PRELOAD, no PATH, no HOME of its choosing.
+const ENV_PROPERTIES = /\b(environment|clearEnvironment)\b/
+function checkEnvironment(files) {
+  const out = []
+  for (const name of qmlNames(files)) {
+    for (const l of lines(files[name])) {
+      if (/^\s*(environment|clearEnvironment)\s*:/.test(l.text) || /\.(environment|clearEnvironment)\s*=[^=]/.test(l.text)) {
+        out.push(violation(name, l.n, "a process environment set by the widget: " + l.text.trim().slice(0, 60)))
+      }
+    }
+  }
+  for (const c of calls(files, /createObject\(/, qmlNames(files))) {
+    if (/"(environment|clearEnvironment)"\s*:/.test(c.args)) out.push(violation(c.file, c.line, "a child created with an environment"))
+  }
+  // Model.js names neither, and its builders return an argv (and standard input), no env.
+  const model = files["Model.js"] || ""
+  for (const l of lines(model)) {
+    if (ENV_PROPERTIES.test(l.text)) out.push(violation("Model.js", l.n, "Model.js names a process environment"))
+  }
+  for (const name of ["buildArgv", "cliArgv"]) {
+    const fn = functionBody(model, name)
+    if (!fn) out.push(violation("Model.js", 1, name + " is missing"))
+    else if (/\benv\s*:/.test(fn.body)) out.push(violation("Model.js", fn.line, name + " returns an environment"))
   }
   return out
 }
@@ -293,9 +315,9 @@ function checkProvenance(files) {
     }
   }
   const service = codeOf(files["Service.qml"] || "")
-  // The lane runs argvOf's build: its argv, its env and its standard input (1n2p.37).
+  // The lane runs argvOf's build: its argv and its standard input (1n2p.37).
   for (const c of calls(files, /\.run\((?=r,)/, ["Service.qml"])) {
-    if (!c.args.startsWith("(r, built.argv, built.env, built.stdin)")) out.push(violation("Service.qml", c.line, "a lane runs an argv not from argvOf"))
+    if (!c.args.startsWith("(r, built.argv, built.stdin)")) out.push(violation("Service.qml", c.line, "a lane runs an argv not from argvOf"))
   }
   if (!/var built = null[\s\S]*?built = argvOf\(r\)/.test(service.slice(service.indexOf("function pump(")))) {
     out.push(violation("Service.qml", 1, "pump's argv is not argvOf's"))
@@ -800,7 +822,7 @@ function checkNotifications(files) {
     for (const field of ERROR_FIELDS) {
       if (new RegExp("\\b" + field + "\\b").test(c.args)) out.push(violation(c.file, c.line, c.match[1] + " is passed " + field))
     }
-    if (c.match[1] === "errorToastArgv" && !/^\(Model\.errorFacts\(\w+\), Build\.PLUGIN_ID\)$/.test(c.args)) {
+    if (c.match[1] === "errorToastArgv" && !/^\(Model\.errorFacts\(\w+\), Model\.PLUGIN_ID\)$/.test(c.args)) {
       out.push(violation(c.file, c.line, "errorToastArgv takes Model.errorFacts(…) only"))
     }
     if (c.match[1] === "digestToastArgv" && !/^\(Model\.errorFacts\(\w+\), /.test(c.args)) {
@@ -810,27 +832,33 @@ function checkNotifications(files) {
   return out
 }
 
-// 8. The plugin id (E1): every use derives from Build.PLUGIN_ID, so the debug checkpoint
-// widget gets its own service, IPC handler and panel.
+// 8. The plugin id (E1, omad-widget-plugin-3bcbh.3): one constant, Model.PLUGIN_ID,
+// written once as its manifest's id; every use derives from it, so the debug checkpoint
+// widget, whose id `omarchy install` stamps there, gets its own service, IPC handler and
+// panel.
+const ID_LINE = "var PLUGIN_ID = " + JSON.stringify(ID)
 function checkPluginId(files) {
   const out = []
   const literal = new RegExp(ID.replace(/\./g, "\\.") + "(?![\\w-])")
+  let declared = 0
   for (const name of Object.keys(files)) {
     for (const l of lines(files[name])) {
-      if (literal.test(l.text)) out.push(violation(name, l.n, "a literal plugin id (use Build.PLUGIN_ID)"))
+      if (name === "Model.js" && l.text === ID_LINE) declared++
+      else if (literal.test(l.text)) out.push(violation(name, l.n, "a literal plugin id (use Model.PLUGIN_ID)"))
       for (const m of l.text.matchAll(/\b(serviceFor|summon)\(\s*([^,)]*)/g)) {
-        if (m[2].trim() !== "Build.PLUGIN_ID") out.push(violation(name, l.n, m[1] + " takes Build.PLUGIN_ID"))
+        if (m[2].trim() !== "Model.PLUGIN_ID") out.push(violation(name, l.n, m[1] + " takes Model.PLUGIN_ID"))
       }
       const prop = l.text.match(/^\s*(moduleName|ipcTarget):\s*(.*)$/)
-      if (prop && prop[2].trim() !== "Build.PLUGIN_ID") out.push(violation(name, l.n, prop[1] + " is Build.PLUGIN_ID"))
+      if (prop && prop[2].trim() !== "Model.PLUGIN_ID") out.push(violation(name, l.n, prop[1] + " is Model.PLUGIN_ID"))
     }
   }
+  if (declared !== 1) out.push(violation("Model.js", 1, "Model.js writes " + ID_LINE + " " + declared + " times, not once"))
   for (const c of calls(files, /IpcHandler\s*\{/, qmlNames(files))) {
     const target = (c.args.match(/^\s*target:\s*(.*)$/m) || [])[1]
-    if (!target || target.trim() !== "Build.PLUGIN_ID") out.push(violation(c.file, c.line, "the IPC target is Build.PLUGIN_ID"))
+    if (!target || target.trim() !== "Model.PLUGIN_ID") out.push(violation(c.file, c.line, "the IPC target is Model.PLUGIN_ID"))
   }
   for (const c of calls(files, /\bModel\.(errorToastArgv|digestToastArgv|updateToastArgv|resultToastArgv|autoUpdateToastArgv|autoUpdateStoppedToastArgv)\(/, qmlNames(files))) {
-    if (!/, Build\.PLUGIN_ID\)$/.test(c.args)) out.push(violation(c.file, c.line, c.match[1] + " summons Build.PLUGIN_ID"))
+    if (!/, Model\.PLUGIN_ID\)$/.test(c.args)) out.push(violation(c.file, c.line, c.match[1] + " summons Model.PLUGIN_ID"))
   }
   return out
 }
@@ -844,7 +872,7 @@ function checkPluginId(files) {
 // sits in an argv (omad-widget-plugin-3bcbh.5, check 14). Nothing else opens or writes a
 // child's standard input.
 const STDIN_LINES = [
-  /^\s*proc = processComponent\.createObject\(lane, \{ "stdinEnabled": input !== null, "command": argv, "environment": env \}\)$/,
+  /^\s*proc = processComponent\.createObject\(lane, \{ "stdinEnabled": input !== null, "command": argv \}\)$/,
   /^\s*child\.write\(input\)$/,
   /^\s*child\.stdinEnabled = false$/,
 ]
@@ -873,8 +901,8 @@ function checkStdin(files) {
     }
   }
   const service = codeOf(files["Service.qml"] || "")
-  const lane = service.slice(service.indexOf("function run(r, argv, env, stdin)"))
-  if (service.indexOf("function run(r, argv, env, stdin)") < 0 || !/^\s*input = typeof stdin === "string" \? stdin : null$/m.test(balanced(lane, lane.indexOf("{")))) {
+  const lane = service.slice(service.indexOf("function run(r, argv, stdin)"))
+  if (service.indexOf("function run(r, argv, stdin)") < 0 || !/^\s*input = typeof stdin === "string" \? stdin : null$/m.test(balanced(lane, lane.indexOf("{")))) {
     out.push(violation("Service.qml", 1, "the lane's input is not its run's stdin"))
   }
   if ((service.match(/\binput = /g) || []).length !== 2 || !/^\s*input = null$/m.test(service)) {
@@ -938,6 +966,7 @@ const CHECKS = [
   ["12. irreversible stays out", checkIrreversible],
   ["13. standard input", checkStdin],
   ["14. the clipboard", checkClipboard],
+  ["15. the environment", checkEnvironment],
 ]
 
 // ------------------------------------------------------------------ the tests
@@ -954,6 +983,18 @@ describe("the scans cover the finished widget", () => {
       expect(check(REAL)).toEqual([])
     })
   }
+
+  // omad-widget-plugin-3bcbh.3: the widget finds its binary, its environment and its
+  // doorbell itself, and its id is Model.PLUGIN_ID, so a widget cloned with no Build.js
+  // needs it only for its build's version (omad-widget-plugin-3bcbh.4 retires that too).
+  test("Build.js gives the widget nothing but its build's version", () => {
+    const read = new Set()
+    for (const [name, text] of Object.entries(REAL)) {
+      for (const m of codeOf(text).matchAll(/\bBuild\.([A-Za-z_]\w*)/g)) if (m[1] !== "js") read.add(name + ": Build." + m[1])
+      for (const m of codeOf(text).matchAll(/\bbuild\.([A-Za-z_]\w*)/g)) read.add(name + ": build." + m[1])
+    }
+    expect([...read].filter((r) => !/\.TOOL_VERSION$/.test(r))).toEqual([])
+  })
 })
 
 // Each check over a copy with one violation planted, which it must report.
@@ -964,14 +1005,17 @@ const PLANTED = [
     plant(REAL, "ui/AddonRow.qml", "  id: root\n", "  Text {\n    textFormat: Text.PlainText\n    text: root.title\n  }\n"), /shared component shows a string/],
   ["1. rendering", checkRendering, "PlainLabel exposing textFormat",
     plant(REAL, "PlainLabel.qml", "  property alias text: label.text\n", "  property alias textFormat: label.textFormat\n"), /lets a user set textFormat/],
-  ["2. process launching", checkLaunching, "an omaddons Process without environment",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: [root.binary, "status"]\n  }\n'), /without environment: Build\.CONTEXT/],
+  ["2. process launching", checkLaunching, "an imperative launch that is not detached",
+    replaced(REAL, "Service.qml", "    reinstallProc.startDetached()\n", "    reinstallProc.running = true\n"), /reinstallProc runs without startDetached\(\)/],
+  ["2. process launching", checkLaunching, "a lane child given more than its argv",
+    replaced(REAL, "Service.qml", '{ "stdinEnabled": input !== null, "command": argv }', '{ "stdinEnabled": input !== null, "command": argv, "workingDirectory": r.label }'),
+    /a child process from more than the run's argv/],
   ["2. process launching", checkLaunching, "a string-form notification",
     plant(REAL, "Service.qml", "  function afterStatus() {\n", '    Quickshell.execDetached("omarchy-notification-send omaddons hi")\n'), /a string|argv array/],
   ["2. process launching", checkLaunching, "a shell",
     plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["bash", "-c", "xdg-open ~"])\n'), /through a shell/],
   ["3. argv provenance", checkProvenance, "a hand-built omaddons argv",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: [root.binary, "update"]\n    environment: Build.CONTEXT\n  }\n'), /no allowed source/],
+    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: [root.binary, "update"]\n  }\n'), /no allowed source/],
   // omad-phcg: a copy runs as a Process with its builder's argv, never a literal one.
   ["3. argv provenance", checkProvenance, "a copy through a Process with a literal argv",
     plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: ["wl-copy", "--", root.binary]\n  }\n'), /a Process command from no allowed source: \["wl-copy"/],
@@ -994,16 +1038,21 @@ const PLANTED = [
     plant(REAL, "views/InstalledView.qml", "Item {\n", '  function planted() { svc.mutation({ "template": "remove" }) }\n'), /around run/],
   ["7. notifications", checkNotifications, "an error's message passed to the toast",
     plant(REAL, "Service.qml", "  function afterStatus() {\n",
-      '    Quickshell.execDetached(Model.errorToastArgv({ "names": [entry.message], "counts": [1], "targets": [] }, Build.PLUGIN_ID))\n'), /is passed message|Model\.errorFacts/],
+      '    Quickshell.execDetached(Model.errorToastArgv({ "names": [entry.message], "counts": [1], "targets": [] }, Model.PLUGIN_ID))\n'), /is passed message|Model\.errorFacts/],
   ["7. notifications", checkNotifications, "the builder reading a message",
     plant(REAL, "Model.js", "function errorToastArgv(facts, pluginId) {\n", "  var leak = facts.message\n"), /errorToastArgv reads message/],
   ["7. notifications", checkNotifications, "the digest reading a stack",
     plant(REAL, "Model.js", "function digestToastArgv(facts, updates, kinds, pluginId) {\n", "  var leak = facts.stack\n"), /digestToastArgv reads stack/],
   ["7. notifications", checkNotifications, "the digest given hand-made facts",
     plant(REAL, "Service.qml", "  function afterStatus() {\n",
-      '    Quickshell.execDetached(Model.digestToastArgv({ "names": [entry.addon], "counts": [1] }, null, null, Build.PLUGIN_ID))\n'), /digestToastArgv takes Model\.errorFacts/],
+      '    Quickshell.execDetached(Model.digestToastArgv({ "names": [entry.addon], "counts": [1] }, null, null, Model.PLUGIN_ID))\n'), /digestToastArgv takes Model\.errorFacts/],
   ["8. the plugin id", checkPluginId, "a literal id in serviceFor",
-    plant(REAL, "BarWidget.qml", "  ipcTarget: Build.PLUGIN_ID\n", '  readonly property var planted: shell.serviceFor("' + ID + '")\n'), /literal plugin id|serviceFor takes Build\.PLUGIN_ID/],
+    plant(REAL, "BarWidget.qml", "  ipcTarget: Model.PLUGIN_ID\n", '  readonly property var planted: shell.serviceFor("' + ID + '")\n'), /literal plugin id|serviceFor takes Model\.PLUGIN_ID/],
+  // omad-widget-plugin-3bcbh.3: the id is written once, in Model.js's constant.
+  ["8. the plugin id", checkPluginId, "a second constant holding the id",
+    plant(REAL, "Shared.js", ".import \"Words.js\" as Words\n", "var OUR_ID = " + JSON.stringify(ID) + "\n"), /Shared\.js:\d+: a literal plugin id/],
+  ["8. the plugin id", checkPluginId, "the constant gone",
+    replaced(REAL, "Model.js", ID_LINE + "\n", 'var PLUGIN_ID = ["a44", "omaddons"].join(".")\n'), /writes var PLUGIN_ID = .* 0 times, not once/],
   ["3b. apply from its plan", checkApplyProvenance, "a hand-built apply argv",
     plant(REAL, "Service.qml", "  function afterStatus() {\n", '    mutation({ "resource": "x", "cli": ["omaddons", "apply", "01M8Q2ZZZZZZZZZZZZZZZZZZZZ"], "label": "x" })\n'),
     /apply argv outside Model\.planFrom/],
@@ -1098,7 +1147,7 @@ const PLANTED = [
     plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: ["wl-paste", "--primary"]\n  }\n'),
     /a Process command from no allowed source: \["wl-paste"/],
   ["3. argv provenance", checkProvenance, "a lane run without argvOf's standard input",
-    replaced(REAL, "Service.qml", "laneNamed(name).run(r, built.argv, built.env, built.stdin)", "laneNamed(name).run(r, built.argv, built.env, r.label)"),
+    replaced(REAL, "Service.qml", "laneNamed(name).run(r, built.argv, built.stdin)", "laneNamed(name).run(r, built.argv, r.label)"),
     /a lane runs an argv not from argvOf/],
   ["13. standard input", checkStdin, "a Process given standard input outside the lane",
     plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    planted.stdinEnabled = true\n    planted.write(root.filter)\n'),
@@ -1129,6 +1178,22 @@ const PLANTED = [
   ["14. the clipboard", checkClipboard, "a copier that no longer writes its text",
     replaced(REAL, "Service.qml", "          child.write(copier.text)\n", ""),
     /the copier does not write its text to wl-copy's standard input/],
+  // omad-widget-plugin-3bcbh.3: a child's variables never come from the widget's data.
+  ["15. the environment", checkEnvironment, "a Process whose environment comes from a setting",
+    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n", '    environment: ({ "LD_PRELOAD": root.settings.binary })\n'),
+    /Service\.qml:\d+: a process environment set by the widget: environment: \(\{ "LD_PRELOAD"/],
+  ["15. the environment", checkEnvironment, "the reinstall given an answer's home",
+    replaced(REAL, "Service.qml", "    reinstallProc.startDetached()\n",
+      '    reinstallProc.environment = { "HOME": root.widgetInfo.home }\n    reinstallProc.startDetached()\n'),
+    /a process environment set by the widget: reinstallProc\.environment = /],
+  ["15. the environment", checkEnvironment, "the lane's child created with the request's variables",
+    replaced(REAL, "Service.qml", '{ "stdinEnabled": input !== null, "command": argv }', '{ "stdinEnabled": input !== null, "command": argv, "environment": r.spec.env }'),
+    /a child created with an environment/],
+  ["15. the environment", checkEnvironment, "a child clearing the session's environment",
+    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n", "    clearEnvironment: true\n"),
+    /a process environment set by the widget: clearEnvironment: true/],
+  ["15. the environment", checkEnvironment, "buildArgv returning variables from its options",
+    replaced(REAL, "Model.js", "concat(filled) }", "concat(filled), env: o.env }"), /buildArgv returns an environment/],
 ]
 
 describe("each scan catches its planted violation", () => {
@@ -1143,8 +1208,7 @@ describe("each scan catches its planted violation", () => {
 
 // The mechanisms the scans stand guard over, at run time.
 describe("the mechanisms behind the scans", () => {
-  const CONTEXT = { HOME: "/h", XDG_CONFIG_HOME: "/h/c", XDG_STATE_HOME: "/h/s", XDG_CACHE_HOME: "/h/k", XDG_DATA_HOME: "/h/d" }
-  const opts = { binary: "/opt/omaddons", label: "Test", context: CONTEXT }
+  const opts = { binary: "/opt/omaddons", label: "Test" }
   // Every slot `x`, except those with a grammar of their own: a failure-mode id
   // (`fm-x`), a folder (`/x`), a run's id (a whole ULID), a channel (`beta`), a release
   // id (`gh:o/x@v1`) and a revision (`1`).
@@ -1213,14 +1277,18 @@ describe("the mechanisms behind the scans", () => {
     expect(M.resultUndo({ commands: [{ action: "undo", argv: argv, runnable: false }] })).toBeNull()
   })
 
-  test("every built argv runs under the stamped context", () => {
+  // omad-widget-plugin-3bcbh.3: a build is its argv (and a pasted list's input), never
+  // an environment, whatever the options hold.
+  test("no built argv carries an environment: the child inherits the session's", () => {
+    const planted = Object.assign({ context: { HOME: "/tmp/x" }, env: { LD_PRELOAD: "/tmp/x.so" }, environment: { PATH: "/tmp" } }, opts)
     for (const name of Object.keys(M.COMMANDS)) {
       // A `bind` template runs with its view's token, a pasted list's with the list.
       const bound = M.COMMANDS[name].bind ? { token: "pc1:" + "0".repeat(64) } : {}
       const input = M.COMMANDS[name].stdin ? { stdin: LIST } : {}
-      const built = M.buildArgv(name, slotsOf(name), Object.assign({ preview: needsPreview(name) }, bound, input, opts))
-      expect(built.env).toEqual(CONTEXT)
+      const built = M.buildArgv(name, slotsOf(name), Object.assign({ preview: needsPreview(name) }, bound, input, planted))
+      expect([name, Object.keys(built).filter((k) => k !== "stdin")]).toEqual([name, ["argv"]])
     }
+    expect(Object.keys(M.cliArgv(["omaddons", "list"], planted))).toEqual(["argv"])
   })
 
   // 1n2p.37: standard input is a checked addon list, for sync -'s preview alone.

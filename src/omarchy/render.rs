@@ -1,6 +1,9 @@
 //! One install's widget (M3-D7): the embedded files with the manifest's `version` and
-//! `id` stamped, and a generated `Build.js` holding the installing binary, the tool
-//! version, the plugin id and the data context every widget command must run under.
+//! `id` stamped (the id in Model.js's `PLUGIN_ID` too), and a generated `Build.js`
+//! holding the installing binary, the tool version, the plugin id and the data context it
+//! was installed for. The widget reads only the version and the content hash from it: it
+//! finds omaddons, runs it in the desktop session's environment and watches the doorbell
+//! `status` names (omad-widget-plugin-3bcbh.3); `status` compares the context.
 //!
 //! The code lives in a folder named for a hash of its bytes, `Build.js` included
 //! (`r-<16 hex>/`), and the manifest's entry points are stamped to point into it.
@@ -130,8 +133,8 @@ pub fn render(binary: &Path, ctx: &Context, plugin_id: &str) -> Result<Rendered>
     let mut logical: Vec<(String, Vec<u8>)> = ASSETS
         .iter()
         .filter(|(path, _)| *path != MANIFEST)
-        .map(|(path, text)| ((*path).to_owned(), text.as_bytes().to_vec()))
-        .collect();
+        .map(|(path, text)| Ok(((*path).to_owned(), stamped_code(path, text, plugin_id)?)))
+        .collect::<Result<_>>()?;
     logical.push((MANIFEST.to_owned(), manifest_bytes));
     logical.sort();
 
@@ -173,6 +176,40 @@ pub fn render(binary: &Path, ctx: &Context, plugin_id: &str) -> Result<Rendered>
 /// with an installed widget's `CONTENT_SHA256`, on every call (E4).
 pub fn content_sha256(ctx: &Context, plugin_id: &str) -> Result<String> {
     content_hash(ctx, &pretty(&stamped_manifest(plugin_id)?)?)
+}
+
+/// The code file that writes the widget's id, and the start of the one line that does
+/// (the widget's security scan, check 8).
+const ID_FILE: &str = "Model.js";
+const ID_LINE: &str = "var PLUGIN_ID = ";
+
+/// The embedded file `text` at `path`, with `plugin_id` written into Model.js's
+/// `PLUGIN_ID` (omad-widget-plugin-3bcbh.3): the widget's code names its id there alone,
+/// as its manifest does, so a debug checkpoint widget gets its own service, IPC target
+/// and panel. Every other file, and Model.js under the widget's own id, is unchanged.
+fn stamped_code(path: &str, text: &str, plugin_id: &str) -> Result<Vec<u8>> {
+    if path != ID_FILE {
+        return Ok(text.as_bytes().to_vec());
+    }
+    let id = js_safe(&Value::String(plugin_id.to_owned()).to_string());
+    let mut found = 0;
+    let stamped: String = text
+        .split_inclusive('\n')
+        .map(|line| {
+            if line.starts_with(ID_LINE) {
+                found += 1;
+                format!("{ID_LINE}{id}\n")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    if found != 1 {
+        return Err(Error::internal(format!(
+            "the widget's {ID_FILE} writes its id {found} times, not once"
+        )));
+    }
+    Ok(stamped.into_bytes())
 }
 
 /// The embedded manifest with this build's `version` and `plugin_id` stamped.
@@ -501,6 +538,46 @@ mod tests {
             "\nvar TOOL_VERSION = \"{}\"\n",
             env!("CARGO_PKG_VERSION")
         )));
+        // The code names its id in Model.js alone (omad-widget-plugin-3bcbh.3): stamped
+        // there for the checkpoint, the one line that differs from the embedded file.
+        let asset = ASSETS.iter().find(|(p, _)| *p == "Model.js").unwrap().1;
+        let model = std::str::from_utf8(file(&r, "Model.js")).unwrap();
+        let differing: Vec<(&str, &str)> = asset
+            .lines()
+            .zip(model.lines())
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(
+            differing,
+            vec![(
+                "var PLUGIN_ID = \"a44.omaddons\"",
+                "var PLUGIN_ID = \"a44.omaddons-checkpoint\""
+            )]
+        );
+        assert_eq!(asset.lines().count(), model.lines().count());
+        // Under the widget's own id, Model.js is the embedded file, byte for byte.
+        let own = render(&binary(), &ctx("/r"), "a44.omaddons").unwrap();
+        assert_eq!(file(&own, "Model.js"), asset.as_bytes());
+    }
+
+    /// Model.js writes its id on exactly one line, or the render refuses.
+    #[test]
+    fn the_id_is_stamped_on_its_one_line_or_refused() {
+        let one = "a\nvar PLUGIN_ID = \"a44.omaddons\"\nb\n";
+        assert_eq!(
+            stamped_code("Model.js", one, "a44.omaddons-x").unwrap(),
+            b"a\nvar PLUGIN_ID = \"a44.omaddons-x\"\nb\n"
+        );
+        assert_eq!(
+            stamped_code("View.js", one, "a44.omaddons-x").unwrap(),
+            one.as_bytes()
+        );
+        for text in ["a\n", "var PLUGIN_ID = \"x\"\nvar PLUGIN_ID = \"y\"\n"] {
+            assert!(
+                stamped_code("Model.js", text, "a44.omaddons-x").is_err(),
+                "{text}"
+            );
+        }
     }
 
     /// Another context is another `CONTEXT` and another hash.

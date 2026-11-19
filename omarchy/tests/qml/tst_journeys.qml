@@ -731,7 +731,7 @@ TestCase {
     if (mouse) click(child("addClient", page))
     else keyClick(Qt.Key_Return)
     var added = answerChange("targets", "targets-add")
-    compare(words(added.command), ["targets", "add", "--", Build.CONTEXT.HOME + "/pserver"])
+    compare(words(added.command), ["targets", "add", "--", Quickshell.env("HOME") + "/pserver"])
     compare(resultLine(), "Added Wrath 3.3.5a private server")
     settle(quiet("status-added"))
     tryVerify(function() { return frame.topPage === null }, 1000, "the page goes back once the client is here")
