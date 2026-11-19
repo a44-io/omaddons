@@ -1009,6 +1009,30 @@ fn r6_every_offered_command_parses_and_each_rollback_and_unskip_does_what_it_say
     }
 }
 
+/// omad-4ec21 (design 5.2): an old error that is new again has no link and no way back,
+/// and the view still ends with how to acknowledge it; once dismissed, it offers nothing.
+#[test]
+fn the_errors_view_ends_with_the_dismissal_only_while_errors_are_new() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed(&[foo_error(12, 5, a_second_later(), 2)]);
+    log.env(&s);
+    log.step("the error that was there at the first read: no link, the dismissal offered");
+    let text = errors_text(&s);
+    log.note(&text);
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.starts_with("Next: "))
+            .collect::<Vec<_>>(),
+        ["Next: omaddons errors dismiss -t retail"],
+        "{text}"
+    );
+    log.step("dismissed: nothing new, nothing offered");
+    s.ok(&["errors", "dismiss", "-t", "retail"]);
+    let text = errors_text(&s);
+    log.note(&text);
+    assert!(!text.contains("Next: "), "{text}");
+}
+
 // ---------------------------------------------------------------------------------------
 // RG-49: the README's examples for slice 2, run on a synthetic home.
 
@@ -1136,6 +1160,7 @@ fn readme_the_errors_example_and_its_way_back_run_as_shown() {
         format!(
             "Next: omaddons skip Foo --back --tx {tx} -t retail    # go back to v1, and pass over v2"
         ),
+        "Next: omaddons errors dismiss -t retail".to_owned(),
     ];
     let text = words(&log, &s, &["errors", "-t", "retail"]);
     log.assert_eq(

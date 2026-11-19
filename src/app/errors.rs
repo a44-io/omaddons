@@ -1147,6 +1147,15 @@ impl Outcome for ErrorsOutcome {
                 None => writeln!(w, "Next: {}", c.command())?,
             }
         }
+        // Acknowledging what was read, per client with new errors (design 5.1 and 5.2):
+        // after the ways back, so an old error with no link still ends with a next step.
+        for c in self
+            .commands
+            .iter()
+            .filter(|c| c.action() == Action::DismissErrors)
+        {
+            writeln!(w, "Next: {}", c.command())?;
+        }
         for c in self
             .commands
             .iter()

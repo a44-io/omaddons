@@ -1693,6 +1693,7 @@ retail (12.1.5.70391, mainline) · BugGrabber · 3 errors from 3 addons · 2 new
 era (1.15.8.64907, vanilla) · no Lua errors are captured: BugGrabber is not installed
 Update them: omaddons update Foo -t retail
 Next: omaddons skip DBM --back --tx 01M8Q2VA3H7KQ2D9W4XB6FJNRT -t retail    # go back to 12.1.21, and pass over 12.1.22
+Next: omaddons errors dismiss -t retail
 Capture Lua errors: omaddons install buggrabber -t era
 ```
 
