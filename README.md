@@ -1675,19 +1675,28 @@ Which addon most likely throws Lua errors, how often, since when, and whether an
 
 ```text
 $ omaddons errors
-retail (12.1.5.70391, mainline) · BugGrabber · 4 errors from 4 addons · 2 new
-  WeakAuras   57×  1 new  last 2026-10-15 17:30  likely source (custom code)
+retail (12.1.5.70391, mainline) · BugGrabber · 3 errors from 3 addons · 2 new
+  DBM        7×  1 new  last 2026-11-13 20:14  likely source  current
+    DBM-Core/DBM-Core.lua:4411: attempt to call a nil value
+      appeared between 2026-11-13 15:40 and 2026-11-13 20:14, in the first session after update 01M8Q2VA3H7KQ2D9W4XB6FJNRT (2026-11-13 16:02)
+      that update replaced DBM 12.1.21 → 12.1.22 · likely
+      DBM-Core/DBM-Core.lua:4411: in function 'StartTimer'
+  Foo        3×  1 new  last 2026-11-13 18:30  likely source  1.2 → 1.3 available (may fix it)
+    Foo/core.lua:12: attempt to index a nil value (field 'db')
+      already there when omaddons first read this file (2026-11-02 21:12): its age is unknown
+      Foo/core.lua:12: in function 'Refresh'
+  WeakAuras  57×  last 2026-10-15 17:30  likely source (custom code)
     [custom code]:4: attempt to perform arithmetic on a nil value
       [custom code]
       … (1 C frame)
       WeakAuras/WeakAuras.lua:4512: in function 'RunTrigger'
-  Foo         3×  last 2026-10-13 18:30  likely source  1.2 → 1.3 available (may fix it)
-    Foo/core.lua:12: attempt to index a nil value (field 'db')
-      Foo/core.lua:12: in function 'Refresh'
 era (1.15.8.64907, vanilla) · no Lua errors are captured: BugGrabber is not installed
 Update them: omaddons update Foo -t retail
+Next: omaddons skip DBM --back --tx 01M8Q2VA3H7KQ2D9W4XB6FJNRT -t retail    # go back to 12.1.21, and pass over 12.1.22
 Capture Lua errors: omaddons install buggrabber -t era
 ```
+
+Under each new error, a line says when it began. DBM's appeared after omaddons last saw the file without it, in the first session after its update, so that update is named, graded, and offered with its way back. Foo's was already there when omaddons first read the file, so its age is unknown and no change is named for it. Both are explained below.
 
 A client without BugGrabber is offered the catalog's build for its family (`omaddons install buggrabber -t <id>`; see [Variants](#the-built-in-catalog)). Where no build is known (4.3.4 and 5.4.8), the line and the client's `capture_note` say "no Lua errors are captured: no BugGrabber build for this client is known", and no command is offered. `omaddons install buggrabber bugsack` adds the BugSack display too.
 
@@ -1709,7 +1718,7 @@ A client without BugGrabber is offered the catalog's build for its family (`omad
 
 **When each began (`first_seen`).** Every `errors` run records what it read whole in the errors ledger, whatever the filters show, and each error says what it knows: `observed` when a complete read without it was followed by one with it (`onset_after_at`, `onset_by_at` and `observed_at` bound it: "appeared between … and …"); `baseline` when it was there at the first complete read (`first_read`), after the file was reset or put back (`new_generation`), or while a file could not be read whole (`coverage_incomplete`), its age unknown; `related` when an error of its shape (the same message at another line) was observed first (`related_fingerprint`), so it is not treated as new; `unknown` when no complete read vouched for its absence (`absence_unproven`), or this read was not recorded (`ledger_busy`, `ledger_unavailable`, `ledger_full`). A new error's line says which, in words. Errors other players sent are never recorded. `errors dismiss` records nothing.
 
-**The change before it (`after_change`).** Each error omaddons watched appear is judged once, from history and BugGrabber's session numbers, for the change most plausibly before it: evidence of order, never of cause (`… in the first session after update <tx> (<when>)`, `that update replaced Foo 1.2 → 1.3 · likely`, then a line per weakening fact). `after_change` has `tx`, `run`, `kind`, `at`, `actor`; `relation` (`own`: it replaced the erroring addon; `in_stack`: a folder of the error's stack; `dependency`: a folder one of the two requires; `none`: only the order in time, for the newest change within 24 hours); `confidence` (`high` "likely": its own change, the first session after, all known; `medium` "possible"; `low` "weak", as when first seen in the session running during the change); `state` (`current`; history only: `expired` 30 days after it began, `database_replaced` once the file was reset or put back); `algorithm`, `judged_at`; `changed` per addon (`change`, `from_version`, `to_version`, `from_release`, `to_release`, `still_installed`); `evidence` (`gap_s` to `onset_by_at`, `exact`, `same_session`, `clean_sessions`, `client_update`, `other_changes`, `unknowns`); and `commands`, empty for now. `unknowns` names what was not established: `mark` (the file was not looked at during that change), `sessions`, `running`, `accounts`, `time` (no unix time it can trust), `client_version`, `dependencies` (a folder on that edge changed since: not asserted) and `transition` (its versions are gone). A missing fact only ever lowers a grade. A change whose code a later change replaced (every folder it is linked by) before the error can have begun is not named; when the later change may have come first, as when its file was not looked at, the earlier one is `low` at most. `judgment` (`{state, gap}`: `pending`; `complete`; `deferred`, `history_unreadable`, tried again next run; `unsupported`, `generation_ended` or `provider_changed`) explains an observed error without one. A judgment is kept as made and reaches only its exact errors, never a `related` one. Each addon's `after_change` is its strongest `current` `high` or `medium` link (`tx`, `kind`, `at`, `addon`, `relation`, `confidence`). A link acts on nothing: dismiss the errors (it returns if they recur), ignore it, or delete `<cache>/errors_ledger.json` to forget every link.
+**The change before it (`after_change`).** Each error omaddons watched appear is judged once, from history and BugGrabber's session numbers, for the change most plausibly before it: evidence of order, never of cause (`… in the first session after update <tx> (<when>)`, `that update replaced Foo 1.2 → 1.3 · likely`, then a line per weakening fact). `after_change` has `tx`, `run`, `kind`, `at`, `actor`; `relation` (`own`: it replaced the erroring addon; `in_stack`: a folder of the error's stack; `dependency`: a folder one of the two requires; `none`: only the order in time, for the newest change within 24 hours); `confidence` (`high` "likely": its own change, the first session after, all known; `medium` "possible"; `low` "weak", as when first seen in the session running during the change); `state` (`current`; history only: `expired` 30 days after it began, `database_replaced` once the file was reset or put back); `algorithm`, `judged_at`; `changed` per addon (`change`, `from_version`, `to_version`, `from_release`, `to_release`, `still_installed`); `evidence` (`gap_s` to `onset_by_at`, `exact`, `same_session`, `clean_sessions`, `client_update`, `other_changes`, `unknowns`); and `commands`, its ways back (below). `unknowns` names what was not established: `mark` (the file was not looked at during that change), `sessions`, `running`, `accounts`, `time` (no unix time it can trust), `client_version`, `dependencies` (a folder on that edge changed since: not asserted) and `transition` (its versions are gone). A missing fact only ever lowers a grade. A change whose code a later change replaced (every folder it is linked by) before the error can have begun is not named; when the later change may have come first, as when its file was not looked at, the earlier one is `low` at most. `judgment` (`{state, gap}`: `pending`; `complete`; `deferred`, `history_unreadable`, tried again next run; `unsupported`, `generation_ended` or `provider_changed`) explains an observed error without one. A judgment is kept as made and reaches only its exact errors, never a `related` one. Each addon's `after_change` is its strongest `current` `high` or `medium` link (`tx`, `kind`, `at`, `addon`, `relation`, `confidence`). A link acts on nothing: dismiss the errors (it returns if they recur), ignore it, or delete `<cache>/errors_ledger.json` to forget every link.
 
 **Privacy.** By default and with `-v`, an error's text shows only when it is one of Lua's or the client's own messages (`attempt to index a nil value (field 'x')`; a taint report only when the folder it quotes is installed). Any other message, written by an addon, may hold a party member's name, so only its length shows (`message_kind: custom`, `message_chars`). Code chunks show as `[custom code]`, paths relative to `AddOns/`, accounts as `account N`. `--raw-details` adds messages, stacks, locals and chunks, bounded and stripped, with player GUIDs and links as `<player>` and this client's names as `<account>`, `<realm>` and `<character>`, warning that other names may remain. Errors other players sent through BugSack are counted apart (`received`), never new; `--received` lists them, and the sender's name is never kept.
 
@@ -3485,6 +3494,18 @@ A source turned off in `config.toml` refuses its refs, and `fix_argv` turns it b
 
 `omaddons errors` reads what BugGrabber saved; for a client without it, it offers `omaddons install buggrabber -t <id>` (4.3.4 and 5.4.8 have no keyless build). Errors reach the disk only at `/reload` or logout, so a running session shows nothing new yet.
 
+### The link names the wrong change
+
+A link says which change came before an error, never that it caused it: `likely` when it replaced the erroring addon and the error began in the first session after it; `possible` or `weak` when the connection is looser, with a line for each fact that weakened it (`after_change.evidence.unknowns`). A change omaddons did not make (a file edited by hand, another manager) is not in history, so the nearest change it made may be named instead. A link acts on nothing, and nothing goes back unless you run its command: ignore it, or `omaddons errors dismiss -t <id>` (it returns if the error recurs). Deleting `~/.cache/omaddons/errors_ledger.json` forgets every link, and every error present then reads as already there.
+
+### It says already there, but it only just broke
+
+`already there when omaddons first read this file (<date>): its age is unknown` means omaddons never saw that BugGrabber file without the error, so it cannot say when it began, and ties it to no change, even one made a minute before. Every error a file holds reads so at omaddons' first complete read of it, and again after the file was reset or put back (`already there when this file was reset or put back`); `first found while a file could not be read whole` means one of that client's files could not be read whole when the error was first met. An error that begins after such a read is watched appear, and can be linked.
+
+### It says the file could not be read completely
+
+`this file could not be read completely, so omaddons cannot tell when this began` (`first_seen.reason: "absence_unproven"`): the read could not prove the error absent before, because the game was writing the file, an entry did not decode, or a bound cut the read (`errors_partial`). No change is named until a complete read decides, and a change made after this first meeting never will be. Run `omaddons errors` again after the next `/reload` or logout; a file with an entry that never decodes stays so until that entry is gone. `omaddons could not record this read` is the ledger's side (`ledger_busy`, `ledger_unavailable`, `ledger_full`): the next run records again.
+
 ### The bar icon is dimmed
 
 The widget has nothing current to show; its mark and tooltip say why, and its panel's card says what to do:
@@ -3549,9 +3570,12 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 - Likewise, use the M3 build (`c0ab5e9`) only to read state that M4 has written; `tests/compat_m3.rs`, a checkpoint test, runs it against every kind of file M4 writes.
 - The download cache reuses an asset whose SHA-256 is known (from the source, or remembered from an earlier download). A release's assets are taken to be immutable, so different bytes re-uploaded under the same tag and file name go unnoticed while the old blob is cached (unless the source declares another size or hash). Within one command, an asset is still downloaded once per target that tries it. A cached archive is re-hashed before each use (about 10 ms per 5 MB), once per command.
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
-- A history line written by omaddons 0.2.1 or older records no release transitions: `history -v` takes its versions from its undo snapshot, so once retention prunes that, they are `null` (as for every line before this build).
+- A history line written by omaddons 0.2.1 or older records no release transitions: `history -v` takes its versions from its undo snapshot, so once retention prunes that, they are `null` (as for every line before this build), and a link to that change loses its versions and its way back.
 - Lua errors are only as fresh as BugGrabber's last save, at `/reload` or logout.
 - `errors` was validated on fixtures that follow BugGrabber's published structure in both writer formats; it has not yet been run against a capture from a real play session.
+- [Links](#errors) are only as good as what omaddons saw. The first complete read of a BugGrabber file baselines every error in it (age unknown, no link), so a breakage from before it is never tied to a change. An error of the same shape as one already known (the same message at another line, or with other numbers or names) is `related` and gets no link, even when it is a different bug. A file that never reads whole (an entry that never decodes) gives no link until it does, and while one account's file cannot be read, nothing on that client is called newly appeared. A `WTF/` copied from another machine with a higher session counter and a newer file looks like play here, so its errors read as newly appeared.
+- A link is judged once and kept: later reads never raise or lower it. With two accounts on one client, a change made while the game ran, or may have, is `possible` at most (running is known per client, sessions per account). A change whose BugGrabber files were not looked at as it was made (the ledger was busy, a file could not be vouched for, or omaddons 0.2.1 or older made it) is linked `weak` at most: in `errors` only, with no way back.
+- The exact way back needs the earlier archive in the cache, or a source that can serve that release again held to its hash, revision or commit (not WoWInterface or Tukui); otherwise `errors` offers the transaction's `undo`, naming any other addons it moves back.
 - `backup export`, `backup import` and `backup verify` are CLI only; the bar widget backs up, restores and prunes.
 - `backup import` refuses an archive holding a symlink that leads outside `WTF/` (`symlink_escape`), so a `WTF/` with such a link backs up and restores here, but its export cannot be imported.
 - "Not while the game runs" is a check, not a lock on the game (see the launch race under [Transactions](#transactions)).
@@ -3751,6 +3775,10 @@ Yes, by default. Updates that keep the loaded TOC land and tell you to `/reload`
 ### How do I find which addon throws Lua errors?
 
 Install [BugGrabber](https://www.wowace.com/projects/bug-grabber) (`omaddons install buggrabber`; BugSack shows errors in game), play, then run `omaddons errors`: each addon's errors on every client, the likely source and how sure, which are new, and whether an update may fix them. `--check` exits 6 when something is new.
+
+### Why does it not say which update broke it?
+
+An error's stack and its timing cannot show a cause, and a tool that wrongly says "this update broke it" gets believed. So `errors` names the change that most plausibly came *before* an error, only for an error it watched appear (absent at one read, present at the next), graded `likely`, `possible` or `weak`, with what it could not establish. An error that was already there when omaddons first read the file is tied to no change. See [`errors`](#errors) and [The link names the wrong change](#the-link-names-the-wrong-change).
 
 ### Why is an error's message hidden?
 

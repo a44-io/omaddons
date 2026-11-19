@@ -136,6 +136,17 @@ omaddons has {{error_code_count}} error codes and {{warning_code_count}} warning
 4. A finding with `needs_force: true` is the user's decision. Show them its `doctor explain`, and never add `--force --yes` yourself.
 5. `omaddons doctor undo --json` reverts the newest repair still in effect.
 
+## Lua errors after a change
+
+After a change, run `omaddons status --json`; when `data.summary.errors.new` is above 0, read `omaddons errors --json`. Each error's `first_seen.basis` says what is known of when it began:
+
+- `observed`: read without it, then with it. Only such an error carries `after_change`, the change most plausibly before it: evidence of order in time, never of cause. Report it so.
+- `baseline`: never seen on this client without it, so its age is unknown. Say so; do not tie it to a recent change, and do not call it old.
+- `related`: an error of its shape (`related_fingerprint`) was known first. Do not call it a regression, or give it that error's link.
+- `unknown`: omaddons cannot tell (`reason` says why).
+
+`after_change.confidence` is `high`, `medium` or `low`. A `low` link is weak (order in time only, the error may predate the change, or many sessions ran clean first): report it so and propose no change for it. `evidence.unknowns` lists what could not be established; say it when you report a `medium` link. Only a `high` or `medium` link whose `state` is `current`, with its addon still at the release that change installed, carries ways back in `after_change.commands`, best first: `update`, `rollback` (`omaddons skip <name> --back --tx <tx> -t <target>`) or `undo`. The last two are destructive: confirm with the user, or add `--dry-run --json`, show the plan and `apply` it. Run the argv as given: it names its transaction, and refuses with `plan_stale` once the addon has moved on. omaddons never goes back on its own.
+
 ## Commands
 
 Every command path; `mutates` changes something, and `stores plan` keeps its preview for `apply`:

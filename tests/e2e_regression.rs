@@ -1008,3 +1008,177 @@ fn r6_every_offered_command_parses_and_each_rollback_and_unskip_does_what_it_say
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// RG-49: the README's examples for slice 2, run on a synthetic home.
+
+/// `omaddons <argv>` in words: its stdout, the run logged.
+fn words(log: &common::tlog::TestLog, s: &Scene, argv: &[&str]) -> String {
+    let run = s
+        .home
+        .exec(&argv.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>());
+    log.note(format!(
+        "$ omaddons {}\n[exit {}]\n{}{}",
+        argv.join(" "),
+        run.code,
+        run.stdout,
+        run.stderr
+    ));
+    assert_eq!(run.code, 0, "{argv:?}: {}", run.stderr);
+    run.stdout
+}
+
+/// An instant of an envelope as the human views print it (the suite runs in UTC).
+fn minute(v: &Value) -> String {
+    let at: Timestamp = v.as_str().unwrap().parse().unwrap();
+    at.strftime("%Y-%m-%d %H:%M").to_string()
+}
+
+/// The README's `errors` example (section `errors`), with this home's names: Foo plays
+/// DBM (a new error linked to its update, with the way back), Bar plays Foo (a new error
+/// already there at the first read, a newer release out), Baz plays WeakAuras (an older
+/// error, not new). Every line it prints for the client is the README's, in its order,
+/// and so are the lines of `status`, `skip --back`, `outdated` and `history -v` that the
+/// README quotes for the same story.
+#[test]
+fn readme_the_errors_example_and_its_way_back_run_as_shown() {
+    let log = common::tlog::tlog!();
+    let frame = |folder: &str, file: &str, line: u32, function: &str| {
+        format!(
+            "{} in function '{function}'",
+            stack_era_c(folder, file, line)
+        )
+    };
+    let bar = entry(
+        "Bar",
+        "core.lua",
+        12,
+        "attempt to index a nil value (field 'db')",
+        5,
+        a_second_later(),
+    )
+    .counter(3)
+    .stack(&[frame("Bar", "core.lua", 12, "Refresh")]);
+    let baz = entry(
+        "Baz",
+        "baz.lua",
+        4,
+        "attempt to perform arithmetic on a nil value",
+        4,
+        a_second_later(),
+    )
+    .counter(57);
+    let s = installed(
+        &[
+            ("foo", "Foo", &[]),
+            ("bar", "Bar", &[]),
+            ("baz", "Baz", &[]),
+        ],
+        &[bar.clone(), baz.clone()],
+    );
+    log.env(&s);
+    log.step("Foo updated alone; then Bar's next release is out; then Foo's new error");
+    s.release("foo", "v2", &[folder("Foo", &[])]);
+    s.ok(&["update", "foo", "-t", "retail", "--refresh"]);
+    let tx = last_tx(&s, "update");
+    s.release("bar", "v2", &[folder("Bar", &[])]);
+    s.ok(&["outdated", "-t", "retail", "--refresh"]);
+    let foo = foo_error(12, 6, a_second_later(), 7).stack(&[frame("Foo", "core.lua", 12, "Show")]);
+    session(&s, 6, &[bar, baz, foo]);
+
+    log.step("errors: every line of the client, in the README's order");
+    let v = errors(&s);
+    let addon = |name: &str| {
+        v["data"]["targets"][0]["addons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["addon"] == name)
+            .unwrap()
+            .clone()
+    };
+    let last = |name: &str| minute(&addon(name)["last_seen"]["at"]);
+    let first_seen = |name: &str| addon(name)["errors"][0]["first_seen"].clone();
+    let (foo_seen, bar_seen) = (first_seen("Foo"), first_seen("Bar"));
+    assert_eq!(
+        (&foo_seen["basis"], &bar_seen["basis"], &bar_seen["reason"]),
+        (&json!("observed"), &json!("baseline"), &json!("first_read"))
+    );
+    let link = addon("Foo")["errors"][0]["after_change"].clone();
+    let want = [
+        "retail (12.1.5.70391, mainline) · BugGrabber · 3 errors from 3 addons · 2 new".to_owned(),
+        format!(
+            "  Foo  7×  1 new  last {}  likely source  current",
+            last("Foo")
+        ),
+        "    Foo/core.lua:12: attempt to index a nil value".to_owned(),
+        format!(
+            "      appeared between {} and {}, in the first session after update {tx} ({})",
+            minute(&foo_seen["onset_after_at"]),
+            minute(&foo_seen["onset_by_at"]),
+            minute(&link["at"])
+        ),
+        "      that update replaced Foo v1 → v2 · likely".to_owned(),
+        "      Foo/core.lua:12: in function 'Show'".to_owned(),
+        format!(
+            "  Bar  3×  1 new  last {}  likely source  v1 → v2 available (may fix it)",
+            last("Bar")
+        ),
+        "    Bar/core.lua:12: attempt to index a nil value (field 'db')".to_owned(),
+        format!(
+            "      already there when omaddons first read this file ({}): its age is unknown",
+            minute(&bar_seen["at"])
+        ),
+        "      Bar/core.lua:12: in function 'Refresh'".to_owned(),
+        format!("  Baz  57×  last {}  likely source  current", last("Baz")),
+        "    Baz/baz.lua:4: attempt to perform arithmetic on a nil value".to_owned(),
+        "Update them: omaddons update Bar -t retail".to_owned(),
+        format!(
+            "Next: omaddons skip Foo --back --tx {tx} -t retail    # go back to v1, and pass over v2"
+        ),
+    ];
+    let text = words(&log, &s, &["errors", "-t", "retail"]);
+    log.assert_eq(
+        "the README's lines",
+        &text.lines().collect::<Vec<_>>(),
+        &want.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+
+    log.step("status: the headline and the client's errors line");
+    let when = link["at"].as_str().unwrap().parse::<Timestamp>().unwrap();
+    let hm = when.strftime("%H:%M").to_string();
+    let text = words(&log, &s, &["status"]);
+    contains(text.lines().next().unwrap(), "· first seen after an update");
+    contains(
+        &text,
+        &format!(
+            "  errors: 2 new (Foo 1, likely since its update today {hm}, Bar 1) · omaddons errors -t retail"
+        ),
+    );
+
+    log.step("the way back, run as offered; outdated and history -v after it");
+    let text = words(
+        &log,
+        &s,
+        &["skip", "Foo", "--back", "--tx", &tx, "-t", "retail"],
+    );
+    let back = last_tx(&s, "update");
+    let back_hm = history_at(&s, &back).strftime("%H:%M").to_string();
+    log.assert_eq(
+        "skip --back's lines",
+        &text.lines().collect::<Vec<_>>(),
+        &vec![
+            "Foo v2 → v1 on retail · the files installed before, from the local cache",
+            "v2 is skipped: update passes over it and resumes at the next release",
+            &format!("undo: omaddons undo {back}"),
+            &format!("offer v2 again: omaddons unskip --tx {back} -t retail"),
+        ],
+    );
+    contains(
+        &words(&log, &s, &["outdated", "-t", "retail"]),
+        &format!("  Foo  v1  skipped v2 (went back today {back_hm})"),
+    );
+    let text = words(&log, &s, &["history", "-v"]);
+    contains(&text, "    Foo: updated v2 → v1 (1 folder)");
+    contains(&text, "    Foo: updated v1 → v2 (1 folder)");
+}
