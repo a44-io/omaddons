@@ -458,12 +458,12 @@ Item {
   }
 
   // Puts a command the widget shows instead of running (a purge, a forced repair), or an
-  // error report, on the clipboard: wl-copy with the text as one argument
-  // (Model.copyArgv), never a shell, in a process of its own on no lane, so a copy never
-  // waits behind a read and never holds one up. `done(ok)`, when given, hears whether
-  // the text went on the clipboard: wl-copy's own exit code 0, never a probe (UX-36). A
-  // missing wl-copy, any other exit, or none within copyDeadlineMs is false. Whether
-  // there was anything to copy.
+  // error report, on the clipboard: wl-copy (Model.copyArgv) with the text on its
+  // standard input, never an argument, never a shell, in a process of its own on no
+  // lane, so a copy never waits behind a read and never holds one up. `done(ok)`, when
+  // given, hears whether the text went on the clipboard: wl-copy's own exit code 0, never
+  // a probe (UX-36). A missing wl-copy, any other exit, or none within copyDeadlineMs is
+  // false. Whether there was anything to copy.
   function copyCommand(text, done) {
     if (!Model.copyArgv(text)) return false
     var callback = typeof done === "function" ? done : null
@@ -1900,10 +1900,12 @@ Item {
     id: reinstallProc
   }
 
-  // One copy (copyCommand): its own wl-copy, decided on `exited` alone. wl-copy forks a
-  // child that serves the clipboard and may keep the output open, so the end of a
-  // stream proves nothing; a missing binary never starts and never exits, it only stops
-  // running (F0). The copier answers once, then goes.
+  // One copy (copyCommand): its own wl-copy, given the text on its standard input once
+  // it started, then that input closed, so it reads the text to its end (never an
+  // argument: arguments are readable from /proc). Decided on `exited` alone: wl-copy
+  // forks a child that serves the clipboard and may keep the output open, so the end of
+  // a stream proves nothing; a missing binary never starts and never exits, it only
+  // stops running (F0). The copier answers once, then goes.
   Component {
     id: copyComponent
 
@@ -1951,7 +1953,12 @@ Item {
       Process {
         id: child
         command: Model.copyArgv(copier.text)
-        onStarted: copier.started = true
+        stdinEnabled: true
+        onStarted: {
+          copier.started = true
+          child.write(copier.text)
+          child.stdinEnabled = false
+        }
         onExited: function(exitCode, exitStatus) { copier.settle(exitCode === 0 && exitStatus === 0) }
         onRunningChanged: if (!running && !copier.started) copier.settle(false)
       }

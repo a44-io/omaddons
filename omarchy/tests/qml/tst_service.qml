@@ -1780,8 +1780,10 @@ TestCase {
     return ProcessRegistry.launches.filter(function(l) { return l.command[0] === "wl-copy" })
   }
 
-  // A copy runs wl-copy with the text as one argument, in a process of its own, never
-  // detached and on no lane, and answers `done` once, with wl-copy's own exit.
+  // A copy runs wl-copy with the text on its standard input, then that input closed, and
+  // never in its argv, which /proc shows every local account (omad-widget-plugin-3bcbh.5);
+  // in a process of its own, never detached and on no lane; and answers `done` once,
+  // with wl-copy's own exit.
   function test_a_copy_answers_with_wl_copys_exit_code() {
     ready(0)
     var lanes = JSON.stringify(JSON.parse(service.stateJson()).lanes)
@@ -1792,7 +1794,11 @@ TestCase {
       var runsBefore = runs().length
       compare(service.copyCommand(text, function(ok) { answers.push(ok) }), true, cases[i][0])
       var copies = copyLaunches()
-      compare(copies[copies.length - 1].command, ["wl-copy", "--", text], cases[i][0])
+      var copy = copies[copies.length - 1]
+      compare(copy.command, ["wl-copy", "--type", "text/plain"], cases[i][0] + ": no text in the argv")
+      compare(copy.process.stdinEnabled, true, cases[i][0] + ": its input open for the text")
+      tryCompare(copy.process, "written", text, 1000, cases[i][0] + ": the text on its input")
+      verify(copy.process.stdinClosed, cases[i][0] + ": then its end")
       compare(answers, [], cases[i][0] + ": nothing said before wl-copy answers")
       copies[copies.length - 1].process.exit(cases[i][1], cases[i][1] === 9 ? 1 : 0)
       compare(answers, [cases[i][2]], cases[i][0])

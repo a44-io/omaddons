@@ -4350,15 +4350,19 @@ describe("an irreversible purge is never a button", () => {
     const purgeRow = rows.find((row) => row.text === purge.join(" ")) // ubs:ignore — a command's text, not a secret
     expect([purgeRow.action, purgeRow.note]).toEqual([null, M.IRREVERSIBLE_NOTE])
     expect(M.copyText(purgeRow)).toBe(purge.join(" "))
-    expect(M.copyArgv(M.copyText(purgeRow))).toEqual(["wl-copy", "--", purge.join(" ")])
+    expect(M.copyArgv(M.copyText(purgeRow))).toEqual(["wl-copy", "--type", "text/plain"])
     const plainRow = rows.find((row) => row.action && row.action.argv.join(" ") === plain.join(" ")) // ubs:ignore — a command's text, not a secret
     expect([plainRow.note, M.copyText(plainRow)]).toEqual(["", ""])
   })
 
-  test("the clipboard gets one argument, never a shell", () => {
+  // omad-widget-plugin-3bcbh.5: the text never rides in the argv, which /proc shows every
+  // local account; the copier writes it to wl-copy's standard input (tst_share.qml).
+  test("the clipboard's argv holds no text, and never a shell", () => {
+    const argv = ["wl-copy", "--type", "text/plain"]
     table([
-      ["a command", "omaddons targets rm classic --purge", ["wl-copy", "--", "omaddons targets rm classic --purge"]],
-      ["shell characters stay text", "a; rm -rf ~ | x", ["wl-copy", "--", "a; rm -rf ~ | x"]],
+      ["a command", "omaddons targets rm classic --purge", argv],
+      ["shell characters", "a; rm -rf ~ | x", argv],
+      ["an addon list", '[target."retail"]\naddons = ["DBM"]\n', argv],
       ["nothing", "", null],
       ["a NUL", "a\u0000b", null],
       ["not a string", 7, null],

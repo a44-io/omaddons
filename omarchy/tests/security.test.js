@@ -10,6 +10,8 @@
 // template or literal gives `--force` or `--yes`, the widget never runs `doctor gc` or
 // `doctor undo`, a repair runs only through its bound template from the row's own
 // `fix`, and its Yes always carries its preview's token. Check 12 keeps a purge out.
+// Check 14 keeps what the widget copies out of wl-copy's argv, which /proc shows every
+// local account (omad-widget-plugin-3bcbh.5).
 // The plugin-id literal (check 8) is scanned again, over the
 // embedded assets, in tests/omarchy_widget.rs.
 
@@ -837,19 +839,35 @@ function checkPluginId(files) {
 // writes to a child, and only to the lane's child of a request built with it. buildArgv
 // takes it from pastedList alone, for a `stdin: "list"` template, which is `sync -`'s
 // confirmed preview; the lane's input is its run's own argument, written once the child
-// starts, then closed. Nothing else opens or writes a child's standard input.
+// starts, then closed. The one other child given standard input is the copier's
+// wl-copy, inside copyComponent alone: the text it was asked to copy, so that text never
+// sits in an argv (omad-widget-plugin-3bcbh.5, check 14). Nothing else opens or writes a
+// child's standard input.
 const STDIN_LINES = [
   /^\s*proc = processComponent\.createObject\(lane, \{ "stdinEnabled": input !== null, "command": argv, "environment": env \}\)$/,
   /^\s*child\.write\(input\)$/,
   /^\s*child\.stdinEnabled = false$/,
 ]
+const COPIER_STDIN_LINES = [/^\s*stdinEnabled: true$/, /^\s*child\.write\(copier\.text\)$/]
+
+// The lines `[first, last]` of Service.qml's copyComponent, or null.
+function copierLines(service) {
+  const at = service.search(/^  Component \{\n    id: copyComponent$/m)
+  if (at < 0) return null
+  const open = service.indexOf("{", at)
+  return [lineAt(service, at), lineAt(service, open + balanced(service, open).length - 1)]
+}
 
 function checkStdin(files) {
   const out = []
+  const copier = copierLines(codeOf(files["Service.qml"] || ""))
+  const inCopier = (n) => !!copier && n >= copier[0] && n <= copier[1]
   for (const name of Object.keys(files)) {
     for (const l of lines(files[name])) {
       if (!/\bstdinEnabled\b|\.write\(/.test(l.text)) continue
-      if (name !== "Service.qml" || !STDIN_LINES.some((re) => re.test(l.text))) {
+      const lane = STDIN_LINES.some((re) => re.test(l.text))
+      const copy = inCopier(l.n) && COPIER_STDIN_LINES.some((re) => re.test(l.text))
+      if (name !== "Service.qml" || !(lane || copy)) {
         out.push(violation(name, l.n, "a child's standard input outside the lane's request: " + l.text.trim().slice(0, 60)))
       }
     }
@@ -877,6 +895,33 @@ function checkStdin(files) {
   return out
 }
 
+// 14. The clipboard (omad-widget-plugin-3bcbh.5): wl-copy never gets the text it copies
+// as an argument, where any local account could read it from /proc. copyArgv returns
+// only literal words, check 3 holds every wl-copy argv to copyArgv, and the copier is
+// the one child that writes its text to wl-copy's standard input (check 13).
+function checkClipboard(files) {
+  const out = []
+  const model = files["Model.js"] || ""
+  const fn = functionBody(model, "copyArgv")
+  if (!fn) return [violation("Model.js", 1, "copyArgv is missing")]
+  const returned = [...fn.body.matchAll(/return (\[[^\]\n]*\])/g)].map((m) => m[1])
+  if (returned.length === 0) out.push(violation("Model.js", fn.line, "copyArgv returns no wl-copy argv"))
+  for (const argv of returned) {
+    const words = argv.slice(1, -1).split(",").map((w) => w.trim())
+    if (!words.every((w) => /^"[^"\\]*"$/.test(w))) {
+      out.push(violation("Model.js", fn.line, "copyArgv puts text in wl-copy's argv: " + argv))
+    }
+  }
+  const service = codeOf(files["Service.qml"] || "")
+  const copier = copierLines(service)
+  const body = copier ? service.split("\n").slice(copier[0] - 1, copier[1]).join("\n") : ""
+  if (!/^\s*command: Model\.copyArgv\(copier\.text\)$/m.test(body) || !/^\s*child\.write\(copier\.text\)$/m.test(body) ||
+      !/^\s*child\.stdinEnabled = false$/m.test(body)) {
+    out.push(violation("Service.qml", copier ? copier[0] : 1, "the copier does not write its text to wl-copy's standard input and close it"))
+  }
+  return out
+}
+
 const CHECKS = [
   ["1. rendering", checkRendering],
   ["2. process launching", checkLaunching],
@@ -892,6 +937,7 @@ const CHECKS = [
   ["11. consent", checkConsent],
   ["12. irreversible stays out", checkIrreversible],
   ["13. standard input", checkStdin],
+  ["14. the clipboard", checkClipboard],
 ]
 
 // ------------------------------------------------------------------ the tests
@@ -1069,6 +1115,20 @@ const PLANTED = [
   ["13. standard input", checkStdin, "a template other than sync's preview taking standard input",
     plant(REAL, "Model.js", "var COMMANDS = {\n", '  "install_paste": { "argv": ["install", "--", "{ref}"], "mutates": true, "preview": "confirm", "stdin": "list" },\n'),
     /install_paste takes standard input other than as sync -'s confirmed preview/],
+  // omad-widget-plugin-3bcbh.5: the copier's standard input is its text, in copyComponent
+  // alone, and wl-copy's argv holds no text.
+  ["13. standard input", checkStdin, "the copier writing something other than its text",
+    replaced(REAL, "Service.qml", "          child.write(copier.text)\n", "          child.write(root.binary)\n"),
+    /Service\.qml:\d+: a child's standard input outside the lane's request: child\.write\(root\.binary\)/],
+  ["13. standard input", checkStdin, "a Process outside the copier given standard input",
+    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n", "    stdinEnabled: true\n"),
+    /Service\.qml:\d+: a child's standard input outside the lane's request: stdinEnabled: true/],
+  ["14. the clipboard", checkClipboard, "the text back in wl-copy's argv",
+    replaced(REAL, "Model.js", 'return ["wl-copy", "--type", "text/plain"]', 'return ["wl-copy", "--", text]'),
+    /copyArgv puts text in wl-copy's argv/],
+  ["14. the clipboard", checkClipboard, "a copier that no longer writes its text",
+    replaced(REAL, "Service.qml", "          child.write(copier.text)\n", ""),
+    /the copier does not write its text to wl-copy's standard input/],
 ]
 
 describe("each scan catches its planted violation", () => {

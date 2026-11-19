@@ -156,8 +156,9 @@ TestCase {
       property var catalogReads: []
       function readCatalog(target) { catalogReads = catalogReads.concat([target]); return true }
       function dismissErrors(plan) { dismissals = dismissals.concat([JSON.parse(JSON.stringify(plan))]); return "" }
-      // The real copyCommand runs Model.copyArgv(text) and answers `done` with wl-copy's
-      // outcome; this records the argv and answers `copyOk` (false: wl-copy missing).
+      // The real copyCommand runs Model.copyArgv(text), writes the text to wl-copy's
+      // standard input (omad-widget-plugin-3bcbh.5) and answers `done` with wl-copy's
+      // outcome; this records the text and answers `copyOk` (false: wl-copy missing).
       // Sharing (1n2p.37): what the view asked, and the answer it waits for.
       property var shareCopies: []
       property var sharePastes: []
@@ -168,7 +169,7 @@ TestCase {
       property bool copyOk: true
       function copyCommand(text, done) {
         if (!Model.copyArgv(text)) return false
-        copies = copies.concat([Model.copyArgv(text)])
+        copies = copies.concat([text])
         if (typeof done === "function") done(copyOk)
         return true
       }
@@ -1316,7 +1317,7 @@ TestCase {
     keyClick(Qt.Key_Return)
     compare(svc.cliRuns.length, 0)
     keyClick("y")
-    compare(json(svc.copies), json([["wl-copy", "--", purge.join(" ")]]))
+    compare(json(svc.copies), json([purge.join(" ")]))
     compare(findChild(row("issueRow", 1), "issueButton_copy").text, "Copied")
     // The copy flash goes after a moment (UX-36).
     tryCompare(findChild(row("issueRow", 1), "issueButton_copy"), "text", "Copy command", 3000)
@@ -1465,7 +1466,7 @@ TestCase {
     verify(!findChild(page, "explanationReading").visible)
     // `y` copies the terminal command, from the page.
     keyClick("y")
-    compare(json(svc.copies), json([["wl-copy", "--", forced.join(" ")]]))
+    compare(json(svc.copies), json([forced.join(" ")]))
     compare(findChild(page, "pageButton_copy").text, "Copied")
     // wl-copy missing (omad-phcg): the page's button says so instead.
     svc.copyOk = false
@@ -1668,7 +1669,7 @@ TestCase {
     // `y`: the report, strict text only, and the flash says what was copied.
     keyClick("y")
     compare(svc.copies.length, 1)
-    var report = svc.copies[0][2]
+    var report = svc.copies[0]
     verify(report.indexOf("Foo v1 on retail") === 0, report)
     verify(report.indexOf("attempt to index a nil value (field 'x')") > 0, report)
     verify(report.indexOf("a message from the addon (25 characters)") > 0, report)
@@ -1749,7 +1750,7 @@ TestCase {
     compare(findChild(page, "rawLines").itemAt(0).text, "[Foo/boss.lua]:3: FakeChar pulled")
     // The report never holds them, raw view open or not.
     keyClick("y")
-    verify(svc.copies[0][2].indexOf("FakeChar") < 0, svc.copies[0][2])
+    verify(svc.copies[0].indexOf("FakeChar") < 0, svc.copies[0])
     compare(button.text, "Hide raw details")
     button.clicked()
     compare(svc.rawClears, 1)
@@ -1901,7 +1902,7 @@ TestCase {
     keyClick("w")
     compare(json(Quickshell.detachedCommands[Quickshell.detachedCommands.length - 1]), json(["omarchy-launch-browser", "https://www.wowinterface.com/downloads/info23056"]))
     keyClick("y")
-    compare(json(svc.copies), json([["wl-copy", "--", "wowi:23056"]]))
+    compare(json(svc.copies), json(["wowi:23056"]))
     compare(findChild(page, "pageCopy").text, "Copied wowi:23056")
     // wl-copy missing (omad-phcg): the button says so, then reads as before.
     tryCompare(findChild(page, "pageCopy"), "text", Model.copy("page.copy_ref"), 3000)
@@ -2501,12 +2502,12 @@ TestCase {
     // Setting one by hand: the command copied, the token for standard input only.
     sheet.choice = at("github:set")
     keyClick(Qt.Key_Return)
-    compare(json(svc.copies[svc.copies.length - 1]), json(["wl-copy", "--", Model.GITHUB_SET_COMMAND]))
+    compare(svc.copies[svc.copies.length - 1], Model.GITHUB_SET_COMMAND)
     compare(findChild(findChild(sheet, "setting_github:set"), "settingValue").text, "Copied: run it in a terminal")
     // wl-copy missing (omad-phcg): the row says nothing was copied.
     svc.copyOk = false
     keyClick(Qt.Key_Return)
-    compare(json(svc.copies[svc.copies.length - 1]), json(["wl-copy", "--", Model.GITHUB_SET_COMMAND]))
+    compare(svc.copies[svc.copies.length - 1], Model.GITHUB_SET_COMMAND)
     compare(findChild(findChild(sheet, "setting_github:set"), "settingValue").text, "Couldn't copy (wl-copy is missing)")
     // config.toml, where `config` said, in the player's editor.
     Quickshell.resetDetachedCommands()

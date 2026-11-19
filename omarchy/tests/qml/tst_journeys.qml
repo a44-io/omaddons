@@ -327,14 +327,16 @@ TestCase {
     verify(frame.topPage !== null, "the error page opens")
     var page = frame.current
     noCommandLine(child("pageTitle", page).text)
-    // `y` or Copy report: the report on the clipboard, one argument, never run.
+    // `y` or Copy report: the report on the clipboard, through wl-copy's standard input
+    // (never its argv, omad-widget-plugin-3bcbh.5), never run.
     if (mouse) click(child("pageCopy", page))
     else keyClick("y")
     // Its own wl-copy process, whose exit says whether it was copied (omad-phcg).
     var copied = ProcessRegistry.launches.filter(function(l) { return l.command[0] === "wl-copy" })
     compare(copied.length, 1)
-    compare(copied[0].command.slice(0, 2), ["wl-copy", "--"])
-    verify(copied[0].command[2].indexOf("Foo") !== -1, "the report names the addon")
+    compare(copied[0].command, ["wl-copy", "--type", "text/plain"])
+    tryVerify(function() { return copied[0].process.written.indexOf("Foo") !== -1 }, 1000, "the report names the addon")
+    verify(copied[0].process.stdinClosed)
     copied[0].process.exit(0)
     // The flash is the corner toast's (omad-92d5).
     tryCompare(child("toastLine"), "text", "Copied the report on Foo", 1000)

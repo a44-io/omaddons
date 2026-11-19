@@ -1527,11 +1527,16 @@ function copyText(row) {
   return typeof row.text === "string" ? row.text : ""
 }
 
-// The clipboard's argv for `text` (a command a row shows): wl-copy with the text as one
-// argument, never through a shell; null for nothing to copy or a NUL byte.
+// The clipboard's argv for `text` (a command a row shows, an error report, an addon
+// list): wl-copy, never through a shell, with the text on its standard input, which the
+// copier writes and closes (Service.qml), never as an argument: a process's arguments
+// are readable from /proc by every local account (omad-widget-plugin-3bcbh.5). The type
+// is named, as wl-copy names it for text it is given as arguments, so it never guesses
+// one from the content (an addon list would read as TOML); null for nothing to copy or a
+// NUL byte.
 function copyArgv(text) {
   if (typeof text !== "string" || text === "" || text.indexOf("\u0000") !== -1) return null
-  return ["wl-copy", "--", text]
+  return ["wl-copy", "--type", "text/plain"]
 }
 
 // What a copy's flash says once wl-copy answered (UX-36): `copied`, the site's own

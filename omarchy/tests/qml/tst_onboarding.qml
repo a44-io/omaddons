@@ -330,12 +330,15 @@ TestCase {
     spy.target = frame
     Quickshell.resetDetachedCommands()
     pressCard(0)
-    // The line goes to wl-copy as one argument, in a process of its own whose exit says
-    // whether it was copied (omad-phcg); nothing is said or turned Off before it answers.
+    // The line goes to wl-copy's standard input, never its argv (omad-widget-plugin-3bcbh.5),
+    // in a process of its own whose exit says whether it was copied (omad-phcg); nothing
+    // is said or turned Off before it answers.
     compare(Quickshell.detachedCommands, [])
     var copies = copyLaunches()
     compare(copies.length, 1)
-    compare(JSON.stringify(copies[0].command), JSON.stringify(["wl-copy", "--", line]))
+    compare(JSON.stringify(copies[0].command), JSON.stringify(["wl-copy", "--type", "text/plain"]))
+    tryCompare(copies[0].process, "written", line, 1000)
+    verify(copies[0].process.stdinClosed, "its input closed, so wl-copy reads it to its end")
     compare(spy.count, 0)
     copies[0].process.exit(0)
     tryCompare(child("onboardingCopied"), "text", "Copied", 1000)
