@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::finding::{Finding, FindingTarget, Subsystem};
+use super::finding::{Finding, FindingTarget, Severity, Subsystem};
 use super::registry::{self, FailureMode, Layer, Tier, ids};
 use super::view::{Availability, DoctorView};
 use crate::cli::{fix_argv, levenshtein};
@@ -45,6 +45,10 @@ pub struct Selection {
     pub only: Vec<Pick>,
     /// `--skip`, which wins over `--only`.
     pub skip: Vec<Pick>,
+    /// `--severity`: the least severe failure mode the report shows. A view's failure
+    /// past it is left out of the report, so it explains no skipped check, which is then
+    /// incomplete (omad-bug-hunt-0shtt.41); `None` shows every severity.
+    pub severity: Option<Severity>,
 }
 
 impl Selection {
@@ -74,6 +78,7 @@ impl Selection {
             target: target.map(str::to_owned),
             only: picks("--only", only, argv)?,
             skip: picks("--skip", skip, argv)?,
+            severity: None,
         })
     }
 

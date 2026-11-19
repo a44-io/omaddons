@@ -985,6 +985,48 @@ fn fix_reports_under_severity_as_diagnose_does() {
     );
 }
 
+/// A run is healthy only when it looked at every check it selected
+/// (omad-bug-hunt-0shtt.41). With a broken `config.toml`, `--severity P0` selects only
+/// checks that never read the config (the journals and the state files), so it ends
+/// `DONE_OK` having skipped nothing; P1 and below show the config's failure, which stands
+/// for the checks it skipped. The case a cut failure would leave unexplained, a P0 check
+/// that reads the config, has no registered row today and is planted in
+/// `doctor::runtime`'s unit tests.
+#[test]
+fn a_healthy_run_under_severity_skipped_nothing_it_selected() {
+    let log = tlog!();
+    let home = home(&log);
+    log.step("plant");
+    let config = plant::config_toml(&home);
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "a = [\n").unwrap();
+    for severity in ["P0", "P1", "P2", "P3"] {
+        log.step(severity);
+        let r = run(&log, &home, &["doctor", "--severity", severity, "--json"]);
+        let envelope = r.envelope();
+        let offline_skips: Vec<&Value> = envelope["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["reason"] != "online_required")
+            .collect();
+        if severity == "P0" {
+            assert_eq!(
+                (r.run.code, &envelope["state"]),
+                (0, &Value::from("DONE_OK"))
+            );
+            assert_eq!(offline_skips, Vec::<&Value>::new(), "{envelope}");
+        } else {
+            assert_eq!(r.run.code, 1, "{envelope}");
+            assert!(
+                ids_of(envelope).contains(&ids::CONFIG_PARSE_ERROR.to_owned()),
+                "{envelope}"
+            );
+            assert!(!offline_skips.is_empty(), "{envelope}");
+        }
+    }
+}
+
 #[test]
 fn a_crash_while_staging_or_after_publishing_leaves_no_report() {
     let log = tlog!();

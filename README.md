@@ -1804,7 +1804,7 @@ Every check of the failure-mode registry: what is broken in what omaddons manage
 |---|---|
 | `--only IDS` | Only these checks, any tier: failure-mode ids or subsystem names, comma-separated, repeatable. An unknown one is a usage error whose fix is the closest id, if one is close |
 | `--skip IDS` | Not these (wins over `--only`) |
-| `--severity P0`…`P3` | Only findings of that severity or more severe, and any check that could not finish or crashed |
+| `--severity P0`…`P3` | Only findings of that severity or more severe, and any check that could not finish or crashed: a check skipped for an input whose failure this leaves out (a broken `config.toml` is P1) is a `check-incomplete` |
 | `--quick` | The cached and quick tiers only (default: every tier but `deep`) |
 | `--include-deep` | Every tier |
 | `--online` | Also the network checks, else listed in `skipped` (`online_required`); a usage error with `--offline` |

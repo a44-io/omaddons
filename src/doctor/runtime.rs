@@ -555,7 +555,8 @@ pub fn detect(
     // that cannot be listed) is never reported clean: it is incomplete, naming what it
     // could not read (omad-4h0d.12). A layer whose failure is a finding of the report (a
     // config, a state file) stands for its skips, as before; one the report leaves out
-    // (named by `--skip`, or about a client outside `-t`) explains nothing.
+    // (named by `--skip`, about a client outside `-t`, or past `--severity`, which
+    // `Diagnosis::at_most` cuts later: omad-bug-hunt-0shtt.41) explains nothing.
     let explained: BTreeSet<_> = view
         .failures()
         .iter()
@@ -563,6 +564,9 @@ pub fn detect(
             !selection.skips(f.fm)
                 && f.target
                     .is_none_or(|key| part.scope.includes_client(Some(key), ""))
+                && selection
+                    .severity
+                    .is_none_or(|max| registry::row(f.fm).is_none_or(|row| row.severity <= max))
         })
         .map(|f| f.layer)
         .collect();
@@ -1283,6 +1287,50 @@ mod tests {
             [ids::CONFIG_PARSE_ERROR],
             "the layer's own finding"
         );
+    }
+
+    /// A skip explained only by a failure `--severity` leaves out of the report is a
+    /// `check-incomplete`, so the run is never healthy (omad-bug-hunt-0shtt.41). The
+    /// config's failure is P1: under `--severity P0` it explains nothing a P0 check
+    /// skipped; in the report (P1, or no cut), it stands for the skip, as before. No
+    /// registered P0 check needs the config today, so the check here is a planted one.
+    #[test]
+    fn a_skip_explained_only_by_a_failure_past_the_severity_cut_is_incomplete() {
+        use crate::doctor::report::RunState;
+        let h = home();
+        fs::create_dir_all(h.paths.config_dir()).unwrap();
+        fs::write(h.paths.config_dir().join("config.toml"), "not = [valid").unwrap();
+        let mut needs_config = row(A, finds_one);
+        needs_config.requires = &[Layer::Config];
+        needs_config.severity = Severity::P0;
+        let run = |severity: Option<Severity>| {
+            let mut diagnosis = detect(
+                std::slice::from_ref(&needs_config),
+                &view_of(&h),
+                &Selection {
+                    severity,
+                    ..Selection::all()
+                },
+                &[Tier::Default],
+                Budgets::TierDefaults,
+            )
+            .unwrap();
+            diagnosis.at_most(severity);
+            diagnosis
+        };
+
+        let cut = run(Some(Severity::P0));
+        assert_eq!(cut.skipped.len(), 1, "{cut:#?}");
+        assert_eq!(unreadable_checks(&cut), [(Some(A), None)], "{cut:#?}");
+        assert_eq!(ids_of(&cut), [ids::CHECK_INCOMPLETE], "{cut:#?}");
+        assert_eq!(RunState::of(&cut.findings), RunState::DoneFindings);
+
+        for severity in [Some(Severity::P1), None] {
+            let shown = run(severity);
+            assert_eq!(shown.skipped.len(), 1, "{shown:#?}");
+            assert_eq!(unreadable_checks(&shown), [], "{severity:?}: {shown:#?}");
+            assert_eq!(ids_of(&shown), [ids::CONFIG_PARSE_ERROR], "{severity:?}");
+        }
     }
 
     /// The four rows that read a client's inventory.

@@ -371,6 +371,7 @@ mod tests {
             target: None,
             only: only.iter().copied().map(Pick::Mode).collect(),
             skip: skip.iter().copied().map(Pick::Mode).collect(),
+            severity: None,
         }
     }
 

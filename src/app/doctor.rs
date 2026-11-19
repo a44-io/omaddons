@@ -567,7 +567,8 @@ fn checks_of(
             .user_verb(),
         ));
     }
-    let selection = Selection::parse(ctx.target.as_deref(), &select.only, &select.skip, &ctx.argv)?;
+    let mut selection =
+        Selection::parse(ctx.target.as_deref(), &select.only, &select.skip, &ctx.argv)?;
     let asked = Asked {
         severity: select.severity.as_deref().and_then(severity_of),
         quick: select.quick,
@@ -575,6 +576,9 @@ fn checks_of(
         online: select.online,
         budget: select.budget,
     };
+    // The runtime decides what explains a skip by what the report will show, severity
+    // included (omad-bug-hunt-0shtt.41).
+    selection.severity = asked.severity;
     let plan = plan_diagnose(failure_modes(), &selection, &asked, &ctx.argv)?;
     Ok((selection, plan))
 }
