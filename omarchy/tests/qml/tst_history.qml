@@ -5,7 +5,7 @@ import Quickshell.Io
 import qs.Commons
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 import "Fixtures.js" as Fixtures
 
 // History (1n2p.30) on the real Service and frame, over envelopes the binary wrote
@@ -123,7 +123,7 @@ TestCase {
         var key = w[0] === "status" ? (w.indexOf("--cached") !== -1 ? "status" : "status_full")
           : (w[0] === "backup" && w[1] === "create" ? "auto" : w[0])
         if (key === "auto") {
-          running[i].process.finish(0, JSON.stringify({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION,
+          running[i].process.finish(0, JSON.stringify({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION,
             "command": "backup create", "exit_code": 0, "partial": false, "data": { "dry_run": false, "run": null, "targets": [] },
             "warnings": [], "commands": [] }), "streamFirst")
           answered++

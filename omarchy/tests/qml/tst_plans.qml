@@ -4,7 +4,7 @@ import Quickshell
 import Quickshell.Io
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 import "Fixtures.js" as Fixtures
 
 // The plan runner (M4-D28) over envelopes the real binary wrote (pipeline step 1's plan
@@ -83,7 +83,7 @@ TestCase {
   }
 
   function envelope(command, data) {
-    return JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": command,
+    return JSON.stringify({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command,
       "exit_code": 0, "partial": false, "data": data, "warnings": [], "commands": [] })
   }
 

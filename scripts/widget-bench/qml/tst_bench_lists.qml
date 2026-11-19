@@ -7,7 +7,7 @@ import qs.Commons as Commons
 import qs.Ui
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "../qml/Versions.js" as Versions
 import "Fixtures.js" as Fixtures
 import "BenchConfig.js" as BenchConfig
 
@@ -106,7 +106,7 @@ TestCase {
     if (w[0] === "backup" && w[1] === "list" && w.indexOf("-v") !== -1) return scene.backupsDetail
     if (w[0] === "backup" && w[1] === "list") return scene.backups
     if (w[0] === "backup" && w[1] === "create")
-      return { "text": text({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION, "command": "backup create",
+      return { "text": text({ "ok": true, "schema_version": Model.CONTRACT_MIN, "tool_version": Versions.TOOL_VERSION, "command": "backup create",
         "exit_code": 0, "partial": false, "data": { "dry_run": false, "run": null, "targets": [] }, "warnings": [], "commands": [] }) }
     if (w[0] === "search" && w.indexOf("--catalog") !== -1) return scene.catalog
     if (w[0] === "history") return scene.history

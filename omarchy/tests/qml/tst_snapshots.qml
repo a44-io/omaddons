@@ -8,7 +8,7 @@ import qs.Ui
 import "../.."
 import "../../ui"
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 import "Fixtures.js" as Fixtures
 
 // Offscreen renders of every state a player can meet (the UX audit's harness, kept for
@@ -290,7 +290,7 @@ TestCase {
   function fixture(name) { return JSON.parse(Fixtures.text(name)) }
   function text(env) { return JSON.stringify(env) }
   function ok(command, data) {
-    return text({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION, "command": command,
+    return text({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command,
       "exit_code": 0, "partial": false, "data": data, "warnings": [], "commands": [] })
   }
 
@@ -721,31 +721,27 @@ TestCase {
     shoot("phase-stuck")
   }
 
-  function test_phase_incompatible() {
+  // omad-widget-plugin-3bcbh.4: an omaddons older than the panel needs (contract 1.1):
+  // read-only, with the mise command that upgrades it, shown and copied, never run.
+  function test_phase_too_old() {
     var scene = everyday()
     open(scene, "updates")
     service.refresh()
-    settle({ "status": statusFrom("status-updates", function(env) { env.tool_version = "0.2.0" }) })
+    settle({ "status": statusFrom("status-updates", function(env) { env.schema_version = "1.1" }) })
     compare(service.phase, "incompatible")
-    compare(service.phaseCard.kind, "version")
-    shoot("phase-incompatible")
+    compare(service.phaseCard.kind, "too_old")
+    shoot("phase-too-old")
   }
 
-  // The binary sets `summary.widget_outdated` only with `widget.outdated` (an outdated
-  // widget serving this state), which Model.compatible reads as another build: the
-  // panel goes read-only, and its card says the panel is out of date.
-  function test_phase_widget_outdated() {
+  // A panel older than omaddons (contract 2.0): read-only, with Omarchy's plugin update.
+  function test_phase_too_new() {
     var scene = everyday()
-    scene.status = statusFrom("status-updates", function(env) {
-      env.data.summary.widget_outdated = true
-      env.data.widget = { "omarchy": true, "installed": true, "enabled": true, "version": Build.TOOL_VERSION,
-        "outdated": true, "context_matches": true }
-    })
     open(scene, "updates")
+    service.refresh()
+    settle({ "status": statusFrom("status-updates", function(env) { env.schema_version = "2.0" }) })
     compare(service.phase, "incompatible")
-    compare(service.phaseCard.kind, "outdated")
-    service.reinstallWidget()
-    shoot("phase-widget-outdated")
+    compare(service.phaseCard.kind, "too_new")
+    shoot("phase-too-new")
   }
 
   // A change a crash cut off (1n2p.34): announced above the view, from `status` alone.

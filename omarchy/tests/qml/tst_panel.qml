@@ -4,7 +4,6 @@ import Quickshell
 import qs.Commons
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
 import "../../Store.js" as Store
 
 // PanelView.qml (the frame) against a stub service (pipeline step 4): view switching,
@@ -81,7 +80,6 @@ TestCase {
       property var reads: []
       property int checks: 0
       property int refreshes: 0
-      property int reinstalls: 0
       property int yes: 0
       property int no: 0
 
@@ -100,7 +98,6 @@ TestCase {
       function cancelActivity() { cancels++; return true }
       function dismissError() { dismissals++; lastError = null }
       function refresh() { refreshes++ }
-      function reinstallWidget() { reinstalls++; return "ok" }
       // The card shown when omaddons cannot be used, and an interrupted change
       // (Model.phaseCard, Model.interruptedChange, 1n2p.34); what Copy put on the clipboard.
       property var phaseCard: null
@@ -626,11 +623,13 @@ TestCase {
     }
   }
 
-  // ------------------------------------------------------------- read-only (M3-D42)
+  // ------------------------------------------------------------- read-only (omad-widget-plugin-3bcbh.4)
 
-  function test_an_incompatible_binary_leaves_only_update_and_retry() {
+  // A panel older than omaddons' contract: read-only, Retry and the command that updates
+  // the panel through Omarchy, copied, never run.
+  function test_another_contract_leaves_only_retry_and_its_command() {
     svc.phase = "incompatible"
-    svc.phaseCard = Model.phaseCard("incompatible", { "mine": "0.0.0-fixture", "incompatible": { "kind": "version", "theirs": "9.0.0" } })
+    svc.phaseCard = Model.phaseCard("incompatible", { "mine": "0.0.0-fixture", "incompatible": { "kind": "too_new", "theirs": "2.0", "needs": "1.2" } })
     view.viewComponents = { "updates": fakeView }
     for (var key of ["U", "u", "c", "o", "p", "x", "b", "d"]) keyClick(key)
     keyClick(Qt.Key_Z, Qt.ControlModifier)
@@ -644,20 +643,27 @@ TestCase {
     verify(!child("openButton").enabled)
     // The card says the answer is stale; the hero stays "omaddons" alone (omad-224l).
     compare([child("hero").title, child("hero").detail], ["omaddons", ""])
-    compare(child("cardTitle").text, "The panel is from another omaddons version")
-    compare(child("cardDetail").text, "Panel 0.0.0-fixture, omaddons 9.0.0. Update the panel to match; until then it only shows what it read last.")
-    // The card's buttons take the cursor and Enter: Update the panel first, then Retry.
-    compare(child("card_reinstall").text, "Update the panel")
+    compare(child("cardTitle").text, "This panel is older than omaddons")
+    compare(child("cardDetail").text, "omaddons answers in contract 2.0, which this panel can't read. "
+      + "Update the panel with omarchy plugin update " + Model.PLUGIN_ID + ", then press Retry; until then it only shows what it read last.")
+    // The card's buttons take the cursor and Enter: Retry first, then Copy command.
+    verify(findChild(view, "card_reinstall") === null)
+    compare(child("card_copy_command").text, "Copy command")
     keyClick(Qt.Key_Return)
-    compare(svc.reinstalls, 1)
-    // The first j highlights Update the panel, the second Retry.
+    compare(svc.refreshes, 1)
+    // The first j highlights Retry, the second Copy command.
     keyClick("j")
     keyClick("j")
     compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
-    compare(svc.refreshes, 1)
+    compare(svc.copies, ["omarchy plugin update " + Model.PLUGIN_ID])
     child("card_retry").clicked()
     compare(svc.refreshes, 2)
+    // omaddons older than the panel needs: the mise command that upgrades it.
+    svc.phaseCard = Model.phaseCard("incompatible", { "incompatible": { "kind": "too_old", "theirs": "1.1", "needs": "1.2" } })
+    compare(child("cardTitle").text, "omaddons is older than this panel needs")
+    child("card_copy_command").clicked()
+    compare(svc.copies[svc.copies.length - 1], "mise upgrade github:a44-io/omaddons")
     // Navigation still works.
     keyClick("l")
     compare(view.view, "installed")
@@ -710,12 +716,12 @@ TestCase {
       compare(svc.copies[svc.copies.length - 1], svc.phaseCard.details)
       verify(svc.phaseCard.details.indexOf("thread 'main' panicked") !== -1)
     }
-    // The same version's other files: Update the panel, and when it was tried.
+    // omaddons older than the panel needs: no note, its upgrade command to copy.
     svc.phase = "incompatible"
-    svc.phaseCard = Model.phaseCard("incompatible", { "mine": "0.0.0-fixture", "incompatible": { "kind": "outdated", "theirs": "0.0.0-fixture" },
-      "reinstalledAtMs": Date.now() - 30000, "nowMs": Date.now() })
-    compare(child("cardTitle").text, "The panel is out of date")
-    compare(child("cardNotes").itemAt(0).text, "Update the panel ran just now; this is still the old panel.")
+    svc.phaseCard = Model.phaseCard("incompatible", { "mine": "0.0.0-fixture", "incompatible": { "kind": "too_old", "theirs": "1.1", "needs": "1.2" } })
+    compare(child("cardTitle").text, "omaddons is older than this panel needs")
+    compare(child("cardNotes").count, 0)
+    verify(findChild(view, "card_copy_command") !== null)
   }
 
   // An interrupted change, from `status` alone: a notice whose one action opens its

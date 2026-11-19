@@ -110,15 +110,11 @@ Item {
     return false
   }
 
-  // A fix the panel has its own way to: Check now, a refresh, reinstalling the panel, or
-  // the view that shows it (reading its data again), scoped to the client it is for.
+  // A fix the panel has its own way to: Check now, a refresh, or the view that shows it
+  // (reading its data again), scoped to the client it is for.
   function go(where) {
     if (where.kind === "check") return frame.checkNow()
     if (where.kind === "refresh") return svc.refresh()
-    if (where.kind === "widget") {
-      if (canChange) svc.reinstallWidget()
-      return true
-    }
     // Taking over folders is the first-run flow's, once it registers (as Addons' Take over…).
     if (where.kind === "adopt" && frame.keyHandlers && typeof frame.keyHandlers["adopt"] === "function") {
       if (canChange) frame.keyHandlers["adopt"](frame, where.target)

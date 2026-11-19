@@ -4,12 +4,13 @@ import Quickshell
 import Quickshell.Io
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 import "../../Store.js" as Store
 
 // Service.qml against the mock Process (pipeline step 4): what runs, under which
 // environment, in which lane and order, what an answer does to the model, and how a
-// child is stopped. Timings are shrunk; Build.js is the committed fixture.
+// child is stopped. Timings are shrunk; the plugin has no Build.js, as a clone of its
+// repository has none.
 TestCase {
   id: testCase
   name: "Service"
@@ -86,7 +87,7 @@ TestCase {
   }
 
   function envelope(command, data, extra) {
-    var e = { "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": command,
+    var e = { "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command,
       "exit_code": 0, "partial": false, "data": data, "warnings": [], "commands": [] }
     if (extra) for (var key in extra) e[key] = extra[key]
     return JSON.stringify(e)
@@ -98,7 +99,7 @@ TestCase {
   // `status`'s widget, as an Omarchy desktop's answer has it: the doorbell's directory,
   // and `binary` (null here, so every run stays on PATH unless a test names one).
   function widgetInfo(binary, dir) {
-    return { "omarchy": true, "installed": true, "enabled": true, "version": Build.TOOL_VERSION, "outdated": false,
+    return { "omarchy": true, "installed": true, "enabled": true, "version": Versions.TOOL_VERSION, "outdated": false,
       "context_matches": true, "binary": binary === undefined ? null : binary, "doorbell_dir": dir === undefined ? doorbellDir : dir }
   }
 
@@ -114,7 +115,7 @@ TestCase {
   }
 
   function failure(command, code, message, details) {
-    return JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": command,
+    return JSON.stringify({ "ok": false, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command,
       "exit_code": 1, "error": { "code": code, "message": message, "fix": "omaddons list", "fix_argv": ["omaddons", "list"],
         "alternatives": [], "retryable": false, "details": details || {} }, "warnings": [], "commands": [] })
   }
@@ -550,9 +551,11 @@ TestCase {
     spy.destroy()
   }
 
-  // ---- the compatibility gate (M3-D42)
+  // ---- the contract gate (omad-widget-plugin-3bcbh.4)
 
-  function test_an_incompatible_binary_makes_the_widget_read_only() {
+  // An answer in a contract older than the panel needs: read-only, every change refused
+  // or dropped, and the card shows how to upgrade omaddons; nothing runs it.
+  function test_an_older_contract_makes_the_widget_read_only() {
     service.templates = Object.assign({}, Model.COMMANDS, fixtureTemplates)
     ready(2)
     compare(service.run("remove", { "target": "retail", "addon": "Baz" }, "Remove"), "")
@@ -562,9 +565,11 @@ TestCase {
     compare(service.run("update_target", { "target": "retail" }, "Update retail"), "")
     compare(service.queuedAction, "Update retail")
     service.refresh()
-    answer(lastRun("status"), statusEnvelope(2, { "tool_version": "9.9.9" }))
+    answer(lastRun("status"), statusEnvelope(2, { "schema_version": "1.1" }))
     compare(service.phase, "incompatible")
-    verify(service.incompatibleText.indexOf("9.9.9") !== -1)
+    compare(service.incompatibleText, "omaddons is older than this panel needs")
+    compare([service.phaseCard.kind, service.phaseCard.actions, service.phaseCard.command],
+      ["too_old", ["retry", "copy_command"], "mise upgrade github:a44-io/omaddons"])
     compare(service.confirm, null)
     compare(service.queues.mutation.length, 0)
     compare(service.queuedAction, "")
@@ -572,62 +577,50 @@ TestCase {
     compare([service.bar.state, service.bar.dimmed, service.bar.mark, service.bar.badge], ["broken", true, "broken", 0])
     verify(service.run("update_all", {}, "Update all") !== "")
     verify(service.confirmYes() !== "")
-    // Retry and Reinstall stay.
+    // Retry stays; the change already running finishes.
     verify(service.refresh())
-    compare(service.reinstallWidget(), "ok")
     lastRun("update").process.finish(0, envelope("update", { "targets": [], "summary": {} }))
     compare(runs("update").length, 1)
+    compare([ProcessRegistry.detached.length, typeof service.reinstallWidget], [0, "undefined"])
+    // omaddons upgraded: an answer in the contract takes the card away.
+    answer(lastRun("status"), statusEnvelope(2))
+    compare([service.phase, service.phaseCard], ["ok", null])
   }
 
-  // 1n2p.35: a status from the upgraded binary (another version), saying the installed
-  // widget is outdated and serves this state, with `running` the clients that run.
-  function upgradedStatus(running) {
-    var env = JSON.parse(statusEnvelope(0, { "tool_version": "9.9.9" }))
-    env.data.widget = { "omarchy": true, "installed": true, "enabled": true, "version": Build.TOOL_VERSION, "outdated": true,
-      "context_matches": true }
-    env.data.summary.running = running
-    return JSON.stringify(env)
-  }
-
-  function selfUpdateToasts() {
-    return Quickshell.detachedCommands.filter(function(c) { return c.join(" ").indexOf("Updating the widget for omaddons 9.9.9") !== -1 })
-  }
-
-  // After its binary was upgraded, the widget reinstalls itself once from it, with a
-  // toast, while no client runs; until then it only offers it.
-  function test_the_widget_updates_itself_once_after_its_binary_was_upgraded() {
-    Quickshell.resetDetachedCommands()
+  // An answer in a later major: the panel is the older one, and the card shows Omarchy's
+  // plugin update; an answer from any omaddons version in a contract it reads is the
+  // widget's, so another version upgraded under it changes nothing.
+  function test_a_later_major_asks_for_the_panel_update_and_any_version_in_the_contract_is_read() {
     ready(0)
     service.refresh()
-    answer(lastRun("status"), upgradedStatus(["retail"]))
+    answer(lastRun("status"), statusEnvelope(0, { "tool_version": "9.9.9", "schema_version": "1.9" }))
+    compare(service.phase, "ok")
+    service.refresh()
+    answer(lastRun("status"), statusEnvelope(0, { "tool_version": "10.0.0", "schema_version": "2.0" }))
     compare(service.phase, "incompatible")
-    compare(ProcessRegistry.detached.length, 0, "a client runs: offered, not run")
-    service.refresh()
-    answer(lastRun("status"), upgradedStatus([]))
-    compare(ProcessRegistry.detached.length, 1)
-    compare(ProcessRegistry.detached[0].command, ["omaddons", "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"])
-    compare(selfUpdateToasts().length, 1)
-    // The bar has not reloaded yet: never a second time for this version.
-    service.refresh()
-    answer(lastRun("status"), upgradedStatus([]))
-    compare(ProcessRegistry.detached.length, 1)
-    compare(selfUpdateToasts().length, 1)
+    compare([service.phaseCard.kind, service.phaseCard.command], ["too_new", "omarchy plugin update " + Model.PLUGIN_ID])
+    compare(service.incompatibleText, "This panel is older than omaddons")
+    var state = JSON.parse(service.stateJson())
+    compare([state.toolVersion, state.contractVersion, state.contractMin], ["10.0.0", "2.0", "1.2"])
+    compare(state.cards, ["too_new"])
+    // Nothing reinstalls or updates the panel: no detached start, no Omarchy command.
+    compare(ProcessRegistry.detached.length, 0)
+    compare(Quickshell.detachedCommands.filter(function(c) { return c.join(" ").indexOf("omarchy") !== -1 && c[0] !== "omarchy-notification-send" }), [])
   }
 
-  // Off, or a binary the player set by hand (maybe a test build): offered, never run.
-  function test_the_widget_never_updates_itself_when_off_or_from_a_binary_set_by_hand() {
-    Quickshell.resetDetachedCommands()
-    ready(0)
-    service.applySettings({ "autoUpdateWidget": "Off" })
-    service.refresh()
-    answer(lastRun("status"), upgradedStatus([]))
-    compare(service.phase, "incompatible")
-    compare(ProcessRegistry.detached.length, 0, "Off")
-    service.applySettings({ "binary": "/opt/test-build/omaddons" })
-    service.refresh()
-    answer(lastRun("status"), upgradedStatus([]))
-    compare(ProcessRegistry.detached.length, 0, "a binary set by hand")
-    compare(selfUpdateToasts().length, 0)
+  // The manifest's `omaddons.contract_min` raises the minimum the shell hands the service.
+  function test_the_manifest_minimum_raises_the_contract_the_panel_needs() {
+    make({ "manifest": { "id": Model.PLUGIN_ID, "version": "0.3.0", "omaddons": { "contract_min": "1.5" } } })
+    compare(service.contractMin, "1.5")
+    answer(lastRun("status"), statusEnvelope(0, { "schema_version": "1.4" }))
+    compare([service.phase, service.phaseCard.kind], ["incompatible", "too_old"])
+    verify(service.phaseCard.sentence.indexOf("this panel reads 1.5 or later") !== -1, service.phaseCard.sentence)
+    compare(JSON.parse(service.stateJson()).widgetVersion, "0.3.0")
+    // A manifest asking for less than the code needs is ignored.
+    make({ "manifest": { "id": Model.PLUGIN_ID, "version": "0.3.0", "omaddons": { "contract_min": "1.0" } } })
+    compare(service.contractMin, "1.2")
+    answer(lastRun("status"), statusEnvelope(0, { "schema_version": "1.1" }))
+    compare(service.phaseCard.kind, "too_old")
   }
 
   function test_a_confirmation_from_another_context_never_runs() {
@@ -935,7 +928,7 @@ TestCase {
   readonly property string repairRun: "01M9RVNRVNRVNRVNRVNRVNRVNR"
 
   function doctorEnvelope(command, exitCode, report) {
-    var e = { "ok": exitCode === 0, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": command, "exit_code": exitCode }
+    var e = { "ok": exitCode === 0, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command, "exit_code": exitCode }
     for (var key in report) e[key] = report[key]
     e.warnings = []
     e.commands = []
@@ -1553,7 +1546,7 @@ TestCase {
     var again = lastRun("config")
     verify(again !== set, "read again after the change")
     compare(words(again.command), ["config"])
-    again.process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "config",
+    again.process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "config",
       "exit_code": 1, "partial": false, "warnings": [], "commands": [],
       "error": { "code": "state_corrupt", "message": "config.toml line 3: not TOML", "fix": null, "fix_argv": null, "retryable": false, "details": {} } }))
     verify(service.configFailed !== "")
@@ -1601,7 +1594,7 @@ TestCase {
     compare(service.run("restore_addon", { "target": "retail", "addon": "WeakAuras", "backup": id }, "Restore WeakAuras's settings"), "")
     var preview = lastRun("backup")
     verify(preview.command.indexOf("--dry-run") !== -1)
-    answer(preview, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "backup restore",
+    answer(preview, JSON.stringify({ "ok": false, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "backup restore",
       "exit_code": 3, "warnings": [], "commands": [], "error": { "code": "ref_ambiguous", "message": "WeakAurasOptions is another addon's now",
         "fix": "omaddons backup list -t retail -v", "fix_argv": ["omaddons", "backup", "list", "-t", "retail", "-v"], "retryable": false, "details": {},
         "alternatives": [{ "display": "x", "argv": ["omaddons", "--actor", "widget", "--reason", "r", "--dry-run", "backup", "restore", "-t", "retail",
@@ -1661,7 +1654,7 @@ TestCase {
     verify(service.readCatalog("retail"))
     var retail = lastRun("search")
     compare(words(retail.command), ["search", "--catalog", "-t", "retail"])
-    retail.process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
+    retail.process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION,
       "command": "search", "exit_code": 1, "error": { "code": "io", "message": "the catalog could not be read", "fix": "",
         "fix_argv": null, "alternatives": [], "retryable": false, "details": {} }, "warnings": [], "commands": [],
       "meta": { "elapsed_ms": 1, "offline": false } }))
@@ -1865,8 +1858,9 @@ TestCase {
   function test_state_has_the_documented_shape() {
     ready(4)
     var state = JSON.parse(service.stateJson())
-    compare(Object.keys(state).sort(), ["action", "activity", "bar", "binary", "cards", "confirm", "contextGeneration", "lanes", "lastPreview",
-      "lastRefreshMs", "lastResult", "panel", "panelOpen", "phase", "summary", "toolVersion", "widgetVersion"])
+    compare(Object.keys(state).sort(), ["action", "activity", "bar", "binary", "cards", "confirm", "contextGeneration", "contractMin",
+      "contractVersion", "lanes", "lastPreview", "lastRefreshMs", "lastResult", "panel", "panelOpen", "phase", "summary", "toolVersion",
+      "widgetVersion"])
     compare([state.confirm, state.lastPreview, state.activity, state.cards], [null, null, null, []])
     // What the activity bar says, in words (1n2p.18).
     service.check()
@@ -1885,17 +1879,19 @@ TestCase {
     compare(state.phase, "ok")
     compare(state.bar.badge, 4)
     compare(state.binary, "omaddons")
-    compare(state.toolVersion, Build.TOOL_VERSION)
+    // The binary's version and contract from its last status, and this panel's minimum.
+    compare([state.toolVersion, state.contractVersion, state.contractMin], [Versions.TOOL_VERSION, "1.2", Model.CONTRACT_MIN])
     compare(Object.keys(state.lanes).sort(), ["local", "mutation", "network"])
     compare(state.lanes.mutation, { "running": null, "queued": 0 })
     verify(state.lastRefreshMs > 0)
   }
 
-  function test_reinstall_is_detached_in_the_session_environment() {
-    compare(service.reinstallWidget(), "ok")
-    compare(ProcessRegistry.detached.length, 1)
-    compare(ProcessRegistry.detached[0].command, ["omaddons", "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"])
-    compare(ProcessRegistry.detached[0].environment, {})
+  // omad-widget-plugin-3bcbh.4: Omarchy's plugin commands update the panel; it has no
+  // way to reinstall itself.
+  function test_the_panel_never_reinstalls_itself() {
+    compare(typeof service.reinstallWidget, "undefined")
+    compare(typeof service.selfUpdatedFor, "undefined")
+    compare(ProcessRegistry.detached.length, 0)
   }
 
   // ---- the clipboard (omad-phcg, UX-36)

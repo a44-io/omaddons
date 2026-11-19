@@ -5,7 +5,7 @@ import Quickshell.Io
 import qs.Commons
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 import "Fixtures.js" as Fixtures
 
 // The first run (1n2p.32) on the real Service and frame, over envelopes the binary
@@ -111,10 +111,10 @@ TestCase {
   // What the reads with nothing to say answer.
   function quiet() {
     var empty = function(command) {
-      return { "text": JSON.stringify({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION, "command": command,
+      return { "text": JSON.stringify({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command,
         "exit_code": 0, "partial": false, "data": { "targets": [] }, "warnings": [], "commands": [] }) }
     }
-    var catalog = { "text": JSON.stringify({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION, "command": "search",
+    var catalog = { "text": JSON.stringify({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "search",
       "exit_code": 0, "partial": false, "data": { "results": [], "sources_skipped": [] }, "warnings": [], "commands": [] }) }
     // History's read (1n2p.30) of a home that changed nothing.
     return { "list": empty("list"), "errors": empty("errors"), "backup": empty("backup list"), "search": catalog,

@@ -2192,7 +2192,6 @@ The Settings sheet (`,`, or the cog) explains each setting.
 | `notifyErrors` | Notify about Lua errors after a session | `On` or `Off`; `On` | Lua errors |
 | `notifyUpdates` | Notify about new updates | `On` or `Off`; `Off` | updates |
 | `notifyWhilePlaying` | Notify while a game runs | `On` or `Off`; `Off` | notify during play |
-| `autoUpdateWidget` | Update the widget by itself | `On` or `Off`; `On` | see [Install and upgrade](#install-and-upgrade) |
 | `binary` | omaddons binary | a full path, or empty; empty | empty: `omaddons` on the session's `PATH`, then the path its `status` names (`widget.binary`); a named path that no longer starts goes back to `PATH` once |
 | `keyHint` | not in the sheet | `On` or `Off`; `On` | the first run's keybinding tip; `On` brings it back after the next open by mouse |
 
@@ -2214,16 +2213,16 @@ omaddons omarchy install --dry-run             # render and validate; write noth
 omarchy bar move a44.omaddons --section left   # move it
 omaddons omarchy                               # status
 omaddons omarchy remove
-cargo install --locked --path .                # upgrade: the widget updates itself
+mise upgrade github:a44-io/omaddons            # upgrade omaddons; the widget keeps working
 ```
 
 Run `install` and `remove` from the desktop session: Omarchy's tools run with your environment. The [setup plugin](https://github.com/a44-io/omaddons-omarchy) (`omarchy plugin add https://github.com/a44-io/omaddons-omarchy.git --enable`) is a bar button with the widget's id. Its click installs the omaddons release it pins with mise when needed, checks that binary's SHA-256, then runs its `omarchy install`; the widget takes its place. `omarchy plugin remove a44.omaddons` removes either, without a history line. For a key, add `o.bind("SUPER + ALT + W", "WoW addons", { panel = "a44.omaddons" })` to `~/.config/hypr/bindings.lua`.
 
-After an upgrade the widget reinstalls itself from the new binary once, while no game runs, with a notification, if that binary installed it and its status says the widget is out of date and serves this state; otherwise (**Update the widget by itself** Off, a binary set by hand, the same version with other files) the panel offers **Update the panel**. See [`omarchy status`](#omarchy-status), [`omarchy install`](#omarchy-install) and [`omarchy remove`](#omarchy-remove).
+The widget never reinstalls or replaces itself, and never runs `omarchy install` or `omarchy remove`: Omarchy's plugin commands add, update and remove it. It reads any omaddons whose contract is 1.x from the minimum its manifest names (`omaddons.contract_min`, 1.2; a manifest may raise it, never lower it), whatever its version, so upgrading omaddons needs nothing else. An omaddons older than that shows a read-only card with `mise upgrade github:a44-io/omaddons`; a later major shows one with `omarchy plugin update a44.omaddons`; each command is copied, never run. See [`omarchy status`](#omarchy-status), [`omarchy install`](#omarchy-install) and [`omarchy remove`](#omarchy-remove).
 
 #### IPC
 
-Under the widget's id, `omarchy-shell a44.omaddons state` prints one JSON object: `phase`, `bar` (`state` is `broken`, `starting`, `stale`, `empty`, `attention`, `updates` or `idle`; `badge`, urgency, `mark`, spin, tooltip), `summary`, the running `action`, `activity` (`kind`, `text`, `fraction`, `elapsed`, `stalled`, cancellable; or `null`), the last result, `panel` (`scope`, `view`, `stackDepth`, open `sheet`, zoom; or `null`), the binary and both versions, each lane's request, `confirm` (a plan sheet's `heading`, plan id, `title`, `text`), `lastPreview` (`direct`, `dialog`, `refresh`, `refuse` or `failed`, with plan id) and `cards` (`missing`, `malformed`, `oversized`, `timeout`, `stuck`, `version` or `outdated` replacing the views, else `interrupted` and a failure card's `stuck` or `failure`). `refresh`, `check` and `show <view>` ask for a refresh, an update check, or the panel at a view (`updates`, `installed` for Addons, `search`, `errors`, `issues`, `backups`, `history`).
+Under the widget's id, `omarchy-shell a44.omaddons state` prints one JSON object: `phase`, `bar` (`state` is `broken`, `starting`, `stale`, `empty`, `attention`, `updates` or `idle`; `badge`, urgency, `mark`, spin, tooltip), `summary`, the running `action`, `activity` (`kind`, `text`, `fraction`, `elapsed`, `stalled`, cancellable; or `null`), the last result, `panel` (`scope`, `view`, `stackDepth`, open `sheet`, zoom; or `null`), the binary, its `toolVersion` and `contractVersion` from its last status, the widget's `widgetVersion` and `contractMin`, each lane's request, `confirm` (a plan sheet's `heading`, plan id, `title`, `text`), `lastPreview` (`direct`, `dialog`, `refresh`, `refuse` or `failed`, with plan id) and `cards` (`missing`, `malformed`, `oversized`, `timeout`, `stuck`, `too_old` or `too_new` replacing the views, else `interrupted` and a failure card's `stuck` or `failure`). `refresh`, `check` and `show <view>` ask for a refresh, an update check, or the panel at a view (`updates`, `installed` for Addons, `search`, `errors`, `issues`, `backups`, `history`).
 
 #### The panel in detail
 
@@ -2251,7 +2250,7 @@ A left click (or the bar's keybinding) opens the panel, a middle click its most 
 
 **A first run** shows one card at a time, each with **Not now** (until the shell restarts): take over a client managing nothing but `adoptable` folders; **Install BugGrabber** (previewed) where no Lua errors are recorded and a build is known; after the first open by mouse, the `~/.config/hypr/bindings.lua` line with **Copy the line** and **Got it** (either turns `keyHint` `Off`). With no client, the welcome card comes first.
 
-**When omaddons can't answer**, a card replaces the scope and tabs with Retry and: for no omaddons on `PATH` (or none at the `binary` setting's path), the command that installs it, `mise use -g github:a44-io/omaddons`, shown on the card with **Copy command**, never run; **Copy details** (what ran, how it ended, exit code, last output lines, home as `~`; never on the card) for unreadable or oversized output, a status read past 20 seconds, or a child alive after SIGKILL (let go so its lane runs the next request); **Update the panel** for a panel from another version or out of date, read-only meanwhile. A missing or silent binary is asked again after 5 seconds, 15 seconds, then every minute. A change cut off by a crash or reload is announced from `status`, with **See what to do** opening its problem in Issues.
+**When omaddons can't answer**, a card replaces the scope and tabs with Retry and: for no omaddons on `PATH` (or none at the `binary` setting's path), the command that installs it, `mise use -g github:a44-io/omaddons`, shown on the card with **Copy command**, never run; **Copy details** (what ran, how it ended, exit code, last output lines, home as `~`; never on the card) for unreadable or oversized output, a status read past 20 seconds, or a child alive after SIGKILL (let go so its lane runs the next request); for an omaddons in a contract the panel does not read, read-only meanwhile, the command that upgrades omaddons (older than the panel needs) or updates the panel (a later major), with **Copy command**. A missing or silent binary is asked again after 5 seconds, 15 seconds, then every minute. A change cut off by a crash or reload is announced from `status`, with **See what to do** opening its problem in Issues.
 
 **The views.**
 
@@ -3489,9 +3488,9 @@ The widget has nothing current to show; its mark and tooltip say why, and its pa
 - **An urgent `!` mark, "The panel is from another omaddons version":** see below.
 - **No mark, "No World of Warcraft here yet":** the welcome card offers **Scan again** and **Add a client folder…**. "Asking omaddons…" is the moment before the first answer.
 
-### The widget says it is from another build
+### The widget says omaddons or the panel is too old
 
-The binary changed since the widget was installed, or its files differ from what this binary would install (`widget_outdated`). The widget stays read-only rather than run command lines another build may read differently. Reinstall it with **Update the panel**, or `omaddons omarchy install` from the binary you use. `omaddons doctor` reports it (`fm-plugins-widget-version-drift`) and never reinstalls it itself.
+The widget reads any omaddons whose contract is 1.x from the minimum its manifest names, whatever its version. "omaddons is older than this panel needs" means a contract below that minimum: upgrade it with `mise upgrade github:a44-io/omaddons` (the card copies it). "This panel is older than omaddons" means a later major: update the panel with `omarchy plugin update a44.omaddons`. Either way the widget stays read-only rather than run command lines it may read differently, and runs neither command itself. A widget an older omaddons rendered and `omaddons doctor` calls out of date (`fm-plugins-widget-version-drift`) is reinstalled with `omaddons omarchy install` from a terminal; the panel shows that command, never runs it.
 
 ### `omaddons doctor` says the widget fails validation
 
@@ -3629,7 +3628,7 @@ Generating schemas needs schemars, built only by the package's `schemas` feature
 
 ### Tests
 
-The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests in about 130 suites under `tests/`. Every suite is a module of one test binary, `integration` (`tests/main.rs`), with tests named `<suite>::…`, so `cargo test --test integration restore::` runs one suite (one binary links the library once). Debug and test builds carry line tables only, and dependencies no debuginfo (`CARGO_PROFILE_DEV_DEBUG=true` for a debugger). About 98 more are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine checks, time budgets and bench homes (`tests/perf.rs`), the compatibility suites (`tests/compat_m2.rs`, `tests/compat_m3.rs`, `tests/compat_v021.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. The widget adds 517 `bun` tests and 515 QML test functions in `omarchy/tests/qml/`. `cargo test -- --list` counts today's.
+The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests in about 130 suites under `tests/`. Every suite is a module of one test binary, `integration` (`tests/main.rs`), with tests named `<suite>::…`, so `cargo test --test integration restore::` runs one suite (one binary links the library once). Debug and test builds carry line tables only, and dependencies no debuginfo (`CARGO_PROFILE_DEV_DEBUG=true` for a debugger). About 98 more are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine checks, time budgets and bench homes (`tests/perf.rs`), the compatibility suites (`tests/compat_m2.rs`, `tests/compat_m3.rs`, `tests/compat_v021.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. The widget adds 524 `bun` tests and 515 QML test functions in `omarchy/tests/qml/`. `cargo test -- --list` counts today's.
 
 | Suite | What it covers |
 |---|---|

@@ -53,10 +53,13 @@ function pathOf(words) {
   return words[0] || ""
 }
 
+// The runner's own answers speak the contract the release binary does (the widget reads
+// any 1.x from its minimum, omad-widget-plugin-3bcbh.4).
+const SCHEMA_VERSION = "1.2"
 function envelope(command, data, error) {
   const ok = !error
   return JSON.stringify({
-    ok, schema_version: "1.1", tool_version: toolVersion, command, exit_code: ok ? 0 : 4,
+    ok, schema_version: SCHEMA_VERSION, tool_version: toolVersion, command, exit_code: ok ? 0 : 4,
     ...(ok ? { partial: false, data } : { error }),
     warnings: [], commands: [], meta: { elapsed_ms: 0, offline: true },
   })

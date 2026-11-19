@@ -3,7 +3,7 @@ import QtTest
 import Quickshell
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 
 // The restore chooser over the frame (pipeline step 4, 1n2p.29), against a stub service:
 // opened from a Backups row's `r`, from Installed's and Errors' `r` and from a backup's
@@ -39,7 +39,7 @@ TestCase {
       b[0].addons = [{ "name": "WeakAuras", "folders": ["WeakAuras"], "version": "5.20.0" }]
       b[1].addons = [{ "name": "WeakAuras", "folders": ["WeakAuras"], "version": "5.19.2" }]
     }
-    return Model.reduceBackups({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "backup list",
+    return Model.reduceBackups({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "backup list",
       "exit_code": 0, "partial": false, "warnings": [], "commands": [],
       "data": { "targets": [{ "target": { "id": "retail" }, "auto": null, "bytes": 2436, "free_bytes": 1073741824, "shown": 2, "total": 2, "backups": b }] } })
   }
@@ -87,7 +87,6 @@ TestCase {
       function readHistory() { return true }
       function check() {}
       function refresh() {}
-      function reinstallWidget() { return "ok" }
       function confirmYes() { return "" }
       function confirmNo() {}
       function dismissErrors(plan) { return "" }
@@ -105,7 +104,7 @@ TestCase {
   function init() {
     svc = serviceComponent.createObject(testCase)
     svc.backups = listing(false)
-    svc.lists = Model.reduceList({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "list", "exit_code": 0,
+    svc.lists = Model.reduceList({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "list", "exit_code": 0,
       "partial": false, "warnings": [], "commands": [], "data": { "targets": [{ "id": "retail", "key": "k", "label": "retail", "counts": { "unmanaged": 0 },
         "addons": [{ "name": "WeakAuras", "version": "5.20.0", "ref": "gh:o/WeakAuras", "pinned": false, "state": "ok", "reason": "explicit",
           "required_by": [], "orphan": false, "latest": { "version": "5.20.0", "status": "current" }, "folders": ["WeakAuras"],
@@ -274,7 +273,7 @@ TestCase {
 
   // `r` in the Errors view (4, 1n2p.27) on the erroring addon.
   function test_errors_r_opens_on_the_erroring_addon() {
-    svc.errors = Model.reduceErrors({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "errors", "exit_code": 0,
+    svc.errors = Model.reduceErrors({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "errors", "exit_code": 0,
       "partial": false, "warnings": [], "commands": [], "data": { "targets": [{ "target": { "id": "retail" }, "capture": "buggrabber",
         "coverage": "complete", "files": { "partial": 0 }, "databases": [], "summary": { "new": 1, "received": 0 }, "dismiss": null,
         "addons": [{ "addon": "WeakAuras", "managed": true, "kind": "addon", "version": "5.20.0", "latest": null, "count": 1, "new": 1,

@@ -5,7 +5,7 @@ import Quickshell.Hyprland
 import Quickshell.Io
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 
 // The service's desktop triggers (F8) against the mock Process and a mock Hyprland:
 // window events as a doorbell with follow-ups after a close, the post-session
@@ -101,7 +101,7 @@ TestCase {
   }
 
   function envelope(command, data, extra) {
-    var e = { "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": command,
+    var e = { "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command,
       "exit_code": 0, "partial": false, "data": data, "warnings": [], "commands": [] }
     if (extra) for (var key in extra) e[key] = extra[key]
     return JSON.stringify(e)
@@ -290,8 +290,8 @@ TestCase {
   function test_a_silent_checkpoint_shows_nothing_unless_it_fails() {
     start({ "retail": {} })
     var auto = pending("backup")[0]
-    ProcessRegistry.launches[auto].process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.0",
-      "tool_version": Build.TOOL_VERSION, "command": "backup create", "exit_code": 1, "warnings": [], "commands": [],
+    ProcessRegistry.launches[auto].process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.2",
+      "tool_version": Versions.TOOL_VERSION, "command": "backup create", "exit_code": 1, "warnings": [], "commands": [],
       "error": { "code": "space_low", "message": "not enough free space for a backup", "fix": null, "fix_argv": null,
         "alternatives": [], "retryable": false, "details": {} } }))
     answered = { [auto]: true }
@@ -415,10 +415,10 @@ TestCase {
   function test_no_toast_while_incompatible_or_missing() {
     start({ "retail": {} })
     settle()
-    // Another build answers with more errors: read-only, and silent.
+    // An omaddons in another contract answers with more errors: read-only, and silent.
     service.refresh()
     answerAt(pending("status")[0], status({ "retail": { "errors": { "new": 2, "top": [{ "addon": "DBM", "folder": "DBM-Core", "new": 2, "count": 2 }] } } },
-      false, { "tool_version": "9.9.9" }))
+      false, { "schema_version": "2.0" }))
     compare(service.phase, "incompatible")
     settle()
     compare(toasts().length, 0)

@@ -4,7 +4,7 @@ import Quickshell
 import Quickshell.Io
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 import "../../Store.js" as Store
 
 // The Updates and Installed views inside the frame (pipeline step 4). Against a stub
@@ -35,7 +35,7 @@ TestCase {
   }
 
   function listEnvelope(targets) {
-    return { "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "list", "exit_code": 0,
+    return { "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "list", "exit_code": 0,
       "partial": false, "data": { "targets": targets }, "warnings": [], "commands": [] }
   }
 
@@ -189,7 +189,6 @@ TestCase {
       function readAgain(view) { readAgains = readAgains.concat([view]); return true }
       function check() { checks++ }
       function refresh() {}
-      function reinstallWidget() { return "ok" }
       function confirmYes() { confirm = null; return "" }
       function confirmNo() { confirm = null }
       // What BarWidget tells its service (omad-zppa's tests host the frame in it).
@@ -1045,7 +1044,7 @@ TestCase {
         "message_chars": chars, "location": location, "attribution": { "method": "first_addon_frame", "confidence": "high" },
         "type": "error", "count": 2, "sessions": 1, "new": true, "stack": stack }
     }
-    return { "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "errors", "exit_code": 0,
+    return { "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "errors", "exit_code": 0,
       "partial": false, "warnings": [],
       "commands": [{ "action": "install_buggrabber", "command": "omaddons install buggrabber -t era",
         "argv": ["omaddons", "install", "buggrabber", "-t", "era"], "destructive": false }],
@@ -1581,7 +1580,7 @@ TestCase {
         "new": true, "stack": [], "first_seen": firstSeen, "after_change": afterChange, "judgment": null }
     }
     var go = [{ "action": "rollback", "command": rollback.join(" "), "argv": rollback, "destructive": true }]
-    return { "ok": true, "schema_version": "1.2", "tool_version": Build.TOOL_VERSION, "command": "errors", "exit_code": 0,
+    return { "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "errors", "exit_code": 0,
       "partial": false, "warnings": [], "commands": go,
       "data": { "targets": [
         { "target": { "id": "retail" }, "capture": "buggrabber", "coverage": "complete", "files": { "partial": 0 },
@@ -2343,7 +2342,7 @@ TestCase {
       for (var key in extra) b[key] = extra[key]
       return b
     }
-    return { "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "backup list", "exit_code": 0,
+    return { "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "backup list", "exit_code": 0,
       "partial": false, "warnings": [], "commands": [],
       "data": { "targets": [
         { "target": { "id": "era" }, "auto": { "mode": "off", "capability": "supported", "last": null }, "bytes": 100, "free_bytes": 1073741824,
@@ -2787,7 +2786,7 @@ TestCase {
     var body = { "dry_run": true, "plan_id": planId, "plan_expires_at": "2100-01-02T00:00:00Z", "precondition": "pc1:" + "a".repeat(64),
       "approval": approval }
     for (var key in data) body[key] = data[key]
-    return JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": command, "exit_code": 0,
+    return JSON.stringify({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command, "exit_code": 0,
       "partial": false, "warnings": warnings || [], "data": body,
       "commands": [{ "action": "apply", "command": "omaddons apply " + planId, "argv": ["omaddons", "apply", planId], "destructive": destructive }] })
   }
@@ -2810,7 +2809,7 @@ TestCase {
     var service = realService.createObject(testCase, { "bellDebounceMs": 10, "localDeadlineMs": 2000 })
     verify(service !== null)
     made = made.concat([service])
-    var statusJson = JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
+    var statusJson = JSON.stringify({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION,
       "command": "status", "exit_code": 0, "partial": false, "warnings": [], "commands": [],
       "data": { "targets": [{ "id": "retail", "running": false, "updates": { "available": 1 }, "issues": [] }],
         "summary": { "targets": 1, "running": [], "updates": { "available": 1, "targets": ["retail"] },
@@ -2820,7 +2819,7 @@ TestCase {
     launches("status")[0].process.finish(0, statusJson)
     tryCompare(service, "phase", "ok")
     // The catch-up checkpoint the first status queues (F8), done, and the refresh it rings.
-    launches("--auto")[0].process.finish(0, JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
+    launches("--auto")[0].process.finish(0, JSON.stringify({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION,
       "command": "backup create", "exit_code": 0, "partial": false, "warnings": [], "commands": [], "data": { "targets": [] } }))
     launches("status")[1].process.finish(0, statusJson)
     var frame = make(service)
@@ -2869,7 +2868,7 @@ TestCase {
     verify(apply[0].command.indexOf("--dry-run") < 0)
     compare(launches("remove").length, 1, "the removal runs only through its plan")
     // Something changed since the preview: nothing is removed, and it previews again.
-    apply[0].process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
+    apply[0].process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION,
       "command": "apply", "exit_code": 1, "warnings": [], "commands": [],
       "error": { "code": "plan_stale", "message": "plan " + planId + " is no longer what its preview showed", "fix": "omaddons remove Baz -t retail --dry-run",
         "fix_argv": ["omaddons", "remove", "Baz", "-t", "retail", "--dry-run"], "alternatives": [], "retryable": false, "details": { "changed": ["Baz"] } } }))

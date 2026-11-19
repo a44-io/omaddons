@@ -4,7 +4,6 @@ import Quickshell.Hyprland
 import Quickshell.Io
 import "Model.js" as Model
 import "Store.js" as Store
-import "Build.js" as Build
 
 // The widget's one point of contact with the CLI (M3-D4, M3-D5, M3-D11, M3-D42).
 // Omarchy mounts it once per shell; every bar copy (one per monitor) reads its model
@@ -29,7 +28,7 @@ Item {
   // because QML skips the change signal when a var gets its own reference back.
 
   // "starting", "ok", "missing" (no binary), "unreachable" (no envelope from status),
-  // "incompatible" (another omaddons build: read-only).
+  // "incompatible" (another contract than this panel reads: read-only).
   property string phase: "starting"
   // The bar button's model (Model.barState, 1n2p.16), recomputed by refreshBar.
   property var bar: Model.barState(null, { "phase": "starting" })
@@ -42,13 +41,16 @@ Item {
   // The last status read that gave no envelope, `{label, argv, exitCode, outcome,
   // tail}` (Model.failureDetails); null once one answers.
   property var statusFailure: null
-  // Why another build answered (Model.incompatibleOf), null otherwise.
+  // Why an answer's contract is not one this panel reads (Model.incompatibleOf), null
+  // otherwise.
   property var incompatible: null
-  // When Update the panel last ran (ms since the epoch; 0 for never).
-  property double reinstalledAtMs: 0
-  // The omaddons version the widget reinstalled itself for (1n2p.35): once per version
-  // in this service's life.
-  property string selfUpdatedFor: ""
+  // The contract this panel needs at least (Model.contractMin: its manifest's
+  // `omaddons.contract_min`, never below the compiled one), and its own version.
+  readonly property string contractMin: Model.contractMin(root.manifest)
+  readonly property string widgetVersion: manifest && manifest.version ? String(manifest.version) : ""
+  // The last status answer's omaddons version and contract ("" before one).
+  property string toolVersion: ""
+  property string contractVersion: ""
   // The retries while the binary is missing or gave no answer (Model.retryDelayMs).
   property var retryDelaysMs: Model.RETRY_BACKOFF_MS
   property int retryStep: 0
@@ -1112,8 +1114,7 @@ Item {
     if (!Model.jsonEqual(bar, next)) bar = next
     var card = Model.phaseCard(phase, { "binary": root.binary, "home": root.home,
       "outcome": statusFailure ? statusFailure.outcome : "", "failure": statusFailure,
-      "deadlineSec": Math.max(1, Math.round(localDeadlineMs / 1000)), "mine": Build.TOOL_VERSION, "incompatible": incompatible,
-      "reinstalledAtMs": reinstalledAtMs, "nowMs": now })
+      "deadlineSec": Math.max(1, Math.round(localDeadlineMs / 1000)), "mine": widgetVersion, "incompatible": incompatible })
     if (!Model.jsonEqual(phaseCard, card)) phaseCard = card
   }
 
@@ -1121,7 +1122,7 @@ Item {
   // (Model.failureWords) and the details a bug report needs (Model.failureDetails).
   function failureOf(r, outcome, tail) {
     return { "message": Model.failureWords(r.label, outcome), "code": outcome, "fixes": [], "fixText": "", "choices": [],
-      "folder": "", "details": Model.failureDetails(failureFacts(r, outcome, tail), root.context, Build.TOOL_VERSION) }
+      "folder": "", "details": Model.failureDetails(failureFacts(r, outcome, tail), root.context, widgetVersion) }
   }
 
   function failureFacts(r, outcome, tail) {
@@ -1516,13 +1517,15 @@ Item {
     }
   }
 
-  // Another omaddons build answered (M3-D42): the views keep the last numbers, the bar
-  // turns broken; clear the confirmation; drop every queued mutation; refuse new ones
-  // until a compatible status. Retry and Reinstall widget stay available.
+  // An answer in another contract than this panel reads (omad-widget-plugin-3bcbh.4):
+  // the views keep the last numbers, the bar turns broken; clear the confirmation; drop
+  // every queued mutation; refuse new ones until a compatible status. The card shows the
+  // command that upgrades omaddons or updates the panel, for the player to run; the
+  // widget never replaces itself.
   function enterIncompatible(env) {
     phase = "incompatible"
-    incompatibleText = Model.incompatibleText(env, Build)
-    incompatible = Model.incompatibleOf(env, Build)
+    incompatibleText = Model.incompatibleText(env, contractMin)
+    incompatible = Model.incompatibleOf(env, contractMin)
     confirm = null
     pendingConfirm = null
     pendingDismissals = []
@@ -1534,16 +1537,6 @@ Item {
     autoUpdateStage = ""
     queuedAction = ""
     queuedText = Model.queuedText(queues)
-    // After its binary was upgraded, the widget reinstalls itself once from it (1n2p.35,
-    // Model.selfUpdate says when): a toast says so, and the bar reloads with the new
-    // widget. Otherwise the phase card offers it.
-    var update = Model.selfUpdate({ "phase": phase, "incompatible": incompatible, "env": env, "settings": root.settings,
-      "tried": selfUpdatedFor })
-    if (update.run) {
-      selfUpdatedFor = update.version
-      Quickshell.execDetached(Model.resultToastArgv(Model.copy("widget.self_update", { "version": update.version }), true, Model.PLUGIN_ID))
-      reinstallWidget()
-    }
     refreshBar()
   }
 
@@ -1734,19 +1727,7 @@ Item {
     if (canAct) Quickshell.execDetached(Model.autoUpdateStoppedToastArgv(Model.updateFacts(targets, summary), Model.PLUGIN_ID))
   }
 
-  // ------------------------------------------------------------- reinstall and show
-
-  // `omaddons omarchy install` detached, in the session's environment: the reload it
-  // causes destroys this service and its children.
-  function reinstallWidget() {
-    reinstallProc.command = [root.binary, "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"]
-    reinstallProc.startDetached()
-    // A reinstall that works reloads the widget, and this service with it; one that
-    // does not leaves the card saying when it was tried (Model.phaseCard).
-    reinstalledAtMs = Date.now()
-    refreshBar()
-    return "ok"
-  }
+  // ------------------------------------------------------------- onboarding and show
 
   // A first-run card put off (Not now, 1n2p.32): for the shell's lifetime, per client.
   function dismissOnboarding(kind, target) {
@@ -1796,9 +1777,13 @@ Item {
       "panelOpen": panelOpen,
       // The open panel's scope, view, page depth, open sheet and zoom (design doc §2.1).
       "panel": panelOpen ? panelState : null,
+      // The binary, its version and contract as its last status gave them ("" before
+      // one), and this panel's version and the contract it needs at least.
       "binary": root.binary,
-      "toolVersion": Build.TOOL_VERSION,
-      "widgetVersion": manifest && manifest.version ? String(manifest.version) : "",
+      "toolVersion": toolVersion,
+      "contractVersion": contractVersion,
+      "widgetVersion": widgetVersion,
+      "contractMin": contractMin,
       "contextGeneration": contextGeneration,
       "lanes": { "mutation": laneState(mutationLane, "mutation"), "local": laneState(localLane, "local"), "network": laneState(networkLane, "network") },
       "lastRefreshMs": lastRefreshMs,
@@ -1833,10 +1818,13 @@ Item {
     } else startBell()
   }
 
-  // A status answer (`r.argv` is what ran) names the path to run omaddons by and the
-  // doorbell's directory (omad-widget-plugin-3bcbh.3): Model.resolutionAfterAnswer and
-  // Model.doorbellDirOf say what the widget takes from it.
+  // A status answer (`r.argv` is what ran) gives omaddons' version and contract, and
+  // names the path to run omaddons by and the doorbell's directory
+  // (omad-widget-plugin-3bcbh.3): Model.resolutionAfterAnswer and Model.doorbellDirOf say
+  // what the widget takes from it.
   function learn(r, env) {
+    toolVersion = String(env.tool_version)
+    contractVersion = String(env.schema_version)
     resolution = Model.resolutionAfterAnswer(resolution, env, Model.listOf(r.argv)[0])
     var dir = Model.doorbellDirOf(env)
     if (dir !== "" && dir !== bellDir) {
@@ -1952,10 +1940,6 @@ Item {
     id: doneTimer
     interval: root.rowDoneMs
     onTriggered: root.doneRows = ({})
-  }
-
-  Process {
-    id: reinstallProc
   }
 
   // One copy (copyCommand): its own wl-copy, given the text on its standard input once
@@ -2218,7 +2202,7 @@ Item {
       watchdog.stop()
       streamGrace.stop()
       var text = proc.stdout && typeof proc.stdout.text === "string" ? proc.stdout.text : ""
-      var outcome = forced || Model.outcomeOf(exitCode, started, text, timedOut, cancelled, Build)
+      var outcome = forced || Model.outcomeOf(exitCode, started, text, timedOut, cancelled, sink.contractMin)
       var done = request
       var shown = tail
       var old = proc

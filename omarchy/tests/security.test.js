@@ -189,11 +189,9 @@ const ARGV_BUILDERS = { "toastArgv": "omarchy-notification-send", "errorToastArg
   "resultToastArgv": "omarchy-notification-send", "autoUpdateToastArgv": "omarchy-notification-send",
   "autoUpdateStoppedToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open",
   "copyArgv": "wl-copy", "pasteArgv": "wl-paste", "configEditorArgv": "omarchy-launch-config-editor" }
-// Two argv outside the three sources, allowed exactly as written: `show()`'s fallback
-// when the shell's summon facade is missing, and the self-reinstall (a fixed literal,
-// detached, check 2).
+// One argv outside the three sources, allowed exactly as written: `show()`'s fallback
+// when the shell's summon facade is missing.
 const SUMMON_FALLBACK = '["omarchy-shell", "shell", "summon", Model.PLUGIN_ID, "{}"]'
-const REINSTALL = '[root.binary, "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"]'
 
 // 2. Process launching (M3-D2, M3-D3): no shell, no string-form launch, an imperative
 // launch only detached, and the lane's child from the run's argv alone.
@@ -264,6 +262,31 @@ function checkEnvironment(files) {
   return out
 }
 
+// 16. The widget's own folder (omad-widget-plugin-3bcbh.4): only Omarchy's plugin
+// commands write it, so a reviewed checkout is what runs. No runtime file builds an argv
+// holding `omarchy install`, `omarchy remove` or `omarchy plugin`, or names a
+// `omarchy-plugin-*` tool; nothing starts detached (the self-reinstall's way); and the
+// classifier refuses both paths a CLI fix might offer, so they show as commands to copy.
+const OWN_FOLDER_ARGV = /"omarchy"\s*,\s*"(install|remove|plugin)"|"omarchy-plugin[\w-]*"/
+function checkOwnFolder(files) {
+  const out = []
+  for (const name of Object.keys(files)) {
+    for (const l of lines(files[name])) {
+      if (OWN_FOLDER_ARGV.test(l.text)) out.push(violation(name, l.n, "an argv that writes the widget's own folder: " + l.text.trim().slice(0, 60)))
+      if (/\bstartDetached\(/.test(l.text)) out.push(violation(name, l.n, "a detached start: " + l.text.trim().slice(0, 60)))
+    }
+  }
+  const model = files["Model.js"] || ""
+  if (!/^var OWN_FOLDER_PATHS = \["omarchy install", "omarchy remove"\]$/m.test(codeOf(model))) {
+    out.push(violation("Model.js", 1, "OWN_FOLDER_PATHS is not exactly omarchy install and omarchy remove"))
+  }
+  const classify = functionBody(model, "classifyCliArgv")
+  if (!classify || !/if \(OWN_FOLDER_PATHS\.indexOf\(path\) !== -1\) \{\s*verdict\.reason = "own_folder"\s*return verdict/.test(classify.body)) {
+    out.push(violation("Model.js", classify ? classify.line : 1, "classifyCliArgv does not refuse the widget's own folder (OWN_FOLDER_PATHS)"))
+  }
+  return out
+}
+
 // 3. Argv provenance (M3-D2): every argv comes from Model.buildArgv, Model.cliArgv (the
 // classifier) or one of the four literal tools.
 function checkProvenance(files) {
@@ -299,9 +322,10 @@ function checkProvenance(files) {
       if (!ok) out.push(violation("Model.js", fn.line, name + " returns something other than " + tool + "'s argv: " + r))
     }
   }
-  // Processes: a literal tool, the exact reinstall, the lane's argv, or the clipboard's
-  // argv from its builder alone (omad-phcg: a copy reads wl-copy's exit, and a paste
-  // wl-paste's output, so each runs as a Process, never from a literal argv).
+  // Processes: a literal tool, the lane's argv, or the clipboard's argv from its builder
+  // alone (omad-phcg: a copy reads wl-copy's exit, and a paste wl-paste's output, so each
+  // runs as a Process, never from a literal argv). No command is assigned: the one that
+  // was, the self-reinstall, is gone (omad-widget-plugin-3bcbh.4).
   for (const name of qmlNames(files)) {
     for (const l of lines(files[name])) {
       const prop = l.text.match(/^\s*command:\s*(.*)$/)
@@ -311,7 +335,7 @@ function checkProvenance(files) {
         const copy = /^Model\.copyArgv\([\w.]+\)\s*$/.test(prop[1]) || /^Model\.pasteArgv\(\)\s*$/.test(prop[1])
         if (!copy && (!tool || !LITERAL_TOOLS.includes(tool[1]))) out.push(violation(name, l.n, "a Process command from no allowed source: " + prop[1].slice(0, 60)))
       }
-      if (assigned && assigned[1].trim() !== REINSTALL) out.push(violation(name, l.n, "a Process command from no allowed source: " + assigned[1].slice(0, 60)))
+      if (assigned) out.push(violation(name, l.n, "a Process command from no allowed source: " + assigned[1].slice(0, 60)))
     }
   }
   const service = codeOf(files["Service.qml"] || "")
@@ -967,6 +991,7 @@ const CHECKS = [
   ["13. standard input", checkStdin],
   ["14. the clipboard", checkClipboard],
   ["15. the environment", checkEnvironment],
+  ["16. the widget's own folder", checkOwnFolder],
 ]
 
 // ------------------------------------------------------------------ the tests
@@ -984,18 +1009,23 @@ describe("the scans cover the finished widget", () => {
     })
   }
 
-  // omad-widget-plugin-3bcbh.3: the widget finds its binary, its environment and its
-  // doorbell itself, and its id is Model.PLUGIN_ID, so a widget cloned with no Build.js
-  // needs it only for its build's version (omad-widget-plugin-3bcbh.4 retires that too).
-  test("Build.js gives the widget nothing but its build's version", () => {
-    const read = new Set()
+  // omad-widget-plugin-3bcbh.3 and .4: the widget finds its binary, its environment and
+  // its doorbell itself, its id is Model.PLUGIN_ID, and it reads any contract from its
+  // manifest's minimum, so a widget cloned from its repository, which has no Build.js,
+  // is whole: no runtime file imports or reads one.
+  test("no runtime file imports or reads Build.js", () => {
+    const found = []
     for (const [name, text] of Object.entries(REAL)) {
-      for (const m of codeOf(text).matchAll(/\bBuild\.([A-Za-z_]\w*)/g)) if (m[1] !== "js") read.add(name + ": Build." + m[1])
-      for (const m of codeOf(text).matchAll(/\bbuild\.([A-Za-z_]\w*)/g)) read.add(name + ": build." + m[1])
+      for (const l of lines(text)) if (/\bBuild\b|Build\.js|\bbuild\.[A-Z_]+\b/.test(l.text)) found.push(name + ":" + l.n + ": " + l.text.trim())
     }
-    expect([...read].filter((r) => !/\.TOOL_VERSION$/.test(r))).toEqual([])
+    expect(found).toEqual([])
   })
 })
+
+// Where a planted block goes in Service.qml: its root item, and inside the doorbell's
+// Process.
+const SERVICE_ROOT = "  Component.onDestruction: Store.clear(root)\n"
+const BELL = "    id: bellProc\n"
 
 // Each check over a copy with one violation planted, which it must report.
 const PLANTED = [
@@ -1006,7 +1036,8 @@ const PLANTED = [
   ["1. rendering", checkRendering, "PlainLabel exposing textFormat",
     plant(REAL, "PlainLabel.qml", "  property alias text: label.text\n", "  property alias textFormat: label.textFormat\n"), /lets a user set textFormat/],
   ["2. process launching", checkLaunching, "an imperative launch that is not detached",
-    replaced(REAL, "Service.qml", "    reinstallProc.startDetached()\n", "    reinstallProc.running = true\n"), /reinstallProc runs without startDetached\(\)/],
+    plant(REAL, "Service.qml", "  function afterStatus() {\n", '    bellProc.command = ["inotifywait", "/tmp"]\n    bellProc.running = true\n'),
+    /bellProc runs without startDetached\(\)/],
   ["2. process launching", checkLaunching, "a lane child given more than its argv",
     replaced(REAL, "Service.qml", '{ "stdinEnabled": input !== null, "command": argv }', '{ "stdinEnabled": input !== null, "command": argv, "workingDirectory": r.label }'),
     /a child process from more than the run's argv/],
@@ -1015,19 +1046,19 @@ const PLANTED = [
   ["2. process launching", checkLaunching, "a shell",
     plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["bash", "-c", "xdg-open ~"])\n'), /through a shell/],
   ["3. argv provenance", checkProvenance, "a hand-built omaddons argv",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: [root.binary, "update"]\n  }\n'), /no allowed source/],
+    plant(REAL, "Service.qml", SERVICE_ROOT, '  Process {\n    id: planted\n    command: [root.binary, "update"]\n  }\n'), /no allowed source/],
   // omad-phcg: a copy runs as a Process with its builder's argv, never a literal one.
   ["3. argv provenance", checkProvenance, "a copy through a Process with a literal argv",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: ["wl-copy", "--", root.binary]\n  }\n'), /a Process command from no allowed source: \["wl-copy"/],
+    plant(REAL, "Service.qml", SERVICE_ROOT, '  Process {\n    id: planted\n    command: ["wl-copy", "--", root.binary]\n  }\n'), /a Process command from no allowed source: \["wl-copy"/],
   ["3. argv provenance", checkProvenance, "a copy Process whose builder is not the clipboard's",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: Model.configEditorArgv(root.binary)\n  }\n'), /a Process command from no allowed source: Model\.configEditorArgv/],
+    plant(REAL, "Service.qml", SERVICE_ROOT, '  Process {\n    id: planted\n    command: Model.configEditorArgv(root.binary)\n  }\n'), /a Process command from no allowed source: Model\.configEditorArgv/],
   // omad-r0to: the config editor runs only through its builder (the path `config` said).
   ["3. argv provenance", checkProvenance, "a bare config editor launch",
     plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["omarchy-launch-config-editor", root.filter])\n'), /an argv from no allowed source/],
   ["3. argv provenance", checkProvenance, "a browser launch without isSafeUrl",
     plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["omarchy-launch-browser", svc.lastError.message])\n'), /without Model\.isSafeUrl/],
   ["4. files and URLs", checkFiles, "a FileView writing",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  FileView {\n    path: "/tmp/x"\n    Component.onCompleted: setText("x")\n  }\n'), /writes no file/],
+    plant(REAL, "Service.qml", SERVICE_ROOT, '  FileView {\n    path: "/tmp/x"\n    Component.onCompleted: setText("x")\n  }\n'), /writes no file/],
   ["5. slots", checkSlots, "{query} in update_addon's argv",
     plant(REAL, "Model.js", '"update_addon":   { "argv": ["update", "-t", "{target}", "--", "{addon}"', ', "{query}"'), /update_addon mutates and takes \{query\}/],
   ["5. slots", checkSlots, "a query slot passed to update_addon",
@@ -1144,7 +1175,7 @@ const PLANTED = [
   // 1n2p.37: the clipboard is read through its builder alone, and a child's standard
   // input is the lane's request's, only for sync -'s confirmed preview.
   ["3. argv provenance", checkProvenance, "a paste through a Process with a literal argv",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: ["wl-paste", "--primary"]\n  }\n'),
+    plant(REAL, "Service.qml", SERVICE_ROOT, '  Process {\n    id: planted\n    command: ["wl-paste", "--primary"]\n  }\n'),
     /a Process command from no allowed source: \["wl-paste"/],
   ["3. argv provenance", checkProvenance, "a lane run without argvOf's standard input",
     replaced(REAL, "Service.qml", "laneNamed(name).run(r, built.argv, built.stdin)", "laneNamed(name).run(r, built.argv, r.label)"),
@@ -1170,7 +1201,7 @@ const PLANTED = [
     replaced(REAL, "Service.qml", "          child.write(copier.text)\n", "          child.write(root.binary)\n"),
     /Service\.qml:\d+: a child's standard input outside the lane's request: child\.write\(root\.binary\)/],
   ["13. standard input", checkStdin, "a Process outside the copier given standard input",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n", "    stdinEnabled: true\n"),
+    plant(REAL, "Service.qml", BELL, "    stdinEnabled: true\n"),
     /Service\.qml:\d+: a child's standard input outside the lane's request: stdinEnabled: true/],
   ["14. the clipboard", checkClipboard, "the text back in wl-copy's argv",
     replaced(REAL, "Model.js", 'return ["wl-copy", "--type", "text/plain"]', 'return ["wl-copy", "--", text]'),
@@ -1180,20 +1211,38 @@ const PLANTED = [
     /the copier does not write its text to wl-copy's standard input/],
   // omad-widget-plugin-3bcbh.3: a child's variables never come from the widget's data.
   ["15. the environment", checkEnvironment, "a Process whose environment comes from a setting",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n", '    environment: ({ "LD_PRELOAD": root.settings.binary })\n'),
+    plant(REAL, "Service.qml", BELL, '    environment: ({ "LD_PRELOAD": root.settings.binary })\n'),
     /Service\.qml:\d+: a process environment set by the widget: environment: \(\{ "LD_PRELOAD"/],
-  ["15. the environment", checkEnvironment, "the reinstall given an answer's home",
-    replaced(REAL, "Service.qml", "    reinstallProc.startDetached()\n",
-      '    reinstallProc.environment = { "HOME": root.widgetInfo.home }\n    reinstallProc.startDetached()\n'),
-    /a process environment set by the widget: reinstallProc\.environment = /],
+  ["15. the environment", checkEnvironment, "the doorbell's watcher given an answer's home",
+    replaced(REAL, "Service.qml", "    bellStarted = false\n",
+      '    bellStarted = false\n    bellProc.environment = { "HOME": root.widgetInfo.home }\n'),
+    /a process environment set by the widget: bellProc\.environment = /],
   ["15. the environment", checkEnvironment, "the lane's child created with the request's variables",
     replaced(REAL, "Service.qml", '{ "stdinEnabled": input !== null, "command": argv }', '{ "stdinEnabled": input !== null, "command": argv, "environment": r.spec.env }'),
     /a child created with an environment/],
   ["15. the environment", checkEnvironment, "a child clearing the session's environment",
-    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n", "    clearEnvironment: true\n"),
+    plant(REAL, "Service.qml", BELL, "    clearEnvironment: true\n"),
     /a process environment set by the widget: clearEnvironment: true/],
   ["15. the environment", checkEnvironment, "buildArgv returning variables from its options",
     replaced(REAL, "Model.js", "concat(filled) }", "concat(filled), env: o.env }"), /buildArgv returns an environment/],
+  // omad-widget-plugin-3bcbh.4: only Omarchy's plugin commands write the widget's folder.
+  ["16. the widget's own folder", checkOwnFolder, "a template that reinstalls the panel",
+    plant(REAL, "Model.js", "var COMMANDS = {\n", '  "reinstall_panel": { "argv": ["omarchy", "install"], "mutates": true },\n'),
+    /Model\.js:\d+: an argv that writes the widget's own folder/],
+  ["16. the widget's own folder", checkOwnFolder, "a detached self-update",
+    plant(REAL, "Service.qml", "  function afterStatus() {\n", '    Quickshell.execDetached([root.binary, "omarchy", "install"])\n'),
+    /Service\.qml:\d+: an argv that writes the widget's own folder/],
+  ["16. the widget's own folder", checkOwnFolder, "Omarchy's plugin update run by the panel",
+    plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["omarchy", "plugin", "update", Model.PLUGIN_ID])\n'),
+    /PanelView\.qml:\d+: an argv that writes the widget's own folder/],
+  ["16. the widget's own folder", checkOwnFolder, "a process started detached",
+    plant(REAL, "Service.qml", "  function afterStatus() {\n", "    bellProc.startDetached()\n"), /a detached start/],
+  ["16. the widget's own folder", checkOwnFolder, "a classifier that lets a fix reinstall the panel",
+    replaced(REAL, "Model.js", "if (OWN_FOLDER_PATHS.indexOf(path) !== -1) {", "if (false) {"),
+    /classifyCliArgv does not refuse the widget's own folder/],
+  ["16. the widget's own folder", checkOwnFolder, "a classifier that lets a fix remove the panel",
+    replaced(REAL, "Model.js", 'var OWN_FOLDER_PATHS = ["omarchy install", "omarchy remove"]', 'var OWN_FOLDER_PATHS = ["omarchy install"]'),
+    /OWN_FOLDER_PATHS is not exactly/],
 ]
 
 describe("each scan catches its planted violation", () => {

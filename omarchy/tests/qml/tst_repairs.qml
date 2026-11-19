@@ -4,14 +4,14 @@ import Quickshell
 import Quickshell.Io
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 import "Fixtures.js" as Fixtures
 
 // The doctor's repairs (G2) over envelopes the real binary wrote (pipeline step 1's
 // repair scenes, through the Fixtures.js step 4 generates): the real Service on the mock
-// Process, and a PanelView over it where a step presses keys. The fixture Build.js
-// stamps its own context, so a path is matched here by its tail; bun asserts how it is
-// shortened. The binary's reads the service makes on its own (a checkpoint, an update
+// Process, and a PanelView over it where a step presses keys. The fixture session's home
+// is not the one the binary wrote the scenes in, so a path is matched here by its tail;
+// bun asserts how it is shortened. The binary's reads the service makes on its own (a checkpoint, an update
 // check, Lua errors, the views') are answered with empty envelopes by `settle`.
 TestCase {
   id: testCase
@@ -97,7 +97,7 @@ TestCase {
   }
 
   function envelope(command, data) {
-    return JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": command,
+    return JSON.stringify({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command,
       "exit_code": 0, "partial": false, "data": data, "warnings": [], "commands": [] })
   }
 

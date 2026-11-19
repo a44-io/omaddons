@@ -251,10 +251,6 @@ var PLUGIN_ID = "a44.omaddons"
 // PATH finds it, as a terminal would (omad-widget-plugin-3bcbh.3).
 var BINARY_NAME = "omaddons"
 
-// The command the missing card shows and copies: it installs omaddons, as the README
-// does. The widget never runs it.
-var INSTALL_COMMAND = "mise use -g github:a44-io/omaddons"
-
 // How the widget finds omaddons (omad-widget-plugin-3bcbh.3): `{reported, refused,
 // version}`. `reported` is the path the last answer named to run omaddons by ("" runs
 // BINARY_NAME through PATH); `refused` a named path that failed to start, never taken
@@ -348,8 +344,6 @@ var DEFAULT_SETTINGS = {
   "refreshIntervalSec": 300,
   // The first run's keybinding tip (1n2p.32): On until the player has seen it.
   "keyHint": "On",
-  // The widget reinstalls itself once after its binary was upgraded (1n2p.35).
-  "autoUpdateWidget": "On",
   // Routine updates installed by themselves after a background check (1n2p.36): Off
   // until the player turns it on.
   "autoUpdate": "Off"
@@ -365,7 +359,6 @@ var SETTING_RULES = {
   "notifyWhilePlaying": { "type": "switch" },
   "refreshIntervalSec": { "type": "integer", "min": 30, "max": 3600, "step": 30 },
   "keyHint": { "type": "switch" },
-  "autoUpdateWidget": { "type": "switch" },
   "autoUpdate": { "type": "switch" }
 }
 
@@ -415,7 +408,7 @@ function boolSetting(settings, key, def) {
 // The panel's own settings, in the sheet's order (design doc §2.7). `keyHint` is the
 // first run's tip, which seeing it turns off: never a setting a player picks.
 var PANEL_SETTING_KEYS = ["panelWidth", "refreshIntervalSec", "autoCheck", "autoUpdate", "notifyErrors", "notifyUpdates", "notifyWhilePlaying",
-  "autoUpdateWidget", "binary"]
+  "binary"]
 
 // "30 s", "5 min", "1 min 30 s".
 function secondsText(n) {
@@ -850,6 +843,9 @@ var WIDGET_FLAGS = ["--json", "--robot", "--format", "--actor", "--reason", "--p
 // and undo snapshots for a client. The widget never runs one, not even behind a Yes: the
 // row shows the command to copy, run from a terminal after its preview.
 var IRREVERSIBLE_FLAGS = ["--purge"]
+// The paths that write the widget's own folder, which only Omarchy's plugin commands
+// write (omad-widget-plugin-3bcbh.4): never the widget's to run.
+var OWN_FOLDER_PATHS = ["omarchy install", "omarchy remove"]
 // What a row that shows an irreversible command says about it.
 var IRREVERSIBLE_NOTE = "It deletes omaddons' backups and undo snapshots for good, so it runs only from a terminal, after its preview."
 var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true, "run": true, "value": true,
@@ -1353,6 +1349,13 @@ function classifyCliArgv(argv, plan) {
     verdict.reason = "apply_outside_plan"
     return verdict
   }
+  // The widget never touches its own folder (omad-widget-plugin-3bcbh.4): Omarchy's
+  // plugin commands add, update and remove it, so `omarchy install` and `omarchy remove`
+  // are commands for a terminal, never a button.
+  if (OWN_FOLDER_PATHS.indexOf(path) !== -1) {
+    verdict.reason = "own_folder"
+    return verdict
+  }
   var row = CLI_PATHS[path]
   verdict.ok = true
   verdict.path = path
@@ -1408,27 +1411,40 @@ function parseEnvelope(stdout) {
   }
 }
 
-function schemaMajor(version) {
-  var match = /^([0-9]+)\./.exec(version)
-  return match ? parseInt(match[1], 10) : -1
+// The oldest contract this widget's code reads (omad-widget-plugin-3bcbh.4). Its
+// manifest's `omaddons.contract_min` may raise it, never lower it (contractMin), so a
+// hand-edited manifest cannot make it accept less than its code needs.
+var CONTRACT_MIN = "1.2"
+
+// A contract version "M.N" as [M, N], or null.
+function contractVersion(text) {
+  var m = typeof text === "string" ? /^([0-9]{1,4})\.([0-9]{1,4})$/.exec(text) : null
+  return m ? [parseInt(m[1], 10), parseInt(m[2], 10)] : null
 }
 
-// Whether an envelope came from the binary this widget was built for: schema 1.x, the
-// stamped tool version, and an installed widget that is not outdated. `build` is
-// Build.js.
-function compatible(env, build) {
-  if (!envelopeOk(env) || !build || schemaMajor(env.schema_version) !== 1) return false
-  if (env.tool_version !== build.TOOL_VERSION) return false
-  var widget = env.data && typeof env.data === "object" ? env.data.widget : null
-  return !(widget && widget.outdated === true)
+// The contract this widget needs at least: its manifest's `omaddons.contract_min` when
+// that is a later 1.x than CONTRACT_MIN, else CONTRACT_MIN. The shell hands a service
+// its manifest (`manifest`); with none, or no key, the compiled minimum.
+function contractMin(manifest) {
+  var own = manifest && typeof manifest === "object" && manifest.omaddons && typeof manifest.omaddons === "object"
+    ? manifest.omaddons.contract_min : null
+  var asked = contractVersion(own)
+  var base = contractVersion(CONTRACT_MIN)
+  return asked && asked[0] === base[0] && asked[1] > base[1] ? own : CONTRACT_MIN
 }
 
-// The banner of the read-only incompatible state.
-function incompatibleText(env, build) {
-  var mine = build && build.TOOL_VERSION ? build.TOOL_VERSION : "an unknown build"
-  if (!envelopeOk(env)) return "The binary's answer is not one this widget reads (it is from omaddons " + mine + "); reinstall the widget"
-  if (env.tool_version !== mine) return "The widget is from omaddons " + mine + ", the binary is " + env.tool_version + "; reinstall the widget"
-  return "The widget's files differ from the binary's; reinstall the widget"
+// Whether this widget reads an envelope (omad-widget-plugin-3bcbh.4): its contract is
+// 1.x at least `minimum` (contractMin's), from any omaddons version. Every 1.x change is
+// additive (the contract's semantic manifest and released baselines hold it), so a later
+// 1.x reads as the minimum does.
+function compatible(env, minimum) {
+  return envelopeOk(env) && incompatibleOf(env, minimum) === null
+}
+
+// The banner of the read-only incompatible state: the card's title (phaseCard).
+function incompatibleText(env, minimum) {
+  var why = incompatibleOf(env, minimum)
+  return why ? copy("card." + why.kind + ".title") : ""
 }
 
 // --------------------------------------------------------- the scheduler (M3-D11)
@@ -1588,10 +1604,11 @@ function utf8Length(text) {
 
 // How a run ended: "missing" (never started), "cancelled", "timeout", "oversized"
 // (stdout over WIDGET_OUTPUT_MAX_BYTES), "malformed" (no envelope), "incompatible"
-// (when `build` is given and the envelope is from another build), "failed" (an
-// envelope with `ok: false`) or "ok". A missing binary never emits `exited` (F0), and
-// a signal death has no envelope, so neither relies on `exitCode`.
-function outcomeOf(exitCode, started, stdout, timedOut, cancelled, build) {
+// (when the contract `minimum` is given and the envelope's is not one this widget reads,
+// incompatibleOf), "failed" (an envelope with `ok: false`) or "ok". A missing binary
+// never emits `exited` (F0), and a signal death has no envelope, so neither relies on
+// `exitCode`.
+function outcomeOf(exitCode, started, stdout, timedOut, cancelled, minimum) {
   if (!started) return "missing"
   if (cancelled) return "cancelled"
   if (timedOut) return "timeout"
@@ -1599,7 +1616,7 @@ function outcomeOf(exitCode, started, stdout, timedOut, cancelled, build) {
   if (text.length > WIDGET_OUTPUT_MAX_BYTES || utf8Length(text) > WIDGET_OUTPUT_MAX_BYTES) return "oversized"
   var env = parseEnvelope(text)
   if (!env) return "malformed"
-  if (build && !compatible(env, build)) return "incompatible"
+  if (minimum && !compatible(env, minimum)) return "incompatible"
   return env.ok ? "ok" : "failed"
 }
 
@@ -1774,7 +1791,7 @@ function argvParts(argv) {
 // recommendation, a warning's fix), from its argv's shape (1n2p.28): a template where one
 // fits it exactly (a reinstall or an update previews first, as the Addons and Updates
 // views' do; a backup runs as `b` does); the frame's own action or view where the panel
-// has one (Check now, a refresh, reinstalling the panel, the Errors, Backups or Addons
+// has one (Check now, a refresh, the Errors, Backups or Addons
 // view); else the argv itself through the classifier. `{fix, action, go, label}`, one of
 // the three set and `label` its button's name; null for a command the widget never runs.
 function issueFix(action, targets) {
@@ -1814,7 +1831,6 @@ function issueFix(action, targets) {
   }
   if (p.path === "outdated" && plain && !p.target) return way("go", { "kind": "check", "view": "", "target": "" }, copy("issues.fix.check"))
   if (p.path === "status" && !p.target && p.operands.length === 0) return way("go", { "kind": "refresh", "view": "", "target": "" }, copy("issues.fix.refresh"))
-  if (p.path === "omarchy install" && plain && !p.target) return way("go", { "kind": "widget", "view": "", "target": "" }, copy("issues.fix.widget"))
   if (p.path === "errors" && plain) return way("go", { "kind": "view", "view": "errors", "target": p.target }, copy("issues.fix.errors"))
   if (p.path === "backup list" && plain) return way("go", { "kind": "view", "view": "backups", "target": p.target }, copy("issues.fix.backups"))
   if (p.path === "list" && p.operands.length === 0 && p.flags.every(function(f) { return ["-v", "--verbose", "--unmanaged"].indexOf(f) !== -1 })) {
@@ -2270,48 +2286,21 @@ function retryDelayMs(step, delays) {
   return list[Math.max(0, Math.min(list.length - 1, Math.floor(num(step))))]
 }
 
-// Why another build answered (M3-D42), typed: `{kind, theirs}`. "version": another
-// omaddons version, or an answer this widget cannot read at all (`theirs` "" then);
-// "outdated": the same version, but the widget's files are not the ones this binary
-// installs.
-function incompatibleOf(env, build) {
-  var mine = build && build.TOOL_VERSION ? String(build.TOOL_VERSION) : ""
-  if (!envelopeOk(env) || schemaMajor(env.schema_version) !== 1) return { "kind": "version", "theirs": "" }
-  if (env.tool_version !== mine) return { "kind": "version", "theirs": str(env.tool_version) }
-  return { "kind": "outdated", "theirs": str(env.tool_version) }
-}
-
-// Whether the widget reinstalls itself now, after its binary was upgraded (1n2p.35):
-// `{run, version, why}`, `why` the first reason it does not ("" when it runs). It runs
-// only when another omaddons version answered (`incompatible`, incompatibleOf's, of kind
-// "version" with the version read), from the binary that installed it (no `binary`
-// setting: a build the player pointed it at may be a test build), whose status (`env`)
-// says the installed widget is outdated and serves this state (as `status` recommends
-// the reinstall), with no client running (unknown counts as running), the
-// `autoUpdateWidget` setting On, and not tried for that version yet in this service's
-// life (`tried`). Never for the same version with other files: a reinstall from that
-// binary leaves the widget at its version, so a fresh service, which remembers nothing,
-// never meets the "version" case again until the binary changes, and no reload loop can
-// start. Otherwise the phase card offers the update.
-function selfUpdate(input) {
-  var i = input && typeof input === "object" ? input : {}
-  var answer = function(why, version) { return { "run": why === "", "version": str(version), "why": why } }
-  var incompatible = i.incompatible && typeof i.incompatible === "object" ? i.incompatible : null
-  if (i.phase !== "incompatible" || !incompatible) return answer("compatible")
-  if (incompatible.kind !== "version") return answer("same_version")
-  var version = str(incompatible.theirs)
-  if (version === "") return answer("unreadable")
-  if (setting(i.settings, "autoUpdateWidget") !== "On") return answer("setting_off", version)
-  if (setting(i.settings, "binary") !== "") return answer("binary_set", version)
-  if (str(i.tried) === version) return answer("tried", version)
-  var data = i.env && i.env.data && typeof i.env.data === "object" ? i.env.data : {}
-  var widget = data.widget && typeof data.widget === "object" ? data.widget : null
-  if (!widget || widget.installed !== true || widget.outdated !== true) return answer("not_outdated", version)
-  if (widget.context_matches === false) return answer("other_state", version)
-  var summary = data.summary && typeof data.summary === "object" ? data.summary : null
-  var running = summary && Array.isArray(summary.running) ? summary.running : null
-  if (running === null || running.length > 0) return answer("running", version)
-  return answer("", version)
+// Why this widget does not read an envelope (omad-widget-plugin-3bcbh.4), typed: null
+// when it does, else `{kind, theirs, needs}`, `theirs` the envelope's contract ("" when
+// it names none) and `needs` the minimum. "too_old": a contract below the minimum, so
+// omaddons is older than this panel needs; "too_new": another major, or no contract this
+// panel can read at all, so the panel is older than omaddons. The tool version decides
+// nothing: any omaddons speaking the contract is this widget's.
+function incompatibleOf(env, minimum) {
+  var needs = contractVersion(minimum) ? minimum : CONTRACT_MIN
+  var floor = contractVersion(needs)
+  var theirsText = env && typeof env === "object" && typeof env.schema_version === "string" ? env.schema_version : ""
+  var theirs = contractVersion(theirsText)
+  var answer = function(kind) { return { "kind": kind, "theirs": theirs ? theirsText : "", "needs": needs } }
+  if (!theirs || theirs[0] > floor[0]) return answer("too_new")
+  if (theirs[0] < floor[0] || theirs[1] < floor[1]) return answer("too_old")
+  return null
 }
 
 // Whether an automatic update starts now (1n2p.36): `{run, drop, why}`, `why` the first
@@ -2462,15 +2451,16 @@ function failureWords(label, outcome) {
 }
 
 // The card shown in place of the views when omaddons cannot be used (design doc §6.4):
-// `{kind, title, sentence, notes[], actions[], details}`. `phase` is the service's;
-// `info` is `{binary, home, outcome, failure, deadlineSec, mine, incompatible,
-// reinstalledAtMs, nowMs}`: the binary run (BINARY_NAME through PATH, or the setting's
-// path), the session's home, the last status read's outcome and its failure facts
-// (failureDetails), the local deadline, this panel's version, incompatibleOf's answer,
-// and when Update the panel last ran. The kinds: missing, malformed, oversized,
-// timeout, stuck (no answer), version, outdated (another build); null when the phase
-// has no card. Actions: retry, reinstall, copy_command (INSTALL_COMMAND, which the
-// missing card's sentence shows), copy_details.
+// `{kind, title, sentence, notes[], actions[], details, command}`. `phase` is the
+// service's; `info` is `{binary, home, outcome, failure, deadlineSec, mine,
+// incompatible}`: the binary run (BINARY_NAME through PATH, or the setting's path), the
+// session's home, the last status read's outcome and its failure facts (failureDetails),
+// the local deadline, this panel's version and incompatibleOf's answer. The kinds:
+// missing, malformed, oversized, timeout, stuck (no answer), too_old (omaddons older
+// than this panel needs) and too_new (the panel older than omaddons); null when the
+// phase has no card. Actions: retry, copy_command (`command`, which the sentence shows:
+// installing omaddons, upgrading it, or updating the panel through Omarchy; the widget
+// runs none of them, omad-widget-plugin-3bcbh.4), copy_details.
 function phaseCard(phase, info) {
   var i = info && typeof info === "object" ? info : {}
   var kind = ""
@@ -2478,21 +2468,21 @@ function phaseCard(phase, info) {
   else if (phase === "unreachable") {
     var outcome = str(i.outcome)
     kind = ["timeout", "oversized", "stuck"].indexOf(outcome) !== -1 ? outcome : "malformed"
-  } else if (phase === "incompatible") kind = i.incompatible && i.incompatible.kind === "outdated" ? "outdated" : "version"
+  } else if (phase === "incompatible") kind = i.incompatible && i.incompatible.kind === "too_old" ? "too_old" : "too_new"
   if (!kind) return null
-  var theirs = i.incompatible ? str(i.incompatible.theirs) : ""
-  var slots = { "path": homeless(str(i.binary), i.home), "seconds": num(i.deadlineSec), "mine": str(i.mine) || copy("details.unknown"),
-    "theirs": theirs || copy("card.version.unreadable"), "command": INSTALL_COMMAND }
+  var why = i.incompatible && typeof i.incompatible === "object" ? i.incompatible : {}
+  var command = ["missing", "too_old", "too_new"].indexOf(kind) !== -1 ? copy("card." + kind + ".command", { "id": PLUGIN_ID }) : ""
+  var slots = { "path": homeless(str(i.binary), i.home), "seconds": num(i.deadlineSec), "command": command,
+    "theirs": str(why.theirs) || copy("card.too_new.unreadable"), "needs": str(why.needs) || CONTRACT_MIN }
   // A missing binary the setting names says so: PATH found none, or that path is gone.
   var sentence = kind === "missing" && str(i.binary) !== "" && i.binary !== BINARY_NAME ? copy("card.missing.set", slots)
     : copy("card." + kind + ".sentence", slots)
   var card = { "kind": kind, "title": copy("card." + kind + ".title"), "sentence": sentence,
-    "notes": [], "actions": [], "details": "" }
-  if (kind === "version" || kind === "outdated") {
-    card.actions = ["reinstall", "retry"]
-    if (num(i.reinstalledAtMs) > 0) {
-      card.notes.push(copy("card.reinstalled", { "age": sinceText(new Date(i.reinstalledAtMs).toISOString(), i.nowMs) || copy("details.unknown") }))
-    }
+    "notes": [], "actions": [], "details": "", "command": command }
+  // Another contract: read-only until omaddons or the panel is updated, which the
+  // player does; a later answer in the contract takes the card away.
+  if (kind === "too_old" || kind === "too_new") {
+    card.actions = ["retry", "copy_command"]
     return card
   }
   card.notes.push(copy("card.retrying"))
@@ -2503,12 +2493,6 @@ function phaseCard(phase, info) {
   card.actions = ["retry", "copy_details"]
   card.details = failureDetails(i.failure, { "HOME": i.home }, i.mine)
   return card
-}
-
-// The command a missing binary's card shows and copies: it installs omaddons
-// (INSTALL_COMMAND), for the player to run; the widget never does.
-function missingBinaryCommand() {
-  return INSTALL_COMMAND
 }
 
 // An interrupted change, from `status` alone (journal, each client's attention): `{clients,
@@ -4198,11 +4182,12 @@ var SUGGESTION_GLYPH = 0xF02FD
 // neither runnable nor a command to copy, so it is never listed either.)
 var SUGGESTION_SILENT = ["install_skill", "list_unmanaged"]
 // Warning codes the Issues view leaves to another place (design doc §6.5.3): the hero
-// (`running_unknown`), the phase card (`widget_outdated`), the activity bar
-// (`tx_in_progress`), nowhere (`state_version_older`, `atomic_swap_unavailable`), or
-// `status`'s own problems, which name the same thing with its fix (the doctor's
-// cached checks: a credential file others can read, an interrupted change, a newer
-// omaddons's state).
+// (`running_unknown`), the activity bar (`tx_in_progress`), nowhere
+// (`state_version_older`, `atomic_swap_unavailable`), or `status`'s own problems, which
+// name the same thing with its fix (the doctor's cached checks: an outdated widget, a
+// credential file others can read, an interrupted change, a newer omaddons's state).
+// An outdated widget's fix, `omarchy install`, is a command to copy, never a button
+// (OWN_FOLDER_PATHS).
 var NOTE_ELSEWHERE = ["running_unknown", "widget_outdated", "tx_in_progress", "state_version_older", "atomic_swap_unavailable",
   "credential_file_mode", "journal_pending", "state_version_newer"]
 
@@ -5967,7 +5952,6 @@ if (typeof module !== "undefined") {
     sessionContext: sessionContext,
     PLUGIN_ID: PLUGIN_ID,
     BINARY_NAME: BINARY_NAME,
-    INSTALL_COMMAND: INSTALL_COMMAND,
     emptyResolution: emptyResolution,
     reportedPath: reportedPath,
     binaryFor: binaryFor,
@@ -5996,6 +5980,8 @@ if (typeof module !== "undefined") {
     finishSheet: finishSheet,
     envelopeOk: envelopeOk,
     parseEnvelope: parseEnvelope,
+    CONTRACT_MIN: CONTRACT_MIN,
+    contractMin: contractMin,
     compatible: compatible,
     incompatibleText: incompatibleText,
     NETWORK_QUEUE_MAX: NETWORK_QUEUE_MAX,
@@ -6020,7 +6006,6 @@ if (typeof module !== "undefined") {
     RETRY_BACKOFF_MS: RETRY_BACKOFF_MS,
     retryDelayMs: retryDelayMs,
     incompatibleOf: incompatibleOf,
-    selfUpdate: selfUpdate,
     autoUpdateDue: autoUpdateDue,
     updatesWaiting: updatesWaiting,
     autoAfterText: autoAfterText,
@@ -6034,7 +6019,6 @@ if (typeof module !== "undefined") {
     failureDetails: failureDetails,
     failureWords: failureWords,
     phaseCard: phaseCard,
-    missingBinaryCommand: missingBinaryCommand,
     interruptedChange: interruptedChange,
     listOf: listOf,
     welcomeCard: welcomeCard,

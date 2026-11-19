@@ -5,7 +5,7 @@ import Quickshell.Io
 import qs.Commons
 import "../.."
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 import "Fixtures.js" as Fixtures
 
 // An addon page's Versions (1n2p.24) on the real Service and frame, over the binary's
@@ -83,7 +83,7 @@ TestCase {
   function the(name) { return { "text": Fixtures.text(name), "code": 0 } }
 
   function envelope(command, data) {
-    return { "text": JSON.stringify({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION, "command": command,
+    return { "text": JSON.stringify({ "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": command,
       "exit_code": 0, "partial": false, "data": data, "warnings": [], "commands": [] }) }
   }
 

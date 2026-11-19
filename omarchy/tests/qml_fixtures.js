@@ -1,9 +1,10 @@
 // The envelope scenes for the QML tests (pipeline step 4): every `*.json` envelope the
 // real binary wrote in step 1 (the contract dumps aside), as a QML JavaScript resource
 // `tst_plans.qml` and `tst_snapshots.qml` import. Each envelope's `tool_version` becomes
-// the fixture Build.js's, so Model.compatible accepts it under that Build.js; nothing
-// else changes. The optional third argument is where tst_snapshots.qml saves its PNGs
-// (empty: it renders and checks them, and saves nothing).
+// the tests' own (qml/Versions.js), so a render reads the same at every release; any
+// version is the widget's, and nothing else changes. The optional third argument is
+// where tst_snapshots.qml saves its PNGs (empty: it renders and checks them, and saves
+// nothing).
 //
 // Usage: bun omarchy/tests/qml_fixtures.js <fixtures dir> <out file> [<snapshot dir>]
 // The pipeline writes <out file> into its temporary copy of the plugin only: never a
@@ -18,9 +19,9 @@ if (!fixtures || !out) {
   process.exit(2)
 }
 
-const build = fs.readFileSync(path.join(__dirname, "fixtures", "Build.js"), "utf8")
-const version = (build.match(/^var TOOL_VERSION = "([^"]+)"$/m) || [])[1]
-if (!version) throw new Error("the fixture Build.js has no TOOL_VERSION")
+const versions = fs.readFileSync(path.join(__dirname, "qml", "Versions.js"), "utf8")
+const version = (versions.match(/^var TOOL_VERSION = "([^"]+)"$/m) || [])[1]
+if (!version) throw new Error("qml/Versions.js has no TOOL_VERSION")
 
 const text = {}
 for (const file of fs.readdirSync(fixtures).sort()) {

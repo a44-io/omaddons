@@ -93,11 +93,15 @@ describe("settings", () => {
     expect(rows.map((r) => [r.key, r.kind, r.text])).toEqual([
       ["panelWidth", "integer", "600 px"], ["refreshIntervalSec", "integer", "1 min 30 s"], ["autoCheck", "switch", "Off"],
       ["autoUpdate", "switch", "Off"], ["notifyErrors", "switch", "On"], ["notifyUpdates", "switch", "Off"],
-      ["notifyWhilePlaying", "switch", "Off"], ["autoUpdateWidget", "switch", "On"], ["binary", "path", "the one on your PATH"]])
+      ["notifyWhilePlaying", "switch", "Off"], ["binary", "path", "the one on your PATH"]])
     expect(rows.every((r) => r.label !== "" && r.about !== "" && !r.label.startsWith("settings."))).toBe(true)
     expect([30, 60, 300, 3600].map(M.secondsText)).toEqual(["30 s", "1 min", "5 min", "60 min"])
-    expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6, 7, 8]],
-      ["omaddons", []], ["Clients", [9, 10]]])
+    expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6, 7]],
+      ["omaddons", []], ["Clients", [8, 9]]])
+    // omad-widget-plugin-3bcbh.4: Omarchy updates the panel, never the panel itself, so no
+    // setting turns that on; a value a player saved before is ignored.
+    expect(Object.keys(M.DEFAULT_SETTINGS)).not.toContain("autoUpdateWidget")
+    expect(M.setting({ autoUpdateWidget: "On" }, "autoUpdateWidget")).toBeUndefined()
     // Automatic updates (1n2p.36): Off by default, as the manifest says; a failure that
     // turned them off is said on their row until they are on again.
     expect([M.DEFAULT_SETTINGS.autoUpdate, manifest.barWidget.defaults.autoUpdate]).toEqual(["Off", "Off"])
@@ -106,41 +110,6 @@ describe("settings", () => {
       "Turned off after an automatic update failed. On tries again after the next check.", M.copy("settings.panel.autoUpdate.about")])
     expect(M.settingsSections({ settings: {}, autoUpdateStopped: true })[0].rows.find((r) => r.key === "autoUpdate").about)
       .toBe(M.copy("settings.panel.autoUpdate.stopped"))
-  })
-
-  // 1n2p.35: after its binary was upgraded, the widget reinstalls itself once, only when
-  // everything says it is safe; otherwise the phase card offers it.
-  test("the widget updates itself only from the binary that installed it, with nothing running, once per version", () => {
-    const env = (widget, running) => {
-      const e = fixture("status-updates")
-      e.tool_version = "9.9.9"
-      e.data.widget = widget === undefined ? { omarchy: true, installed: true, enabled: true, version: M.DEFAULT_SETTINGS ? "0.1.0" : "",
-        outdated: true, context_matches: true } : widget
-      e.data.summary.running = running === undefined ? [] : running
-      return e
-    }
-    const base = { phase: "incompatible", incompatible: { kind: "version", theirs: "9.9.9" }, env: env(), settings: {}, tried: "" }
-    const decide = (change) => M.selfUpdate(Object.assign({}, base, change))
-    expect(decide({})).toEqual({ run: true, version: "9.9.9", why: "" })
-    const why = (change) => decide(change).why
-    expect([
-      why({ phase: "ok" }),
-      why({ incompatible: { kind: "outdated", theirs: "9.9.9" } }),
-      why({ incompatible: { kind: "version", theirs: "" } }),
-      why({ settings: { autoUpdateWidget: "Off" } }),
-      why({ settings: { binary: "/opt/test-build/omaddons" } }),
-      why({ tried: "9.9.9" }),
-      why({ env: env(null) }),
-      why({ env: env({ installed: true, outdated: false, context_matches: true }) }),
-      why({ env: env({ installed: true, outdated: true, context_matches: false }) }),
-      why({ env: env(undefined, ["retail"]) }),
-      why({ env: env(undefined, null) }),
-    ]).toEqual(["compatible", "same_version", "unreadable", "setting_off", "binary_set", "tried", "not_outdated", "not_outdated",
-      "other_state", "running", "running"])
-    // Tried for an older version: the newer one runs once more.
-    expect(decide({ tried: "9.9.8" }).run).toBe(true)
-    // An invalid setting value is its default, On.
-    expect(decide({ settings: { autoUpdateWidget: "maybe" } }).run).toBe(true)
   })
 
   // omad-r0to: the GitHub section, from status's `github` (the binary's), and the sheet's
@@ -262,10 +231,10 @@ describe("settings", () => {
     const after = M.omaddonsSettingRows(M.reduceConfig(fixture("config-after")))
     expect(after[2].text).toBe("Daily, full copies where needed")
     expect(M.settingsSections({ settings: {}, config: null }).map((s) => [s.title, s.rows.length, s.note])).toEqual([
-      ["Panel", 9, ""], ["omaddons", 0, "Reading omaddons' settings…"], ["Clients", 2, ""]])
+      ["Panel", 8, ""], ["omaddons", 0, "Reading omaddons' settings…"], ["Clients", 2, ""]])
     expect(M.settingsSections({ settings: {}, config: null, configFailed: "x" })[1].note).toBe("Couldn't read omaddons' settings.")
     // config.toml's own line closes the sheet once `config` said where it is.
-    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
     // RG-63: the automatic update's wait, Off and 1 to 48 hours; a step sets it through
     // its own `config set update_min_age_hours -- <n>`.
     const wait = rows[4]
@@ -825,23 +794,51 @@ describe("classifyCliArgv", () => {
 
 // --------------------------------------------------------- compatibility
 
+// omad-widget-plugin-3bcbh.4: the widget reads any 1.x from the minimum its manifest
+// names (never below its compiled one), whatever omaddons' version.
 describe("compatibility", () => {
   const env = fixture("status-updates")
-  const build = { TOOL_VERSION: env.tool_version }
+  const at = (contract, extra) => Object.assign({}, env, { schema_version: contract }, extra || {})
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
 
-  test("the same build is compatible", () => {
+  test("the binary's envelope is compatible, from any tool version", () => {
     expect(M.envelopeOk(env)).toBe(true)
-    expect(M.compatible(env, build)).toBe(true)
-  })
-
-  test("another tool version, another schema major or an outdated widget is not", () => {
-    expect(M.compatible(env, { TOOL_VERSION: "0.0.0-other" })).toBe(false)
-    expect(M.compatible(Object.assign({}, env, { schema_version: "2.0" }), build)).toBe(false)
+    expect(env.schema_version).toBe(M.CONTRACT_MIN)
+    expect(M.compatible(env, M.CONTRACT_MIN)).toBe(true)
+    expect(M.compatible(at("1.2", { tool_version: "9.9.9" }), M.CONTRACT_MIN)).toBe(true)
+    // An outdated widget is status's business now, not the widget's.
     const outdated = JSON.parse(JSON.stringify(env))
     outdated.data.widget = { outdated: true }
-    expect(M.compatible(outdated, build)).toBe(false)
-    expect(M.incompatibleText(env, { TOOL_VERSION: "0.0.0-other" })).toContain("0.0.0-other")
-    expect(M.compatible({ ok: true }, build)).toBe(false)
+    expect(M.compatible(outdated, M.CONTRACT_MIN)).toBe(true)
+  })
+
+  test("1.1 is too old, 1.2 and 1.9 are read, 2.0 is too new", () => {
+    const min = M.contractMin(manifest)
+    expect(min).toBe("1.2")
+    expect(["1.1", "1.2", "1.9", "2.0", "0.9", "1.10"].map((v) => [v, M.compatible(at(v), min)])).toEqual([
+      ["1.1", false], ["1.2", true], ["1.9", true], ["2.0", false], ["0.9", false], ["1.10", true]])
+    expect(M.incompatibleOf(at("1.1"), min)).toEqual({ kind: "too_old", theirs: "1.1", needs: "1.2" })
+    expect(M.incompatibleOf(at("2.0"), min)).toEqual({ kind: "too_new", theirs: "2.0", needs: "1.2" })
+    expect(M.incompatibleOf(at("0.9"), min).kind).toBe("too_old")
+    // No contract this panel can read at all: the panel is the older one.
+    for (const odd of ["", "1", "v1.2", "1.2.3", 12]) expect(M.incompatibleOf(at(odd), min)).toEqual({ kind: "too_new", theirs: "", needs: "1.2" })
+    expect(M.incompatibleOf(at("1.9"), min)).toBeNull()
+    expect(M.incompatibleText(at("1.1"), min)).toBe("omaddons is older than this panel needs")
+    expect(M.incompatibleText(at("2.0"), min)).toBe("This panel is older than omaddons")
+    expect(M.incompatibleText(env, min)).toBe("")
+    expect(M.compatible({ ok: true }, min)).toBe(false)
+  })
+
+  test("the manifest's minimum raises the compiled one, never lowers it", () => {
+    const named = (v) => ({ omaddons: { contract_min: v } })
+    expect([M.contractMin(null), M.contractMin({}), M.contractMin({ omaddons: null }), M.contractMin(named("1.2"))]).toEqual(["1.2", "1.2", "1.2", "1.2"])
+    expect(M.contractMin(named("1.5"))).toBe("1.5")
+    // Lower, another major, or no version: the code's own minimum.
+    for (const v of ["1.1", "1.0", "0.9", "2.0", "x", 1.5, null]) expect([v, M.contractMin(named(v))]).toEqual([v, "1.2"])
+    expect(M.compatible(at("1.4"), M.contractMin(named("1.5")))).toBe(false)
+    expect(M.incompatibleOf(at("1.4"), M.contractMin(named("1.5")))).toEqual({ kind: "too_old", theirs: "1.4", needs: "1.5" })
+    // A minimum that is no version is the compiled one.
+    expect(M.incompatibleOf(at("1.1"), "nonsense").needs).toBe("1.2")
   })
 })
 
@@ -1103,7 +1100,9 @@ describe("scheduler", () => {
 
   test("outcomeOf", () => {
     const ok = fixtureText("update.json")
-    const build = { TOOL_VERSION: JSON.parse(ok).tool_version }
+    const min = M.CONTRACT_MIN
+    // Another contract, never another tool version, is incompatible.
+    const contract = (v) => JSON.stringify(Object.assign(JSON.parse(ok), { schema_version: v, tool_version: "9.9.9" }))
     expect(M.outcomeOf(0, false, "", false, false)).toBe("missing")
     expect(M.outcomeOf(0, true, ok, false, true)).toBe("cancelled")
     expect(M.outcomeOf(15, true, "", true, false)).toBe("timeout")
@@ -1111,9 +1110,11 @@ describe("scheduler", () => {
     expect(M.outcomeOf(0, true, "é".repeat(M.WIDGET_OUTPUT_MAX_BYTES / 2 + 1), false, false)).toBe("oversized")
     expect(M.outcomeOf(9, true, "", false, false)).toBe("malformed")
     expect(M.outcomeOf(0, true, "{\"half\":", false, false)).toBe("malformed")
-    expect(M.outcomeOf(0, true, ok, false, false, { TOOL_VERSION: "0.0.0-other" })).toBe("incompatible")
-    expect(M.outcomeOf(3, true, fixtureText("failure.json"), false, false, build)).toBe("failed")
-    expect(M.outcomeOf(0, true, ok, false, false, build)).toBe("ok")
+    expect(M.outcomeOf(0, true, contract("1.1"), false, false, min)).toBe("incompatible")
+    expect(M.outcomeOf(0, true, contract("2.0"), false, false, min)).toBe("incompatible")
+    expect(M.outcomeOf(0, true, contract("1.9"), false, false, min)).toBe("ok")
+    expect(M.outcomeOf(3, true, fixtureText("failure.json"), false, false, min)).toBe("failed")
+    expect(M.outcomeOf(0, true, ok, false, false, min)).toBe("ok")
   })
 })
 
@@ -1326,16 +1327,16 @@ describe("failures and recovery", () => {
     expect([0, 1, 2].map((s) => M.retryDelayMs(s, [30, 60]))).toEqual([30, 60, 60])
   })
 
-  test("another build is typed: another version, an answer it cannot read, or the same version's other files", () => {
-    const build = { TOOL_VERSION: fixture("status-idle").tool_version }
+  test("another contract is typed: omaddons too old for the panel, or the panel too old for omaddons", () => {
     const other = JSON.parse(JSON.stringify(fixture("status-idle")))
     other.tool_version = "9.9.9"
-    expect(M.incompatibleOf(other, build)).toEqual({ kind: "version", theirs: "9.9.9" })
-    expect(M.incompatibleOf({ nonsense: true }, build)).toEqual({ kind: "version", theirs: "" })
+    expect(M.incompatibleOf(other, M.CONTRACT_MIN)).toBeNull()
+    expect(M.incompatibleOf({ nonsense: true }, M.CONTRACT_MIN)).toEqual({ kind: "too_new", theirs: "", needs: "1.2" })
     const major = JSON.parse(JSON.stringify(fixture("status-idle")))
     major.schema_version = "2.0"
-    expect(M.incompatibleOf(major, build).kind).toBe("version")
-    expect(M.incompatibleOf(fixture("status-idle"), build).kind).toBe("outdated")
+    expect(M.incompatibleOf(major, M.CONTRACT_MIN).kind).toBe("too_new")
+    major.schema_version = "1.1"
+    expect(M.incompatibleOf(major, M.CONTRACT_MIN).kind).toBe("too_old")
   })
 
   test("the details say what ran and how it ended, with the home as ~ and the binary as omaddons", () => {
@@ -1378,7 +1379,7 @@ describe("failures and recovery", () => {
     expect([missing.kind, missing.title, missing.actions]).toEqual(["missing", "Can't find omaddons", ["retry", "copy_command"]])
     expect(missing.sentence).toBe("The panel runs omaddons from your PATH and found none there. Install it with mise use -g github:a44-io/omaddons, then press Retry.")
     expect(missing.notes).toEqual(["The panel tries again by itself."])
-    expect(M.missingBinaryCommand()).toBe("mise use -g github:a44-io/omaddons")
+    expect(missing.command).toBe("mise use -g github:a44-io/omaddons")
     // The `binary` setting's path, gone: the card names it, home as ~.
     expect(card("missing").sentence).toBe("Nothing starts at ~/.cargo/bin/omaddons, the binary set in the panel's settings. "
       + "Install omaddons with mise use -g github:a44-io/omaddons, or clear that setting, then press Retry.")
@@ -1395,17 +1396,28 @@ describe("failures and recovery", () => {
       expect([outcome, c.title, c.sentence, c.actions]).toEqual([outcome, title, sentence, ["retry", "copy_details"]])
       expect(c.details).toBe(M.failureDetails(Object.assign({}, FACTS, { outcome }), { HOME: "/home/fixture" }, "0.1.0"))
     }
-    const version = card("incompatible", { incompatible: { kind: "version", theirs: "0.2.0" } })
-    expect([version.kind, version.title, version.actions, version.notes]).toEqual(["version", "The panel is from another omaddons version", ["reinstall", "retry"], []])
-    expect(version.sentence).toBe("Panel 0.1.0, omaddons 0.2.0. Update the panel to match; until then it only shows what it read last.")
-    expect(card("incompatible", { incompatible: { kind: "version", theirs: "" } }).sentence).toContain("omaddons a version this panel can't read")
-    const outdated = card("incompatible", { incompatible: { kind: "outdated", theirs: "0.1.0" }, reinstalledAtMs: NOW - 120000 })
-    expect([outdated.kind, outdated.title]).toEqual(["outdated", "The panel is out of date"])
-    expect(outdated.notes).toEqual(["Update the panel ran 2 min ago; this is still the old panel."])
+    // omad-widget-plugin-3bcbh.4: another contract, read-only, with the command that
+    // upgrades omaddons or updates the panel, shown and copied, never run.
+    const old = card("incompatible", { incompatible: { kind: "too_old", theirs: "1.1", needs: "1.2" } })
+    expect([old.kind, old.title, old.actions, old.notes, old.command]).toEqual(["too_old", "omaddons is older than this panel needs",
+      ["retry", "copy_command"], [], "mise upgrade github:a44-io/omaddons"])
+    expect(old.sentence).toBe("It answers in contract 1.1, and this panel reads 1.2 or later. "
+      + "Upgrade it with mise upgrade github:a44-io/omaddons, then press Retry; until then the panel only shows what it read last.")
+    const newer = card("incompatible", { incompatible: { kind: "too_new", theirs: "2.0", needs: "1.2" } })
+    expect([newer.kind, newer.title, newer.actions, newer.notes, newer.command]).toEqual(["too_new", "This panel is older than omaddons",
+      ["retry", "copy_command"], [], "omarchy plugin update " + M.PLUGIN_ID])
+    expect(newer.sentence).toBe("omaddons answers in contract 2.0, which this panel can't read. "
+      + "Update the panel with omarchy plugin update " + M.PLUGIN_ID + ", then press Retry; until then it only shows what it read last.")
+    expect(card("incompatible", { incompatible: { kind: "too_new", theirs: "", needs: "1.2" } }).sentence).toContain("in contract a version this panel can't read")
+    // No card's words or command name a reinstall of the panel by omaddons.
+    for (const id of Object.keys(M.COPY).filter((k) => k.startsWith("card."))) expect([id, /omarchy install|reinstall/i.test(M.COPY[id])]).toEqual([id, false])
+    // Only a failure with details copies them; the others copy their command, or nothing.
+    expect(card("unreachable", { outcome: "timeout" }).command).toBe("")
     for (const phase of ["ok", "starting", "", undefined]) expect(M.phaseCard(phase, INFO)).toBeNull()
     // With no facts at all, a card still says something.
     expect(M.phaseCard("unreachable", {}).kind).toBe("malformed")
-    expect(M.phaseCard("incompatible", null).kind).toBe("version")
+    expect(M.phaseCard("incompatible", null).kind).toBe("too_new")
+    expect(M.phaseCard("incompatible", null).sentence).toContain("in contract a version this panel can't read")
   })
 
   test("an interrupted change is announced from status alone, and never while another process commits", () => {
@@ -2827,7 +2839,6 @@ describe("the Issues and Search views", () => {
       ["every_backup", ["omaddons", "backup", "create"], ["backup_all", "Back up every client"]],
       ["a_check", ["omaddons", "outdated"], ["check::", "Check for updates"]],
       ["a_refresh", ["omaddons", "status"], ["refresh::", "Refresh"]],
-      ["the_panel", ["omaddons", "omarchy", "install"], ["widget::", "Reinstall panel"]],
       ["the_lua_errors", ["omaddons", "errors"], ["view:errors:", "Read Lua errors"]],
       ["the_backups", ["omaddons", "backup", "list", "-t", "retail"], ["view:backups:retail", "Refresh backups"]],
       ["a_look", ["omaddons", "list", "-t", "retail", "-v"], ["view:installed:retail", "Show Retail's addons"]],
@@ -2842,8 +2853,19 @@ describe("the Issues and Search views", () => {
       // Nothing for what the panel never runs.
       ["a_forced_command", ["omaddons", "install", "Foo", "-t", "retail", "--force"], null],
       ["a_repair_outside_its_flow", ["omaddons", "doctor", "fix", "--only", "fm-x"], null],
+      // omad-widget-plugin-3bcbh.4: the panel's own folder is Omarchy's to write.
+      ["the_panel", ["omaddons", "omarchy", "install"], null],
+      ["the_panel_removed", ["omaddons", "omarchy", "remove"], null],
     ], way)
     expect(M.issueFix(null, targets)).toBeNull()
+    // Those show as commands to copy, for a terminal.
+    for (const argv of [["omaddons", "omarchy", "install"], ["omaddons", "omarchy", "install", "--section", "left"], ["omaddons", "omarchy", "remove"]]) {
+      const action = M.cliAction(argv.join(" "), argv, false)
+      expect([argv.join(" "), action.runnable, action.terminal, M.classifyCliArgv(argv).reason]).toEqual([argv.join(" "), false, true, "own_folder"])
+      expect(() => M.cliArgv(argv, opts())).toThrow(/own_folder/)
+    }
+    // Reading the panel's state stays a command the panel may run.
+    expect(M.classifyCliArgv(["omaddons", "omarchy", "status"]).ok).toBe(true)
     // A long name: the button cuts it, the recorded reason keeps it whole.
     const long = "Details_DamageMeter_StreamerModeAndPluginsCollection_Classic"
     const repair = M.issueFix(M.cliAction("x", ["omaddons", "install", long, "-t", "retail", "--reinstall"], false), targets)

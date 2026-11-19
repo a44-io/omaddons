@@ -193,10 +193,6 @@ var COPY = {
   "settings.panel.notifyUpdates.about": "When a check finds updates that weren't there before.",
   "settings.panel.notifyWhilePlaying": "Notify while a game runs",
   "settings.panel.notifyWhilePlaying.about": "Off holds them while a game runs, and says what came up in one notification when it stops.",
-  "settings.panel.autoUpdateWidget": "Update the widget by itself",
-  "settings.panel.autoUpdateWidget.about": "After omaddons was upgraded, the widget reinstalls itself once, while no game runs. Off: it asks first.",
-  // The widget updating itself (1n2p.35), said as it starts: the bar reloads next.
-  "widget.self_update": "Updating the widget for omaddons {version}: the bar reloads.",
   "settings.panel.binary": "omaddons binary",
   "settings.panel.binary.about": "Empty runs the omaddons on your PATH. A full path runs another build.",
   "settings.panel.binary.edit": "Type a full path, then Enter. Esc keeps the one before.",
@@ -757,6 +753,9 @@ var COPY = {
   "card.missing.sentence": "The panel runs omaddons from your PATH and found none there. Install it with {command}, then press Retry.",
   // The `binary` setting names a path where nothing starts.
   "card.missing.set": "Nothing starts at {path}, the binary set in the panel's settings. Install omaddons with {command}, or clear that setting, then press Retry.",
+  // The commands the cards show and copy, for the player to run; the panel runs none
+  // (omad-widget-plugin-3bcbh.4). `{id}` is the panel's plugin id.
+  "card.missing.command": "mise use -g github:a44-io/omaddons",
   "card.malformed.title": "omaddons didn't answer",
   "card.malformed.sentence": "It stopped before it said anything the panel can read.",
   "card.oversized.title": "omaddons didn't answer",
@@ -765,15 +764,17 @@ var COPY = {
   "card.timeout.sentence": "It was still working after {seconds} seconds, so the panel stopped it.",
   "card.stuck.title": "omaddons stopped answering",
   "card.stuck.sentence": "It did not end even when stopped, so the panel let it go and freed its worker.",
-  "card.version.title": "The panel is from another omaddons version",
-  "card.version.sentence": "Panel {mine}, omaddons {theirs}. Update the panel to match; until then it only shows what it read last.",
-  "card.version.unreadable": "a version this panel can't read",
-  "card.outdated.title": "The panel is out of date",
-  "card.outdated.sentence": "Its files differ from this omaddons. Update the panel; until then it only shows what it read last.",
+  // Another contract (omad-widget-plugin-3bcbh.4): read-only until the player upgrades
+  // omaddons, or updates the panel through Omarchy.
+  "card.too_old.title": "omaddons is older than this panel needs",
+  "card.too_old.sentence": "It answers in contract {theirs}, and this panel reads {needs} or later. Upgrade it with {command}, then press Retry; until then the panel only shows what it read last.",
+  "card.too_old.command": "mise upgrade github:a44-io/omaddons",
+  "card.too_new.title": "This panel is older than omaddons",
+  "card.too_new.sentence": "omaddons answers in contract {theirs}, which this panel can't read. Update the panel with {command}, then press Retry; until then it only shows what it read last.",
+  "card.too_new.unreadable": "a version this panel can't read",
+  "card.too_new.command": "omarchy plugin update {id}",
   "card.retrying": "The panel tries again by itself.",
-  "card.reinstalled": "Update the panel ran {age}; this is still the old panel.",
   "card.action.retry": "Retry",
-  "card.action.reinstall": "Update the panel",
   "card.action.copy_command": "Copy command",
   "card.action.copy_details": "Copy details",
   // A failure's fix that searches for a name nothing is known for (omad-z5il).
@@ -861,7 +862,6 @@ var COPY = {
   "issues.fix.backup_all": "Back up every client",
   "issues.fix.check": "Check for updates",
   "issues.fix.refresh": "Refresh",
-  "issues.fix.widget": "Reinstall panel",
   "issues.fix.errors": "Read Lua errors",
   "issues.fix.backups": "Refresh backups",
   "issues.fix.addons": "Show {owner} addons",

@@ -1,11 +1,11 @@
 import QtQuick
 import QtTest
 import "../../Model.js" as Model
-import "../../Build.js" as Build
+import "Versions.js" as Versions
 
-// Pipeline step 4's first test: Model.js and the fixture Build.js load in Qt's own
-// engine, and a few pure functions answer as they do under bun (the residual risk of
-// two JavaScript engines). F2 adds the service's tests beside it.
+// Pipeline step 4's first test: Model.js loads in Qt's own engine, and a few pure
+// functions answer as they do under bun (the residual risk of two JavaScript engines).
+// F2 adds the service's tests beside it.
 TestCase {
   name: "Smoke"
 
@@ -27,7 +27,7 @@ TestCase {
   }
 
   function test_reducers_run() {
-    var env = { "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "status",
+    var env = { "ok": true, "schema_version": "1.2", "tool_version": Versions.TOOL_VERSION, "command": "status",
       "data": { "summary": { "state": "updates", "updates": { "available": 2, "targets": ["retail"] } },
         "targets": [{ "id": "retail", "updates": { "available": 2 }, "issues": [] }] } }
     var model = Model.reduceStatus(env)
@@ -36,6 +36,10 @@ TestCase {
     compare(bar.badge, 2)
     compare(bar.tooltip[0], "2 updates")
     compare(bar.tooltip[1], "retail · 2 updates")
-    verify(Model.compatible(env, Build))
+    // Any omaddons version in a contract the panel reads (omad-widget-plugin-3bcbh.4).
+    verify(Model.compatible(env, Model.CONTRACT_MIN))
+    env.schema_version = "1.1"
+    verify(!Model.compatible(env, Model.CONTRACT_MIN))
+    compare(Model.contractMin({ "omaddons": { "contract_min": "1.0" } }), Model.CONTRACT_MIN)
   }
 }

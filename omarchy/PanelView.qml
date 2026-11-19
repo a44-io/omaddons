@@ -699,14 +699,14 @@ Item {
     Qt.callLater(root.focusNow)
   }
 
-  // A card's action: Retry asks again, Update the panel reinstalls the widget, and the
-  // two copies put a command or the details on the clipboard (never run).
+  // A card's action: Retry asks again, and the two copies put the card's command (to
+  // install or upgrade omaddons, or update the panel) or its details on the clipboard,
+  // never run.
   function runCard(action) {
     if (!svc) return false
     if (action === "retry") svc.refresh()
-    else if (action === "reinstall") svc.reinstallWidget()
     else if (action === "copy_command" || action === "copy_details") {
-      var text = action === "copy_command" ? Model.missingBinaryCommand() : (card ? card.details : "")
+      var text = !card ? "" : action === "copy_command" ? card.command : card.details
       return svc.copyCommand(text, function(ok) { root.cardCopied(ok) })
     } else return false
     return true

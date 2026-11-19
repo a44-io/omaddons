@@ -5,9 +5,9 @@
 #   1. the real binary writes envelopes for the reducers (write_widget_fixtures);
 #   2. bun tests omarchy/Model.js over them and writes built-argv.json;
 #   3. the binary's clap parses exactly the argv bun built (validate_built_argv);
-#   4. with --qml, qmltestrunner runs omarchy/tests/qml over a copy of the plugin with
-#      the hand-written fixture Build.js (tst_snapshots.qml renders every state into
-#      $OMADDONS_WIDGET_OUT/snapshots, removed with the rest).
+#   4. with --qml, qmltestrunner runs omarchy/tests/qml over a copy of the plugin, as a
+#      clone of the plugin repository holds it (tst_snapshots.qml renders every state
+#      into $OMADDONS_WIDGET_OUT/snapshots, removed with the rest).
 #
 # `--snapshots <dir>` (`argc widget-snapshots`) runs step 1, then only tst_snapshots.qml,
 # and keeps its PNGs in <dir>. It draws with Omarchy's own shell kit and the current
@@ -151,7 +151,6 @@ if ((qml)); then
     find "$renders" -maxdepth 1 -name '*.png' -type f -delete
     plugin=$OMADDONS_WIDGET_OUT/plugin
     cp -r omarchy "$plugin"
-    cp omarchy/tests/fixtures/Build.js "$plugin/Build.js"
     # The scenes step 1 wrote, for tst_plans.qml and tst_snapshots.qml: into the
     # temporary copy only.
     bun omarchy/tests/qml_fixtures.js "$OMADDONS_WIDGET_OUT/fixtures" "$plugin/tests/qml/Fixtures.js" "$renders"
