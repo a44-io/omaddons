@@ -1312,6 +1312,32 @@ fn bash_completes_values_from_omaddons_files() {
     log.assert_eq("failing cases", &failing, &Vec::<String>::new());
 }
 
+/// Managed addon names that are not one shell word: an adopted
+/// `WeakAuras (WeakAurasOptions)`, a WoWInterface `Deadly Boss Mods`.
+const SPACED: [&str; 2] = ["WeakAuras (WeakAurasOptions)", "Deadly Boss Mods"];
+
+/// [`SPACED`] written into `client`'s record, each a copy of Foo's entry under its own
+/// name: what the completion tests offer besides one-word names.
+fn add_spaced_names(home: &Home, client: &str) {
+    let record_file = paths(&home.env).target_record(&common::state::key_of(home, client));
+    let read = fs::read(&record_file);
+    assert!(read.is_ok(), "{}: {read:?}", record_file.display());
+    let parsed = serde_json::from_slice::<Value>(read.as_deref().unwrap_or_default());
+    assert!(parsed.is_ok(), "{}: {parsed:?}", record_file.display());
+    let Ok(mut record) = parsed else {
+        return;
+    };
+    let template = record["addons"]["foo"].clone();
+    assert!(template.is_object(), "{record}");
+    for name in SPACED {
+        let mut addon = template.clone();
+        addon["name"] = json!(name);
+        record["addons"][name.to_ascii_lowercase()] = addon;
+    }
+    let written = fs::write(&record_file, record.to_string());
+    assert!(written.is_ok(), "{}: {written:?}", record_file.display());
+}
+
 /// bash inserts what it is offered as it is, so a managed addon name that is not one shell
 /// word (an adopted `WeakAuras (WeakAurasOptions)`, a WoWInterface `Deadly Boss Mods`) is
 /// offered quoted, as one word bash reads back as that name; a name typed with its spaces
@@ -1330,17 +1356,8 @@ fn bash_offers_an_addon_name_that_is_not_one_word_quoted() {
     log.run(&home, &["install", &zip, "-t", "retail", "--json"])
         .ok();
     log.step("two more names in retail's record");
-    let record_file = paths(&home.env).target_record(&common::state::key_of(&home, "retail"));
-    let mut record: Value = serde_json::from_slice(&fs::read(&record_file).unwrap()).unwrap();
-    let foo = record["addons"]["foo"].clone();
-    assert!(foo.is_object(), "{record}");
-    let names = ["WeakAuras (WeakAurasOptions)", "Deadly Boss Mods"];
-    for name in names {
-        let mut addon = foo.clone();
-        addon["name"] = json!(name);
-        record["addons"][name.to_ascii_lowercase()] = addon;
-    }
-    fs::write(&record_file, serde_json::to_vec(&record).unwrap()).unwrap();
+    add_spaced_names(&home, "retail");
+    let names = SPACED;
 
     let script = script_of(&log, &home.env, "bash");
     let dir = home.env.root().join("bash-completion");
@@ -1465,6 +1482,8 @@ fn zsh_completes_values_from_omaddons_files() {
     };
     log.note(format!("zsh --version: {}", version_of(&zsh)));
     let f = fixture(&log);
+    // Names that are not one word: compadd quotes what it inserts (omad-bug-hunt-0shtt.44).
+    add_spaced_names(&f.home, "retail");
     let (file, cwd) = script_file(&log, &f.home, "zsh");
     let fms = failure_modes();
     let mut latest = vec!["latest".to_owned()];
@@ -1477,7 +1496,13 @@ fn zsh_completes_values_from_omaddons_files() {
         strs(&f.runs),
         strs(&fms),
     );
-    let addons = ["Bar", "Baz", "Foo"];
+    let addons = [
+        "Bar",
+        "Baz",
+        "Deadly Boss Mods",
+        "Foo",
+        "WeakAuras (WeakAurasOptions)",
+    ];
     let clients = ["era", "retail"];
     let offer = |values: &[&str], iprefix: &str| shells::ZshOffer {
         offered: owned(values),
@@ -1578,6 +1603,8 @@ fn fish_completes_values_from_omaddons_files() {
     };
     log.note(format!("fish --version: {}", version_of(&fish)));
     let f = fixture(&log);
+    // Names that are not one word: fish escapes what it inserts (omad-bug-hunt-0shtt.44).
+    add_spaced_names(&f.home, "retail");
     let (file, cwd) = script_file(&log, &f.home, "fish");
     let fms = failure_modes();
     let mut latest = vec!["latest".to_owned()];
@@ -1590,7 +1617,13 @@ fn fish_completes_values_from_omaddons_files() {
         strs(&f.runs),
         strs(&fms),
     );
-    let addons = ["Bar", "Baz", "Foo"];
+    let addons = [
+        "Bar",
+        "Baz",
+        "Deadly Boss Mods",
+        "Foo",
+        "WeakAuras (WeakAurasOptions)",
+    ];
     let clients = ["era", "retail"];
     // omad-6t56: a comma-separated list completes its last item, the rest kept, and fish
     // puts an `--option=` back in front.
@@ -1619,6 +1652,11 @@ fn fish_completes_values_from_omaddons_files() {
         // era has no addons: its own, never every client's.
         (&["remove", "-t=era", "B"], &[]),
         (&["remove", "-t", "retail", "Foo", "B"], &["Bar", "Baz"]),
+        (&["update", "-t", "retail", "Dead"], &["Deadly Boss Mods"]),
+        (
+            &["errors", "--addon", "W"],
+            &["WeakAuras (WeakAurasOptions)"],
+        ),
         (&["update", "--target=retail", ""], &addons),
         (&["pin", ""], &addons),
         (&["copy", "--from", "retail", "--to", "era", ""], &addons),
