@@ -991,25 +991,36 @@ fn a_set_aside_of_one_closing_repair_journal_leaves_the_others_close() {
         .unwrap();
         let held = hashes(&[a.clone(), b.clone()]);
 
-        for (alone, other) in [(UNREADABLE, too_new), (TOO_NEW, unreadable)] {
+        // Each alone is refused for the other, its fix the joint set-aside (omad-lg2s0)
+        // rather than the other row's explain, whose own set-aside is refused in turn.
+        let mut follow = Vec::new();
+        for (alone, other, other_fm) in [
+            (UNREADABLE, too_new, TOO_NEW),
+            (TOO_NEW, unreadable, UNREADABLE),
+        ] {
             log.step(&format!("{alone} alone is refused"));
             let ran = run(
                 &log,
                 &home,
                 &["doctor", "fix", "--only", alone, "--force", "--yes"],
             );
-            log.json("refused", ran.envelope());
+            let error = refusal(&log, &ran);
             assert_ne!(ran.run.code, 0, "{case}: {alone} alone");
             assert_eq!(
                 hashes(&[a.clone(), b.clone()]),
                 held,
                 "{case}: {alone} alone moved nothing"
             );
-            assert!(
-                ran.envelope().to_string().contains(other),
-                "{case}: {alone} alone is refused for {other}: {}",
-                ran.envelope()
+            log.assert_eq("refused for", &error["details"]["tx"], &json!(other));
+            log.assert_eq(
+                "its fix",
+                &error["fix_argv"],
+                &json!([
+                    "omaddons", "doctor", "fix", "--only", alone, "--force", "--yes", "--only",
+                    other_fm
+                ]),
             );
+            follow.push(error["fix_argv"].clone());
         }
         assert_ne!(
             change_on(&log, &home, "retail", "probe").run.code,
@@ -1017,14 +1028,15 @@ fn a_set_aside_of_one_closing_repair_journal_leaves_the_others_close() {
             "{case}: changes stay refused"
         );
 
-        log.step("both in one run");
-        let only = format!("{UNREADABLE},{TOO_NEW}");
-        let ran = run(
-            &log,
-            &home,
-            &["doctor", "fix", "--only", &only, "--force", "--yes"],
-        );
-        ran.ok();
+        log.step("the refusal's fix: both in one run");
+        let argv: Vec<&str> = follow[0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .skip(1)
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
+        run(&log, &home, &argv).ok();
         assert!(!a.exists() && !b.exists(), "{case}: both set aside");
         change_on(&log, &home, "retail", "after").ok();
     }

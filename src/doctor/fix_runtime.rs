@@ -828,7 +828,8 @@ impl FixEffects for RealEffects<'_> {
             command: "doctor fix",
             undo: None,
         };
-        let (outcome, cleanup) = repair::commit(&ctx, rtx, &plan.lowered, &meta)?;
+        let (outcome, cleanup) = repair::commit(&ctx, rtx, &plan.lowered, &meta)
+            .map_err(|error| joint_set_aside(error, plan, &self.req.argv))?;
         self.cleanup = Some(cleanup);
         Ok(outcome)
     }
@@ -895,6 +896,52 @@ impl FixEffects for RealEffects<'_> {
 
 /// `argv` bound to `token`: the same command without `--dry-run` and any earlier
 /// `--if-match`, then `--if-match <token>`, without presentation flags.
+/// A set-aside refused by another stuck journal this run leaves (its fence, or the close
+/// it keeps, omad-bug-hunt-0shtt.42): its fix becomes this run with that journal's row
+/// added to `--only`, which sets both aside in one repair, instead of the other row's
+/// `doctor explain`, whose own set-aside this run's journal would refuse in turn
+/// (omad-lg2s0). Only for a run that selects with `--only` (adding one widens it) and a
+/// journal whose row is a set-aside; `--if-match` is dropped, as the plan grows. Any
+/// other error is returned as it is.
+fn joint_set_aside(mut error: Error, plan: &FixPlan, argv: &[String]) -> Error {
+    if plan.suspended.is_empty() {
+        return error;
+    }
+    let Some(other) = error.details["tx"]
+        .as_str()
+        .and_then(|tx| tx.parse::<TxId>().ok())
+    else {
+        return error;
+    };
+    if plan.suspended.iter().any(|s| s.tx == other) {
+        return error;
+    }
+    let Some(reason) = error.details["reason"]
+        .as_str()
+        .and_then(crate::engine::journal::StopReason::parse)
+    else {
+        return error;
+    };
+    let fm = ids::for_stop_reason(reason);
+    let sets_aside = super::registry::row(fm)
+        .and_then(|row| row.fix.as_ref())
+        .is_some_and(|fixer| {
+            fixer
+                .ops
+                .contains(&crate::engine::repair_action::FixKind::Suspend)
+        });
+    let selects = argv
+        .iter()
+        .any(|arg| arg == "--only" || arg.starts_with("--only="));
+    if !(sets_aside && selects) {
+        return error;
+    }
+    let mut joint = crate::cli::without_flag(argv, "--if-match");
+    joint.extend(["--only".to_owned(), fm.to_owned()]);
+    error.fix = Suggestion::command(crate::cli::fix_argv(&joint));
+    error
+}
+
 fn bound_argv(argv: &[String], token: &str) -> Vec<String> {
     let without = crate::cli::without_flag(argv, "--if-match");
     let mut bound: Vec<String> = without.into_iter().filter(|a| a != "--dry-run").collect();
@@ -2411,5 +2458,105 @@ mod tests {
                 "since"
             ]
         );
+    }
+
+    /// A set-aside refused by another stuck journal points at the joint set-aside: this
+    /// run's argv with that journal's row added to `--only`, `--if-match` dropped
+    /// (omad-lg2s0). Anything else keeps its fix: a run that sets nothing aside, one
+    /// without `--only` (adding one would narrow it), a journal this run sets aside too,
+    /// one whose row has no set-aside, or an error naming no journal.
+    #[test]
+    fn a_set_aside_refused_by_another_stuck_journal_points_at_both_in_one_run() {
+        let other = TxId::new();
+        let refused = |tx: Option<TxId>, reason: &str| {
+            let mut error = Error::new(
+                ErrorCode::StateTooNew,
+                "refused",
+                Suggestion::text("doctor explain"),
+            );
+            error.details = serde_json::json!({ "reason": reason });
+            if let Some(tx) = tx {
+                error.details["tx"] = serde_json::json!(tx.to_string());
+            }
+            error
+        };
+        let words = |args: &[&str]| args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        let suspending = |tx: TxId| {
+            let mut plan = plan(1, false);
+            plan.suspended.push(crate::doctor::fix::Suspended {
+                fix: 0,
+                tx,
+                attribution: crate::engine::repair_action::Attribution::Complete,
+                unattributed: Vec::new(),
+            });
+            plan
+        };
+        let mine = suspending(TxId::new());
+        let only = words(&[
+            "omaddons",
+            "doctor",
+            "fix",
+            "--only",
+            ids::JOURNAL_UNREADABLE,
+            "--force",
+            "--yes",
+            "--if-match",
+            "pc1:token",
+        ]);
+        let joint = joint_set_aside(refused(Some(other), "journal_too_new"), &mine, &only);
+        assert_eq!(
+            joint.fix.argv(),
+            Some(
+                &words(&[
+                    "omaddons",
+                    "doctor",
+                    "fix",
+                    "--only",
+                    ids::JOURNAL_UNREADABLE,
+                    "--force",
+                    "--yes",
+                    "--only",
+                    ids::JOURNAL_TOO_NEW,
+                ])[..]
+            )
+        );
+
+        let everything = words(&["omaddons", "doctor", "fix", "--force", "--yes"]);
+        for (case, error, plan, argv) in [
+            (
+                "sets nothing aside",
+                refused(Some(other), "journal_too_new"),
+                plan(1, false),
+                &only,
+            ),
+            (
+                "no --only",
+                refused(Some(other), "journal_too_new"),
+                mine.clone(),
+                &everything,
+            ),
+            (
+                "sets it aside too",
+                refused(Some(other), "journal_too_new"),
+                suspending(other),
+                &only,
+            ),
+            (
+                "a row with no set-aside",
+                refused(Some(other), "saved_variables"),
+                mine.clone(),
+                &only,
+            ),
+            (
+                "no journal",
+                refused(None, "journal_too_new"),
+                mine.clone(),
+                &only,
+            ),
+        ] {
+            let kept = joint_set_aside(error, &plan, argv);
+            assert_eq!(kept.fix.argv(), None, "{case}");
+            assert_eq!(kept.fix.display(), "doctor explain", "{case}");
+        }
     }
 }
