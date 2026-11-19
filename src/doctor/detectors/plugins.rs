@@ -12,6 +12,7 @@ use crate::doctor::budget::Budget;
 use crate::doctor::finding::{Confidence, Detected, Evidence, Observation, Subject};
 use crate::doctor::selection::Selection;
 use crate::doctor::view::{BoundedRead, DoctorView, SkillFile};
+use crate::omarchy::install::Stale;
 use crate::omarchy::status::WidgetInfo;
 use crate::omarchy::validate::{self, Checked};
 
@@ -21,10 +22,19 @@ pub(crate) const CODE_DIFFERS: &str = "code_differs";
 /// `widget-version-drift`'s `evidence.reason`: its `Build.js` cannot say which state it
 /// serves.
 pub(crate) const CONTEXT_UNKNOWN: &str = "context_unknown";
+/// `widget-version-drift`'s `evidence.reason`: the widget's checkout reads an older major
+/// of the contract than this binary speaks; Omarchy's plugin update fixes it.
+pub(crate) const WIDGET_OLDER: &str = "widget_older";
+/// `widget-version-drift`'s `evidence.reason`: the widget's checkout needs a later
+/// contract than this binary speaks; an omaddons upgrade fixes it.
+pub(crate) const OMADDONS_OLDER: &str = "omaddons_older";
 /// `widget-invalid`'s `evidence.reason`: the widget was installed under other `HOME` or
 /// XDG directories, so it serves another omaddons state and nothing recommends its
 /// reinstall from this run (M3-D7).
 pub(crate) const OTHER_CONTEXT: &str = "other_context";
+/// `widget-invalid`'s `evidence.reason`: the invalid widget is its git checkout, which
+/// `omarchy install` never writes; Omarchy's plugin update, or a remove and add, fixes it.
+pub(crate) const CHECKOUT: &str = "checkout";
 
 /// `skill-version-drift`'s `evidence.reason`: a pristine skill of another guide.
 pub(crate) const SKILL_OUTDATED: &str = "outdated";
@@ -45,10 +55,13 @@ pub(crate) const SKILL_UNREADABLE: &str = "unreadable";
 
 /// Every `evidence.reason` these checks give, as the evidence's schema lists them.
 #[cfg(feature = "schemas")]
-pub(crate) const REASONS: [&str; 10] = [
+pub(crate) const REASONS: [&str; 13] = [
     CODE_DIFFERS,
     CONTEXT_UNKNOWN,
+    WIDGET_OLDER,
+    OMADDONS_OLDER,
     OTHER_CONTEXT,
+    CHECKOUT,
     SKILL_OUTDATED,
     SKILL_EDITED,
     SKILL_UNSTAMPED,
@@ -227,32 +240,54 @@ pub(crate) fn widget_version_drift(view: &DoctorView, _: &Selection, _: &mut Bud
     Detected::complete(found)
 }
 
-/// `widget-version-drift`'s rule: the bar widget serving this state is from another build
-/// (`status`'s `widget_outdated`). `observed` and `expected` can be equal (a rebuild of one
-/// version), which is why `reason` says what differs.
+/// `widget-version-drift`'s rule: the bar widget serving this state cannot serve this
+/// binary as it is (`status`'s `widget_outdated`). A widget an older omaddons rendered:
+/// its version against this build's (they can be equal, a rebuild of one version, which is
+/// why `reason` says what differs). The widget's checkout: its minimum contract against
+/// this binary's, `reason` naming the side to update.
 pub(crate) fn widget_version_drift_in(widget: Option<&WidgetInfo>) -> Vec<Observation> {
-    widget
-        .filter(|widget| widget.needs_reinstall())
-        .map(|widget| Observation {
-            subject: Subject::machine(),
-            title: "The bar widget is from another omaddons build".to_owned(),
-            confidence: Confidence::High,
-            addon: None,
-            folder: None,
-            evidence: Evidence {
-                observed: widget.version.clone(),
-                expected: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                // `Build.js` says which state it serves when `context_matches` is known.
-                reason: Some(if widget.context_matches.is_some() {
-                    CODE_DIFFERS
-                } else {
-                    CONTEXT_UNKNOWN
-                }),
-                ..Evidence::default()
+    let Some(widget) = widget.filter(|widget| widget.outdated_here()) else {
+        return Vec::new();
+    };
+    let contract = || Some(crate::output::SCHEMA_VERSION.to_owned());
+    let (title, observed, expected, reason) = match widget.stale {
+        Some(Stale::WidgetOlder) => (
+            "The bar widget reads an older omaddons contract",
+            widget.contract_min.clone(),
+            contract(),
+            WIDGET_OLDER,
+        ),
+        Some(Stale::OmaddonsOlder) => (
+            "The bar widget needs a later omaddons",
+            widget.contract_min.clone(),
+            contract(),
+            OMADDONS_OLDER,
+        ),
+        // `Build.js` says which state it serves when `context_matches` is known.
+        _ => (
+            "The bar widget is from another omaddons build",
+            widget.version.clone(),
+            Some(env!("CARGO_PKG_VERSION").to_owned()),
+            if widget.context_matches.is_some() {
+                CODE_DIFFERS
+            } else {
+                CONTEXT_UNKNOWN
             },
-        })
-        .into_iter()
-        .collect()
+        ),
+    };
+    vec![Observation {
+        subject: Subject::machine(),
+        title: title.to_owned(),
+        confidence: Confidence::High,
+        addon: None,
+        folder: None,
+        evidence: Evidence {
+            observed,
+            expected,
+            reason: Some(reason),
+            ..Evidence::default()
+        },
+    }]
 }
 
 /// `widget-invalid`: the installed widget breaks Omarchy's plugin rules, as omaddons'
@@ -299,7 +334,11 @@ fn widget_invalid_in(dir: &Path, info: &WidgetInfo, checked: &Checked) -> Option
             path: Some(dir.to_path_buf()),
             count: Some(count as u64),
             rules: checked.rules(),
-            reason: (info.context_matches == Some(false)).then_some(OTHER_CONTEXT),
+            reason: if info.context_matches == Some(false) {
+                Some(OTHER_CONTEXT)
+            } else {
+                info.checkout.then_some(CHECKOUT)
+            },
             ..Evidence::default()
         },
     })
@@ -332,6 +371,9 @@ mod tests {
             context_matches: context,
             binary: None,
             doorbell_dir: std::path::PathBuf::from("/cache/omaddons"),
+            stale: outdated.then_some(Stale::Rendered),
+            checkout: false,
+            contract_min: None,
         }
     }
 
@@ -619,6 +661,69 @@ mod tests {
         }
     }
 
+    /// The widget's checkout of another contract: its minimum against this binary's, the
+    /// reason naming the side behind, and that side's fix in words (never `omarchy
+    /// install`, which writes nothing under a checkout). Another state's checkout gives
+    /// nothing, as a render does.
+    #[test]
+    fn a_checkouts_drift_names_the_side_behind() {
+        let (_dir, paths) = home();
+        let contract = crate::output::SCHEMA_VERSION;
+        let row = registry::row(ids::WIDGET_VERSION_DRIFT).unwrap();
+        let checkout = |stale, min: &str, context| WidgetInfo {
+            stale: Some(stale),
+            checkout: true,
+            contract_min: Some(min.to_owned()),
+            ..info(true, true, true, context)
+        };
+        for (case, layer, reason, title, says) in [
+            (
+                "widget_older",
+                checkout(Stale::WidgetOlder, "0.9", None),
+                WIDGET_OLDER,
+                "The bar widget reads an older omaddons contract",
+                "omarchy plugin update a44.omaddons",
+            ),
+            (
+                "omaddons_older",
+                checkout(Stale::OmaddonsOlder, "9.0", Some(true)),
+                OMADDONS_OLDER,
+                "The bar widget needs a later omaddons",
+                "upgrade omaddons",
+            ),
+        ] {
+            let view = view_of(&paths, Some(layer.clone()));
+            let detected = widget_version_drift(&view, &Selection::all(), &mut Budget::unlimited());
+            let found = findings(ids::WIDGET_VERSION_DRIFT, &detected);
+            assert_eq!(found.len(), 1, "{case}: {found:?}");
+            let f = &found[0];
+            assert_eq!(f.title, title, "{case}");
+            assert_eq!(
+                f.evidence,
+                Evidence {
+                    path: Some(paths.omarchy_plugin_dir()),
+                    observed: layer.contract_min.clone(),
+                    expected: Some(contract.to_owned()),
+                    reason: Some(reason),
+                    ..Evidence::default()
+                },
+                "{case}"
+            );
+            assert_eq!(f.remediation.argv, None, "{case}");
+            let words = serde_json::to_string(&f.remediation).unwrap();
+            assert!(words.contains(says), "{case}: {words}");
+            // The same finding, built from the row as `status` builds it.
+            let issue = widget_version_drift_in(Some(&layer))
+                .into_iter()
+                .map(|obs| row.finding(obs))
+                .next()
+                .unwrap();
+            assert_eq!(issue.remediation.argv, None, "{case}");
+        }
+        let elsewhere = checkout(Stale::WidgetOlder, "0.9", Some(false));
+        assert_eq!(widget_version_drift_in(Some(&elsewhere)), Vec::new());
+    }
+
     /// The rule gives the issue `status` printed before the doctor gave it evidence, and
     /// nothing for a current widget.
     #[test]
@@ -761,6 +866,17 @@ mod tests {
                     None,
                 )),
             ),
+            // The widget's checkout: omarchy install writes nothing under it, so the
+            // remediation is Omarchy's, in words.
+            (
+                "checkout",
+                Some(WidgetInfo {
+                    checkout: true,
+                    ..info(true, true, false, None)
+                }),
+                Tree::OneRule,
+                Some((1, vec![Rule::DefaultSection], Some(CHECKOUT), None)),
+            ),
         ];
         for (case, layer, tree, expected) in cases {
             let (_dir, paths) = home();
@@ -813,10 +929,19 @@ mod tests {
             assert_eq!(f.remediation.argv, argv, "{case}: {:?}", f.remediation);
             assert!(!f.remediation.auto_fixable, "{case}");
             assert!(!f.remediation.destructive, "{case}");
-            // Never a validator message, which quotes manifest values.
-            let wire = serde_json::to_string(f).unwrap();
+            // Never a validator message, which quotes manifest values: not in the title or
+            // the evidence, nor as a word of the remediation (whose "desktop" is fine).
+            let wire = serde_json::to_string(&(&f.title, &f.evidence)).unwrap();
             assert!(!wire.contains("top"), "{case}: {wire}");
             assert!(!wire.contains("must be"), "{case}: {wire}");
+            let command = &f.remediation.command;
+            assert!(!command.contains("must be"), "{case}: {command}");
+            assert!(
+                command
+                    .split(|c: char| !c.is_alphanumeric())
+                    .all(|word| word != "top"),
+                "{case}: {command}"
+            );
         }
     }
 

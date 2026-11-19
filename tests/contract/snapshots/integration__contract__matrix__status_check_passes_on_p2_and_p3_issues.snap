@@ -332,7 +332,7 @@ expression: s.stable(&c.envelope)
         "omarchy",
         "install"
       ],
-      "message": "the bar widget is from another omaddons build, so it stays read-only",
+      "message": "the bar widget cannot serve this omaddons as it is, so it stays read-only",
       "targets": []
     }
   ]

@@ -790,7 +790,12 @@ fn the_human_output_names_the_widget_and_how_to_reinstall() {
         text.contains("\n  bar: added to the right section\n"),
         "{text}"
     );
-    assert!(text.contains("→ omaddons omarchy install"), "{text}");
+    // The checkout finds omaddons itself, so nothing is to reinstall: Omarchy updates it.
+    assert!(
+        text.contains(&format!("\n  updates: omarchy plugin update {ID}\n")),
+        "{text}"
+    );
+    assert!(!text.contains("→ omaddons omarchy install"), "{text}");
     // What to do next (1n2p.35): where it is, how to move it, a key for it.
     let next = text.split("\nnext:\n").nth(1).unwrap_or_default();
     assert_eq!(
@@ -863,6 +868,10 @@ fn status_reports_omarchy_and_the_installed_widget() {
     assert_eq!(p["outdated"], false);
     assert_eq!(p["enabled"], true);
     assert_eq!(p["section"], "right");
+    assert_eq!(p["checkout"], true);
+    assert_eq!(p["commit"], common::omarchy::WIDGET_COMMIT);
+    // A widget that does not say its session is taken to serve this run's.
+    assert_eq!(p["context_matches"], true);
     assert_eq!(
         d["data"]["validation"],
         serde_json::json!({"ok": true, "errors": []})
@@ -874,8 +883,11 @@ fn status_reports_omarchy_and_the_installed_widget() {
     assert_eq!(tree(&desk.config_omarchy()), before);
     assert_eq!(
         desk.calls()[calls..],
-        ["omarchy-shell shell ping"],
-        "the ping alone"
+        [
+            "omarchy-shell shell ping",
+            &format!("omarchy-shell {ID} state")
+        ],
+        "the ping, then the checkout's session"
     );
 
     // Off the bar: enable it.
@@ -1095,7 +1107,8 @@ fn status_reports_the_bar_widget() {
     for args in [&["status"][..], &["status", "--cached"]] {
         let d = desk.run(args).expect(0);
         // The checkout's files say nothing of whose state it serves (null): it runs in its
-        // desktop session (omad-widget-plugin-3bcbh.10 asks it).
+        // desktop session, which only `omarchy status` asks (`status` starts no
+        // subprocess).
         assert_eq!(
             widget(&d),
             serde_json::json!({"omarchy": true, "installed": true, "enabled": true,
@@ -1177,6 +1190,302 @@ fn status_reports_the_bar_widget() {
         !text.contains(note) && !text.contains("from another omaddons build"),
         "{text}"
     );
+}
+
+/// `omarchy status` asks the widget's checkout which `HOME` and XDG directories it runs
+/// omaddons in (its IPC `state`'s `session`, omad-widget-plugin-3bcbh.10): this run's
+/// serve this state; another session's serve another, with nothing recommended even off
+/// the bar; an answer without five absolute paths, or none, is taken to be this run's.
+/// `status`, which starts no subprocess, cannot say (`null`).
+#[test]
+fn omarchy_status_asks_the_checkout_which_state_it_serves() {
+    let desk = Desk::new();
+    desk.install();
+    let matches =
+        |desk: &Desk| desk.run(&["omarchy"]).expect(0)["data"]["plugin"]["context_matches"].clone();
+    desk.set("session", &common::omarchy::context_json(&desk.env));
+    assert_eq!(matches(&desk), true);
+    fs::write(desk.config_omarchy().join("shell.json"), "{}").unwrap();
+    assert_eq!(
+        actions(&desk.run(&["omarchy"]).expect(0)),
+        ["enable_widget"]
+    );
+
+    let other = serde_json::json!({
+        "HOME": "/elsewhere",
+        "XDG_CONFIG_HOME": "/elsewhere/.config",
+        "XDG_STATE_HOME": "/elsewhere/.local/state",
+        "XDG_CACHE_HOME": "/elsewhere/.cache",
+        "XDG_DATA_HOME": "/elsewhere/.local/share",
+    });
+    desk.set("session", &other.to_string());
+    let d = desk.run(&["omarchy"]).expect(0);
+    assert_eq!(d["data"]["plugin"]["context_matches"], false);
+    assert_eq!(actions(&d), Vec::<String>::new(), "another state's widget");
+    let text = human(&desk, &["omarchy"], &[]);
+    assert!(
+        text.contains("note: it serves another omaddons state (its desktop session's HOME or XDG directories are not this run's)"),
+        "{text}"
+    );
+    assert!(!text.contains("→ omaddons omarchy install"), "{text}");
+
+    for unsaid in [r#"{"HOME":"relative"}"#, "null", "not json"] {
+        desk.set("session", unsaid);
+        assert_eq!(matches(&desk), true, "{unsaid}");
+    }
+    // A shell that does not answer the ping is not asked.
+    desk.set("session", &other.to_string());
+    desk.set("shell-mode", "silent");
+    let calls = desk.calls().len();
+    assert_eq!(matches(&desk), true);
+    assert_eq!(desk.calls()[calls..], ["omarchy-shell shell ping"]);
+    desk.set("shell-mode", "ok");
+
+    let calls = desk.calls().len();
+    for args in [&["status"][..], &["status", "--cached"]] {
+        let d = desk.run(args).expect(0);
+        assert_eq!(
+            d["data"]["widget"]["context_matches"],
+            Value::Null,
+            "{args:?}"
+        );
+    }
+    assert_eq!(desk.calls().len(), calls, "status runs no Omarchy tool");
+}
+
+/// A checkout whose manifest needs another contract than this binary's
+/// (`omaddons.contract_min`): outdated in `omarchy status` and `status`, never with
+/// `omarchy install` (which writes nothing under a checkout); `status` warns with the
+/// side to update, its issue and the doctor's finding name it in words, and a 1.x minimum
+/// up to this binary's is current.
+#[test]
+fn a_checkout_of_another_contract_names_the_side_behind() {
+    let desk = Desk::new();
+    desk.install();
+    let file = desk.plugin().join("manifest.json");
+    let original: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    let with_min = |min: &str| {
+        let mut manifest = original.clone();
+        manifest["omaddons"]["contract_min"] = Value::from(min);
+        fs::write(&file, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    };
+    for (min, reason, says) in [
+        ("9.0", "omaddons_older", "upgrade omaddons"),
+        ("0.9", "widget_older", "omarchy plugin update a44.omaddons"),
+    ] {
+        with_min(min);
+        let d = desk.run(&["omarchy"]).expect(0);
+        assert_eq!(d["data"]["plugin"]["outdated"], true, "{min}");
+        assert_eq!(actions(&d), Vec::<String>::new(), "{min}");
+        let text = human(&desk, &["omarchy"], &[]);
+        assert!(
+            text.contains(&format!(
+                "\n  checkout: {} (updates: omarchy plugin update {ID})\n",
+                common::omarchy::WIDGET_COMMIT
+            )),
+            "{min}: {text}"
+        );
+        assert!(
+            text.contains(&format!("contract {min} and this omaddons speaks")),
+            "{min}: {text}"
+        );
+        assert!(
+            !text.contains("→ omaddons omarchy install"),
+            "{min}: {text}"
+        );
+
+        let d = desk.run(&["status", "--cached"]).expect(0);
+        assert_eq!(d["data"]["widget"]["outdated"], true, "{min}");
+        assert_eq!(d["data"]["summary"]["widget_outdated"], true, "{min}");
+        let warning = &d["warnings"][0];
+        assert_eq!(
+            (&warning["code"], &warning["fix_argv"]),
+            (&Value::from("widget_outdated"), &Value::Null),
+            "{min}"
+        );
+        assert!(
+            warning["fix"].as_str().unwrap().contains(says),
+            "{min}: {warning}"
+        );
+        let issue = &d["data"]["issues"][0];
+        assert_eq!(issue["id"], "fm-plugins-widget-version-drift", "{min}");
+        assert_eq!(issue["remediation"]["argv"], Value::Null, "{min}");
+        assert!(
+            issue["remediation"]["command"]
+                .as_str()
+                .unwrap()
+                .contains(says),
+            "{min}: {issue}"
+        );
+        let recommended = d["commands"].as_array().unwrap();
+        assert!(
+            recommended.iter().all(|c| c["argv"][1] != "omarchy"),
+            "{min}: {recommended:?}"
+        );
+        assert!(
+            human(&desk, &["status"], &[]).contains("bar widget: cannot serve this omaddons"),
+            "{min}"
+        );
+
+        // The doctor's report: its finding, the minimum against this binary's contract.
+        let contract = d["schema_version"].clone();
+        let d = desk
+            .run(&[
+                "doctor",
+                "--json",
+                "--only",
+                "fm-plugins-widget-version-drift",
+            ])
+            .envelope();
+        let found = d["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == "fm-plugins-widget-version-drift")
+            .unwrap_or_else(|| panic!("{min}: {d:#}"))
+            .clone();
+        assert_eq!(
+            (
+                &found["evidence"]["reason"],
+                &found["evidence"]["observed"],
+                &found["evidence"]["expected"]
+            ),
+            (&Value::from(reason), &Value::from(min), &contract),
+            "{min}"
+        );
+    }
+    // Any 1.x minimum up to this binary's contract reads.
+    with_min("1.0");
+    let d = desk.run(&["status", "--cached"]).expect(0);
+    assert_eq!(d["data"]["widget"]["outdated"], false);
+    assert!(warning_codes(&d).is_empty(), "{d:#}");
+}
+
+/// Each widget state as `omarchy status`, `status --cached` and the doctor's two widget
+/// rows read it (omad-widget-plugin-3bcbh.10): no widget; the widget's checkout,
+/// compatible, off the bar, needing a later minor or a later major, or of an older major;
+/// and a widget an older omaddons rendered. `status --cached` runs no Omarchy tool.
+#[test]
+fn every_widget_state_reads_alike_in_omarchy_status_status_and_the_doctor() {
+    enum Setup {
+        Nothing,
+        Checkout(Option<&'static str>),
+        OffTheBar,
+        Rendered,
+    }
+    // (case, setup, outdated, omarchy status's actions, drift's reason)
+    type Case = (
+        &'static str,
+        Setup,
+        bool,
+        &'static [&'static str],
+        Option<&'static str>,
+    );
+    let cases: [Case; 7] = [
+        ("no widget", Setup::Nothing, false, &[], None),
+        ("compatible", Setup::Checkout(None), false, &[], None),
+        (
+            "off the bar",
+            Setup::OffTheBar,
+            false,
+            &["enable_widget"],
+            None,
+        ),
+        (
+            "later minor",
+            Setup::Checkout(Some("1.9")),
+            true,
+            &[],
+            Some("omaddons_older"),
+        ),
+        (
+            "later major",
+            Setup::Checkout(Some("2.0")),
+            true,
+            &[],
+            Some("omaddons_older"),
+        ),
+        (
+            "older major",
+            Setup::Checkout(Some("0.9")),
+            true,
+            &[],
+            Some("widget_older"),
+        ),
+        (
+            "rendered",
+            Setup::Rendered,
+            true,
+            &["reinstall_widget"],
+            Some("code_differs"),
+        ),
+    ];
+    for (case, setup, outdated, recommended, reason) in cases {
+        let desk = Desk::new();
+        match setup {
+            Setup::Nothing => {}
+            Setup::Checkout(min) => {
+                desk.install();
+                if let Some(min) = min {
+                    let file = desk.plugin().join("manifest.json");
+                    let mut manifest: Value =
+                        serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+                    manifest["omaddons"]["contract_min"] = Value::from(min);
+                    fs::write(&file, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+                }
+            }
+            Setup::OffTheBar => {
+                desk.install();
+                fs::write(desk.config_omarchy().join("shell.json"), "{}").unwrap();
+            }
+            Setup::Rendered => desk.rendered(),
+        }
+        let installed = !matches!(setup, Setup::Nothing);
+
+        let d = desk.run(&["omarchy", "status"]).expect(0);
+        let plugin = &d["data"]["plugin"];
+        assert_eq!(
+            (&plugin["installed"], &plugin["outdated"]),
+            (&Value::Bool(installed), &Value::Bool(outdated)),
+            "{case}"
+        );
+        assert_eq!(
+            plugin["checkout"],
+            matches!(setup, Setup::Checkout(_) | Setup::OffTheBar),
+            "{case}"
+        );
+        assert_eq!(actions(&d), recommended, "{case}");
+
+        let calls = desk.calls().len();
+        let d = desk.run(&["status", "--cached"]).expect(0);
+        assert_eq!(
+            desk.calls().len(),
+            calls,
+            "{case}: status --cached runs no tool"
+        );
+        assert_eq!(d["data"]["widget"]["installed"], installed, "{case}");
+        assert_eq!(d["data"]["widget"]["outdated"], outdated, "{case}");
+        assert_eq!(d["data"]["summary"]["widget_outdated"], outdated, "{case}");
+
+        let only = "fm-plugins-widget-version-drift,fm-plugins-widget-invalid";
+        let d = desk.run(&["doctor", "--json", "--only", only]).envelope();
+        let found: Vec<(String, Value)> = d["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f["id"].as_str().unwrap().to_owned(),
+                    f["evidence"]["reason"].clone(),
+                )
+            })
+            .collect();
+        let want: Vec<(String, Value)> = reason
+            .map(|r| ("fm-plugins-widget-version-drift".to_owned(), Value::from(r)))
+            .into_iter()
+            .collect();
+        assert_eq!(found, want, "{case}");
+    }
 }
 
 /// `status` tells the widget the path to run omaddons by and the directory the doorbell

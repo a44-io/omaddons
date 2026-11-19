@@ -155,8 +155,9 @@ pub struct Summary {
     pub errors: SummaryErrors,
     /// `commands` holds `check_updates`: a check is due.
     pub check_due: bool,
-    /// The bar widget serving this omaddons state is from another build: `widget`'s
-    /// `outdated`, on an Omarchy desktop, for this run's `HOME` and XDG directories.
+    /// The bar widget serving this omaddons state cannot serve this binary as it is:
+    /// `widget`'s `outdated`, on an Omarchy desktop, unless it serves other `HOME` or XDG
+    /// directories.
     pub widget_outdated: bool,
     pub state: SummaryState,
 }
@@ -693,6 +694,13 @@ fn widget_line(widget: Option<&WidgetInfo>) -> Option<String> {
             "bar widget: from another omaddons build → omaddons omarchy install".to_owned(),
         );
     }
+    // A checkout of another contract: the side to update, in words.
+    if widget.outdated_here() {
+        return Some(format!(
+            "bar widget: cannot serve this omaddons: {}",
+            widget.fix()
+        ));
+    }
     if widget.context_matches == Some(false) {
         let build = if widget.outdated {
             ", from another omaddons build"
@@ -1163,16 +1171,17 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
 
     // The bar widget: file reads only, no subprocess (E4).
     let widget = omarchy_status::widget(&world.paths);
-    let widget_outdated = widget.as_ref().is_some_and(WidgetInfo::needs_reinstall);
-    if widget_outdated {
+    let widget_outdated = widget.as_ref().is_some_and(WidgetInfo::outdated_here);
+    if let Some(widget) = widget.as_ref().filter(|w| w.outdated_here()) {
         warnings.push(
             Warning::new(
                 WarningCode::WidgetOutdated,
-                "the bar widget is from another omaddons build, so it stays read-only",
+                "the bar widget cannot serve this omaddons as it is, so it stays read-only",
             )
-            .with_fix(Suggestion::command(["omaddons", "omarchy", "install"])),
+            .with_fix(widget.fix()),
         );
     }
+    let widget_reinstall = widget.as_ref().is_some_and(WidgetInfo::needs_reinstall);
     // Each issue is a finding of the failure-mode registry (F8, M4-D29): the doctor's own
     // detector loop over its `cached` rows (`--cached`) or its `cached` and `quick` rows,
     // on a view seeded with what `status` read above, so nothing is discovered or checked
@@ -1230,7 +1239,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     // An interrupted change no listed client carries is attention too.
     let unattributed = issues.iter().any(|i| JOURNAL_ROWS.contains(&i.id));
 
-    let (mut commands, attention_fix) = recommendations(&targets, check_due, widget_outdated);
+    let (mut commands, attention_fix) = recommendations(&targets, check_due, widget_reinstall);
     let first_fix = check_fix(&targets, &issues, attention_fix);
     if let Some(selector) = ctx.target.as_deref() {
         scope_update(&mut commands, selector);
@@ -1740,10 +1749,12 @@ pub(super) fn scope_update(commands: &mut [CommandHint], selector: &str) {
     }
 }
 
+/// `widget_reinstall`: a widget an older omaddons rendered, serving this state, which
+/// `omarchy install` replaces (a checkout of another contract has no command here).
 fn recommendations(
     targets: &[StatusTarget],
     check_due: bool,
-    widget_outdated: bool,
+    widget_reinstall: bool,
 ) -> (Vec<CommandHint>, Option<(String, Suggestion)>) {
     let (fixes, first) = attention_fixes(targets);
     let mut commands: Vec<CommandHint> = targets
@@ -1789,7 +1800,7 @@ fn recommendations(
             commands.extend(backups_status::hints(&t.id, backups));
         }
     }
-    if widget_outdated {
+    if widget_reinstall {
         commands.push(omarchy_status::reinstall_hint());
     }
     for t in targets.iter().filter(|t| !t.orphan_names.is_empty()) {
@@ -2205,6 +2216,9 @@ mod tests {
             context_matches: Some(true),
             binary: None,
             doorbell_dir: std::path::PathBuf::from("/cache/omaddons"),
+            stale: Some(crate::omarchy::install::Stale::Rendered),
+            checkout: false,
+            contract_min: None,
         };
         use crate::app::issues::tests::registry_machine_issues;
         let machine = registry_machine_issues(Some(&widget), &[]);

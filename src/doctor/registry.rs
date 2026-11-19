@@ -937,7 +937,7 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         severity: Severity::P2,
         title: "the installed bar widget fails Omarchy's plugin validation",
         description: "The bar widget's folder under Omarchy's plugin directory breaks one or more rules of Omarchy's plugin validator (its manifest, its entry points, or a symlink inside it), as omaddons' port of that validator checks them.",
-        why: "Omarchy's shell may refuse to load a plugin that fails validation, so the bar loses the widget. A reinstall renders a valid one; the doctor never runs it itself, because it runs Omarchy's tools in the desktop session and cannot be undone.",
+        why: "Omarchy's shell may refuse to load a plugin that fails validation, so the bar loses the widget. Omarchy's plugin update, or a remove and add, restores the widget's checkout, and omarchy install replaces a widget an older omaddons rendered; the doctor never runs either itself, because they run Omarchy's tools in the desktop session and cannot be undone.",
         tier: Tier::Quick,
         online: false,
         // One bounded manifest read and a walk of the widget's few dozen entries.
@@ -946,7 +946,7 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         detect: Some(plugins::widget_invalid),
         fix: None,
         manual: Some(Manual {
-            instruction: "reinstall the bar widget from this build with its omarchy install, from the desktop session; omaddons omarchy status lists each problem with its message",
+            instruction: "from the desktop session, update the widget's checkout through Omarchy (or remove it and add it again), or replace a widget an older omaddons rendered with omarchy install; omaddons omarchy status lists each problem with its message",
             why: "the widget lives in your desktop's configuration, which only the omarchy commands change",
             remediation: widget_invalid_manual,
         }),
@@ -955,9 +955,9 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         id: ids::WIDGET_VERSION_DRIFT,
         subsystem: Subsystem::Plugins,
         severity: Severity::P3,
-        title: "the bar widget is from another omaddons build",
-        description: "The installed bar widget's code is not what this binary renders for the directories it was installed under.",
-        why: "An outdated widget stays read-only and may misread this build's output. The doctor reports it and never reinstalls it: a reinstall runs Omarchy's own tools in the desktop session and cannot be undone.",
+        title: "the bar widget cannot serve this omaddons build",
+        description: "The installed bar widget is one an older omaddons rendered (or the setup button that installed one), or it is the widget's checkout and its manifest's minimum contract is not this binary's: an older major (the widget is behind) or a later contract (omaddons is behind).",
+        why: "An outdated widget stays read-only and may misread this build's output. The doctor reports it and never fixes it: omarchy install and Omarchy's plugin update run Omarchy's own tools in the desktop session and an omaddons upgrade is its installer's, so each fix runs outside omaddons and cannot be undone.",
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
@@ -965,9 +965,9 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         detect: Some(plugins::widget_version_drift),
         fix: None,
         manual: Some(Manual {
-            instruction: "reinstall the bar widget from this build with its omarchy install",
-            why: "the widget lives in your desktop's configuration, which only the omarchy commands change",
-            remediation: widget_manual,
+            instruction: "replace a widget an older omaddons rendered with omarchy install; update an older checkout through Omarchy; upgrade an older omaddons",
+            why: "the widget lives in your desktop's configuration, which only the omarchy commands change, and omaddons is upgraded by whatever installed it",
+            remediation: widget_drift_manual,
         }),
     },
     FailureMode {
@@ -1243,6 +1243,20 @@ fn widget_manual(_: &Finding) -> Remediation {
     hint(&omarchy_status::reinstall_hint())
 }
 
+/// A drifted widget: `omarchy install` replaces a rendered one; the widget's checkout of
+/// another contract is fixed outside omaddons, in words (omad-widget-plugin-3bcbh.10).
+fn widget_drift_manual(f: &Finding) -> Remediation {
+    match f.evidence.reason {
+        Some(plugins::WIDGET_OLDER) => prose(
+            "update the bar widget through Omarchy, from the desktop session: omarchy plugin update a44.omaddons",
+        ),
+        Some(plugins::OMADDONS_OLDER) => prose(
+            "upgrade omaddons to a build that speaks the contract the bar widget needs (with mise: mise upgrade github:a44-io/omaddons)",
+        ),
+        _ => widget_manual(f),
+    }
+}
+
 /// An installed skill: its reinstall from this build (`--dir` for a folder other than the
 /// default), which keeps an edited copy as `SKILL.md.bak`. A symlinked `SKILL.md`, which
 /// install-skill never writes through, and a file it cannot replace (not a regular file,
@@ -1297,6 +1311,12 @@ fn widget_invalid_manual(f: &Finding) -> Remediation {
     if f.evidence.reason == Some(plugins::OTHER_CONTEXT) {
         return prose(
             "reinstall the widget with the omaddons binary and the HOME and XDG directories it was installed under",
+        );
+    }
+    // omarchy install never writes under the checkout: Omarchy restores it.
+    if f.evidence.reason == Some(plugins::CHECKOUT) {
+        return prose(
+            "restore the bar widget's checkout through Omarchy, from the desktop session: omarchy plugin update a44.omaddons, or omarchy plugin remove a44.omaddons then omaddons omarchy install",
         );
     }
     widget_manual(f)
@@ -2365,7 +2385,7 @@ mod tests {
                 Severity::P3,
                 Tier::Cached,
                 1,
-                "the bar widget is from another omaddons build",
+                "the bar widget cannot serve this omaddons build",
             ),
         ] {
             let row = row(id).unwrap();
@@ -2431,6 +2451,43 @@ mod tests {
             theirs.remediation.command,
             "reinstall the widget with the omaddons binary and the HOME and XDG directories it was installed under"
         );
+        // The widget's checkout and a checkout of another contract: Omarchy's or the
+        // installer's fix, in words, never omarchy install (omad-widget-plugin-3bcbh.10).
+        for (id, reason, says) in [
+            (
+                ids::WIDGET_INVALID,
+                plugins::CHECKOUT,
+                "omarchy plugin update a44.omaddons",
+            ),
+            (
+                ids::WIDGET_VERSION_DRIFT,
+                plugins::WIDGET_OLDER,
+                "omarchy plugin update a44.omaddons",
+            ),
+            (
+                ids::WIDGET_VERSION_DRIFT,
+                plugins::OMADDONS_OLDER,
+                "upgrade omaddons",
+            ),
+        ] {
+            let found = super::row(id).unwrap().finding(Observation {
+                subject: Subject::machine(),
+                title: "t".to_owned(),
+                confidence: Confidence::High,
+                addon: None,
+                folder: None,
+                evidence: Evidence {
+                    reason: Some(reason),
+                    ..Evidence::default()
+                },
+            });
+            assert_eq!(found.remediation.argv, None, "{id} {reason}");
+            assert!(
+                found.remediation.command.contains(says),
+                "{id} {reason}: {}",
+                found.remediation.command
+            );
+        }
         assert!(invariant_violations(FAILURE_MODES).is_empty());
     }
 

@@ -106,20 +106,102 @@ pub struct PluginInfo {
     /// The binary a widget an older omaddons rendered runs; `null` for the widget's
     /// checkout, which finds omaddons itself, and when none is installed.
     pub binary: Option<PathBuf>,
-    /// A widget an older omaddons rendered, or its setup button, which `omarchy install`
-    /// replaces with the widget's checkout.
+    /// It cannot serve this binary as it is: a widget an older omaddons rendered, or its
+    /// setup button, which `omarchy install` replaces with the widget's checkout; or a
+    /// checkout whose manifest's minimum contract is not this binary's (one side is to
+    /// update, [`Stale`]).
     pub outdated: bool,
     /// It is in a section of the bar.
     pub enabled: bool,
     pub section: Option<Section>,
     /// It serves this run's `HOME` and XDG directories: a widget an older omaddons
-    /// rendered by what its `Build.js` records; the checkout runs in its desktop session,
-    /// taken to be this run's (omad-widget-plugin-3bcbh.10 asks the session).
+    /// rendered by what its `Build.js` records; the checkout by what its desktop session
+    /// says (`omarchy status` asks it), else taken to be this run's.
     pub context_matches: bool,
-    /// Its files say which directories it serves: a rendered widget's `Build.js` does,
-    /// a checkout's do not (not on the wire).
+    /// The folder is a git checkout (the widget's repository, which Omarchy's plugin
+    /// commands add and update), and the commit it holds when its `.git` says (a full
+    /// hex id; `null` otherwise).
+    pub checkout: bool,
+    pub commit: Option<String>,
+    /// Whose directories it serves is known: a rendered widget's `Build.js`, or the
+    /// checkout's session answering (not on the wire).
     #[serde(skip)]
     pub context_known: bool,
+    /// Why it is outdated (not on the wire).
+    #[serde(skip)]
+    pub stale: Option<Stale>,
+    /// The checkout's manifest's `omaddons.contract_min`, as written (not on the wire).
+    #[serde(skip)]
+    pub contract_min: Option<String>,
+}
+
+/// Why an installed widget cannot serve this binary as it is, which says what fixes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stale {
+    /// A widget an older omaddons rendered, or its setup button: `omarchy install`
+    /// replaces it with the widget's checkout.
+    Rendered,
+    /// The checkout reads an older major of the contract than this binary speaks: Omarchy
+    /// updates the widget (`omarchy plugin update`).
+    WidgetOlder,
+    /// The checkout needs a later contract than this binary speaks: omaddons is to be
+    /// upgraded.
+    OmaddonsOlder,
+}
+
+/// What a checkout's manifest says of this binary: its `omaddons.contract_min` against
+/// this binary's contract ([`crate::output::SCHEMA_VERSION`]). A manifest that names no
+/// minimum, or none that reads as `M.N`, is taken to read this contract.
+fn stale_checkout(manifest: &Value) -> Option<Stale> {
+    let parse = |text: &str| -> Option<(u32, u32)> {
+        let (major, minor) = text.split_once('.')?;
+        Some((major.parse().ok()?, minor.parse().ok()?))
+    };
+    let wanted = manifest.get("omaddons")?.get("contract_min")?.as_str()?;
+    let (want_major, want_minor) = parse(wanted)?;
+    let (major, minor) = parse(crate::output::SCHEMA_VERSION)?;
+    if want_major < major {
+        Some(Stale::WidgetOlder)
+    } else if want_major > major || want_minor > minor {
+        Some(Stale::OmaddonsOlder)
+    } else {
+        None
+    }
+}
+
+/// The commit a checkout at `dir` holds, from its `.git` files (no git run): `HEAD`'s
+/// id, or the id its branch names, loose or packed. `None` when they cannot say.
+fn head_commit(dir: &Path) -> Option<String> {
+    let git = dir.join(".git");
+    let read = |path: &Path| -> Option<String> {
+        let file = std::fs::File::open(path).ok()?;
+        let mut text = String::new();
+        file.take(crate::limits::WIDGET_READBACK_MAX_BYTES)
+            .read_to_string(&mut text)
+            .ok()?;
+        Some(text)
+    };
+    let hex =
+        |s: &str| (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let head = read(&git.join("HEAD"))?;
+    let head = head.trim();
+    let Some(branch) = head.strip_prefix("ref: ") else {
+        return hex(head).then(|| head.to_ascii_lowercase());
+    };
+    if branch
+        .split('/')
+        .any(|part| part.is_empty() || part == "..")
+    {
+        return None;
+    }
+    if let Some(loose) = read(&git.join(branch)) {
+        let loose = loose.trim();
+        return hex(loose).then(|| loose.to_ascii_lowercase());
+    }
+    read(&git.join("packed-refs"))?.lines().find_map(|line| {
+        let (id, name) = line.split_once(' ')?;
+        (name == branch && hex(id)).then(|| id.to_ascii_lowercase())
+    })
 }
 
 /// What to do.
@@ -611,6 +693,14 @@ pub fn describe(paths: &Paths) -> PluginInfo {
     let installed = manifest.is_some();
     let context = legacy::installed_context(&dir);
     let section = placed_in(paths, &id);
+    let shape = folder(&dir, &id);
+    let checkout = installed && shape == Folder::Checkout;
+    let stale = match (installed, shape) {
+        (false, _) => None,
+        (true, Folder::Older) => Some(Stale::Rendered),
+        (true, Folder::Checkout | Folder::Link) => manifest.as_ref().and_then(stale_checkout),
+        (true, _) => None,
+    };
     PluginInfo {
         installed,
         version: manifest
@@ -619,12 +709,19 @@ pub fn describe(paths: &Paths) -> PluginInfo {
             .and_then(Value::as_str)
             .map(str::to_owned),
         binary: legacy::installed_binary(&dir),
-        outdated: installed && folder(&dir, &id) == Folder::Older,
+        outdated: stale.is_some(),
         enabled: section.is_some(),
         section,
         context_matches: installed
             && (!legacy::is_rendered(&dir) || context == Some(WidgetContext::of(paths))),
+        commit: if checkout { head_commit(&dir) } else { None },
+        checkout,
         context_known: installed && context.is_some(),
+        stale,
+        contract_min: manifest
+            .as_ref()
+            .and_then(|m| m.get("omaddons")?.get("contract_min")?.as_str())
+            .map(str::to_owned),
         path: dir,
         id,
     }
@@ -759,5 +856,69 @@ mod tests {
         let file = root.path().join("file");
         std::fs::write(&file, "x").unwrap();
         assert_eq!(folder(&file, id), Folder::Foreign);
+    }
+
+    /// A checkout's minimum contract against this binary's (1.2 here): an older major is
+    /// the widget behind, a later contract omaddons behind; any 1.x minimum up to this
+    /// one reads, and a missing or unreadable one is taken to read.
+    #[test]
+    fn a_checkouts_minimum_contract_says_which_side_is_behind() {
+        let with = |min: Value| json!({ "omaddons": { "contract_min": min } });
+        let (major, minor) = crate::output::SCHEMA_VERSION.split_once('.').unwrap();
+        let (major, minor): (u32, u32) = (major.parse().unwrap(), minor.parse().unwrap());
+        assert_eq!(
+            stale_checkout(&with(json!(format!("{major}.{minor}")))),
+            None
+        );
+        assert_eq!(stale_checkout(&with(json!(format!("{major}.0")))), None);
+        assert_eq!(
+            stale_checkout(&with(json!(format!("{major}.{}", minor + 1)))),
+            Some(Stale::OmaddonsOlder)
+        );
+        assert_eq!(
+            stale_checkout(&with(json!(format!("{}.0", major + 1)))),
+            Some(Stale::OmaddonsOlder)
+        );
+        assert_eq!(
+            stale_checkout(&with(json!(format!("{}.9", major - 1)))),
+            Some(Stale::WidgetOlder)
+        );
+        for unread in [json!("1"), json!("one.two"), json!(1.2), json!(null)] {
+            assert_eq!(stale_checkout(&with(unread.clone())), None, "{unread}");
+        }
+        assert_eq!(stale_checkout(&json!({"id": "a44.omaddons"})), None);
+    }
+
+    /// The commit a checkout holds, from its `.git` files alone: a detached `HEAD`, a
+    /// branch's loose ref, or its packed one; nothing for a ref that escapes `.git` or an
+    /// id that is not one.
+    #[test]
+    fn a_checkouts_commit_is_read_from_its_git_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+        let id = "0123456789abcdef0123456789abcdef01234567";
+        let other = "89abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(head_commit(dir.path()), None, "no HEAD");
+        std::fs::write(git.join("HEAD"), format!("{}\n", id.to_uppercase())).unwrap();
+        assert_eq!(head_commit(dir.path()).as_deref(), Some(id), "detached");
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(head_commit(dir.path()), None, "a branch with no ref");
+        std::fs::write(
+            git.join("packed-refs"),
+            format!("# pack-refs with: peeled\n{other} refs/heads/other\n{id} refs/heads/main\n"),
+        )
+        .unwrap();
+        assert_eq!(head_commit(dir.path()).as_deref(), Some(id), "packed");
+        std::fs::write(git.join("refs/heads/main"), format!("{other}\n")).unwrap();
+        assert_eq!(
+            head_commit(dir.path()).as_deref(),
+            Some(other),
+            "loose wins"
+        );
+        std::fs::write(git.join("refs/heads/main"), "not an id\n").unwrap();
+        assert_eq!(head_commit(dir.path()), None, "not an id");
+        std::fs::write(git.join("HEAD"), "ref: refs/../../escape\n").unwrap();
+        assert_eq!(head_commit(dir.path()), None, "escapes .git");
     }
 }

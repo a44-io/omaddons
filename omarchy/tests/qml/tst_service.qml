@@ -1859,9 +1859,11 @@ TestCase {
     ready(4)
     var state = JSON.parse(service.stateJson())
     compare(Object.keys(state).sort(), ["action", "activity", "bar", "binary", "cards", "confirm", "contextGeneration", "contractMin",
-      "contractVersion", "lanes", "lastPreview", "lastRefreshMs", "lastResult", "panel", "panelOpen", "phase", "summary", "toolVersion",
-      "widgetVersion"])
+      "contractVersion", "lanes", "lastPreview", "lastRefreshMs", "lastResult", "panel", "panelOpen", "phase", "session", "summary",
+      "toolVersion", "widgetVersion"])
     compare([state.confirm, state.lastPreview, state.activity, state.cards], [null, null, null, []])
+    // The session it runs omaddons in, the five names `omarchy status` compares.
+    compare(Object.keys(state.session).sort(), ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"])
     // What the activity bar says, in words (1n2p.18).
     service.check()
     var checking = JSON.parse(service.stateJson()).activity

@@ -1785,6 +1785,9 @@ Item {
       "widgetVersion": widgetVersion,
       "contractMin": contractMin,
       "contextGeneration": contextGeneration,
+      // The HOME and XDG directories it runs omaddons in (null without HOME), which
+      // `omaddons omarchy status` compares with its own (omad-widget-plugin-3bcbh.10).
+      "session": root.context,
       "lanes": { "mutation": laneState(mutationLane, "mutation"), "local": laneState(localLane, "local"), "network": laneState(networkLane, "network") },
       "lastRefreshMs": lastRefreshMs,
       // The cards shown now, by kind (cardKinds), for the checkpoint scripts.

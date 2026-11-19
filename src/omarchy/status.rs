@@ -1,14 +1,16 @@
-//! `omaddons omarchy [status]` (M3-D7, M3-D8): whether Omarchy and its shell are here,
-//! and the installed widget as this run sees it: which binary and version it runs,
-//! whether it is outdated against this binary, whether it serves this run's omaddons
-//! state, where it sits on the bar and whether it validates. Read-only: it writes
-//! nothing and makes no request; its one subprocess is the shell ping.
+//! `omaddons omarchy [status]` (M3-D7, M3-D8, omad-widget-plugin-3bcbh.10): whether
+//! Omarchy and its shell are here, and the installed widget as this run sees it: a
+//! checkout and its commit, or a widget an older omaddons rendered; whether it can serve
+//! this binary; whether it serves this run's omaddons state; where it sits on the bar and
+//! whether it validates. Read-only: it writes nothing and makes no request; its
+//! subprocesses are the shell ping and, for the widget's checkout, its `state`.
 
 use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::context::Context;
 use super::install::{self, PluginInfo};
 use super::{shell, validate};
 use crate::contract::actions::Action;
@@ -44,11 +46,14 @@ pub struct WidgetInfo {
     pub enabled: bool,
     /// The installed manifest's `version`; `null` when none is installed.
     pub version: Option<String>,
-    /// The installed code is not what this binary renders for the installed context:
-    /// another build or other assets, never merely another context.
+    /// It cannot serve this binary as it is: a widget an older omaddons rendered (or its
+    /// setup button), or a checkout whose manifest's minimum contract is not this
+    /// binary's (omad-widget-plugin-3bcbh.10).
     pub outdated: bool,
-    /// It was installed under this run's `HOME` and XDG directories; `null` when none is
-    /// installed, or when its `Build.js` cannot say (it then serves no state at all).
+    /// It serves this run's `HOME` and XDG directories, as a rendered widget's `Build.js`
+    /// records them; `null` when none is installed, when its `Build.js` cannot say, and for
+    /// the widget's checkout, whose desktop session only `omarchy status` asks (`status`
+    /// starts no subprocess).
     pub context_matches: Option<bool>,
     /// The absolute path the widget runs this omaddons by: mise's `latest` link to it
     /// when mise installed it (so the widget follows mise's upgrades without its
@@ -59,14 +64,46 @@ pub struct WidgetInfo {
     /// directory: every write that can change `status --cached` renames `doorbell.json`
     /// into it, so the widget watches it rather than polling.
     pub doorbell_dir: PathBuf,
+    /// Why it is outdated (not on the wire).
+    #[serde(skip)]
+    pub stale: Option<install::Stale>,
+    /// The folder is the widget's git checkout (not on the wire: `omarchy status` says).
+    #[serde(skip)]
+    pub checkout: bool,
+    /// The checkout's minimum contract, as its manifest writes it (not on the wire).
+    #[serde(skip)]
+    pub contract_min: Option<String>,
 }
 
 impl WidgetInfo {
-    /// `status` warns, raises the issue and recommends `omarchy install`: an outdated
-    /// widget on an Omarchy desktop, unless it serves another omaddons state, which a
-    /// reinstall from this run would point at this run's state instead (M3-D7).
-    pub fn needs_reinstall(&self) -> bool {
+    /// `status` warns and raises the issue: an outdated widget on an Omarchy desktop,
+    /// unless it serves another omaddons state, which a fix from this run would point at
+    /// this run's state instead (M3-D7).
+    pub fn outdated_here(&self) -> bool {
         self.omarchy && self.installed && self.outdated && self.context_matches != Some(false)
+    }
+
+    /// ... and recommends `omarchy install`: only for a widget an older omaddons rendered,
+    /// which it replaces. A checkout of another contract is fixed by Omarchy's plugin
+    /// update or an omaddons upgrade instead ([`WidgetInfo::fix`]).
+    pub fn needs_reinstall(&self) -> bool {
+        self.outdated_here() && self.stale == Some(install::Stale::Rendered)
+    }
+
+    /// The fix for an outdated widget: `omarchy install` for a rendered one; in words,
+    /// Omarchy's plugin update for a checkout older than this binary's contract, or an
+    /// omaddons upgrade for one that needs a later contract.
+    pub fn fix(&self) -> crate::error::Suggestion {
+        use crate::error::Suggestion;
+        match self.stale {
+            Some(install::Stale::WidgetOlder) => Suggestion::text(
+                "update the widget through Omarchy: omarchy plugin update a44.omaddons",
+            ),
+            Some(install::Stale::OmaddonsOlder) => Suggestion::text(
+                "upgrade omaddons to a build that speaks the contract the widget needs (with mise: mise upgrade github:a44-io/omaddons)",
+            ),
+            _ => Suggestion::command(["omaddons", "omarchy", "install"]),
+        }
     }
 }
 
@@ -86,6 +123,9 @@ pub fn widget(paths: &Paths) -> Option<WidgetInfo> {
         context_matches: plugin.context_known.then_some(plugin.context_matches),
         binary: crate::binary::widget_binary().ok(),
         doorbell_dir: paths.doorbell_dir().to_path_buf(),
+        stale: plugin.stale,
+        checkout: plugin.checkout,
+        contract_min: plugin.contract_min,
     })
 }
 
@@ -102,12 +142,21 @@ pub struct Report {
 /// Reads it all; see the module docs.
 pub fn status() -> Result<Report> {
     let paths = Paths::from_env()?;
-    let plugin = install::describe(&paths);
+    let mut plugin = install::describe(&paths);
     let omarchy = OmarchyInfo {
         present: install::present(&paths),
         shell_running: shell::ping(),
         validator: shell::on_path(shell::VALIDATOR),
     };
+    // The checkout serves its desktop session's directories: asked, when the shell runs
+    // and the widget answers with them (omad-widget-plugin-3bcbh.10).
+    if plugin.checkout
+        && omarchy.shell_running
+        && let Some(session) = shell::widget_session(&plugin.id)
+    {
+        plugin.context_matches = session == Context::of(&paths);
+        plugin.context_known = true;
+    }
     let validation = plugin.installed.then(|| {
         let errors = validate::validate(&plugin.path);
         Validation {
@@ -123,15 +172,20 @@ pub fn status() -> Result<Report> {
     })
 }
 
-/// `omarchy install` for an outdated widget, or for one installed but on no section of
-/// the bar. Never from another context (M3-D7), outdated or not: reinstalling from this
-/// run would point the widget at this run's omaddons state, which is the user's call.
+/// `omarchy install` for a widget an older omaddons rendered, which it replaces, or for
+/// one installed but on no section of the bar. Never from another context (M3-D7):
+/// installing from this run would point the widget at this run's omaddons state, which
+/// is the user's call. A checkout of another contract gets none: Omarchy's plugin update
+/// or an omaddons upgrade fixes it, which the warning and the doctor say in words.
 fn recommendations(plugin: &PluginInfo) -> Vec<CommandHint> {
     if !plugin.installed || plugin.context_known && !plugin.context_matches {
         return Vec::new();
     }
-    if plugin.outdated {
+    if plugin.stale == Some(install::Stale::Rendered) {
         return vec![reinstall_hint()];
+    }
+    if plugin.outdated {
+        return Vec::new();
     }
     if !plugin.enabled {
         return vec![CommandHint::new(
@@ -165,7 +219,11 @@ mod tests {
             enabled,
             section: None,
             context_matches: context,
+            checkout: false,
+            commit: None,
             context_known: installed,
+            stale: outdated.then_some(install::Stale::Rendered),
+            contract_min: None,
         }
     }
 
@@ -213,6 +271,22 @@ mod tests {
             ..plugin(true, true, true, false)
         };
         assert_eq!(actions(&unknown), ["\"reinstall_widget\""]);
+        // The widget's checkout of another contract: omarchy install writes nothing under
+        // it, so nothing is recommended, even off the bar; the warning says the fix.
+        for stale in [install::Stale::WidgetOlder, install::Stale::OmaddonsOlder] {
+            let checkout = PluginInfo {
+                checkout: true,
+                stale: Some(stale),
+                ..plugin(true, true, false, true)
+            };
+            assert_eq!(actions(&checkout), Vec::<String>::new(), "{stale:?}");
+        }
+        // A current checkout off the bar is put on it.
+        let current = PluginInfo {
+            checkout: true,
+            ..plugin(true, false, false, true)
+        };
+        assert_eq!(actions(&current), ["\"enable_widget\""]);
     }
 
     fn widget(omarchy: bool, installed: bool, outdated: bool, context: Option<bool>) -> WidgetInfo {
@@ -225,6 +299,9 @@ mod tests {
             context_matches: context,
             binary: None,
             doorbell_dir: PathBuf::from("/cache/omaddons"),
+            stale: outdated.then_some(install::Stale::Rendered),
+            checkout: false,
+            contract_min: None,
         }
     }
 
@@ -238,6 +315,27 @@ mod tests {
         assert!(
             widget(true, true, true, None).needs_reinstall(),
             "a widget serving no known state"
+        );
+    }
+
+    /// A checkout of another contract is outdated here, with its own fix in words, and
+    /// never asks for `omarchy install`, which writes nothing under it.
+    #[test]
+    fn a_checkout_of_another_contract_names_the_side_to_update() {
+        let fix = |stale| {
+            let w = WidgetInfo {
+                stale: Some(stale),
+                checkout: true,
+                ..widget(true, true, true, None)
+            };
+            assert!(w.outdated_here() && !w.needs_reinstall(), "{stale:?}");
+            w.fix().to_string()
+        };
+        assert!(fix(install::Stale::WidgetOlder).contains("omarchy plugin update a44.omaddons"));
+        assert!(fix(install::Stale::OmaddonsOlder).contains("upgrade omaddons"));
+        assert_eq!(
+            widget(true, true, true, Some(true)).fix().to_string(),
+            "omaddons omarchy install"
         );
     }
 }

@@ -391,6 +391,9 @@ fn moved_rules_match_status() {
         context_matches: Some(true),
         binary: None,
         doorbell_dir: std::path::PathBuf::from("/cache/omaddons"),
+        stale: Some(crate::omarchy::install::Stale::Rendered),
+        checkout: false,
+        contract_min: None,
     };
     let view = DoctorView::preloaded(
         paths,

@@ -11,6 +11,8 @@ expression: stable
     "installed": "fresh",
     "plugin": {
       "binary": "<binary>",
+      "checkout": true,
+      "commit": "c0ffee0123456789abcdef0123456789abcdef01",
       "context_matches": true,
       "enabled": false,
       "id": "a44.omaddons",

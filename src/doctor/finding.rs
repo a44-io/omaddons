@@ -1306,7 +1306,14 @@ mod tests {
             "unresolvable",
         ]);
         expected.extend(["other_owner", "outside_config", "symlink"]);
-        expected.extend(["code_differs", "context_unknown", "other_context"]);
+        expected.extend([
+            "code_differs",
+            "context_unknown",
+            "widget_older",
+            "omaddons_older",
+            "other_context",
+            "checkout",
+        ]);
         expected.extend([
             "outdated",
             "edited",

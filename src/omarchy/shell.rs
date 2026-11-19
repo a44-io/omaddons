@@ -256,6 +256,19 @@ pub fn disable(id: &str) -> Result<(), String> {
     }
 }
 
+/// The `HOME` and XDG directories the widget `id` runs its omaddons in, as it says them:
+/// `omarchy-shell <id> state`'s `session` (the widget's checkout reports it,
+/// omad-widget-plugin-3bcbh.10). `None` when the shell or the widget does not answer, or
+/// answers without one (an older widget). A read of the running shell, so it gets the
+/// ping's time.
+pub fn widget_session(id: &str) -> Option<super::context::Context> {
+    let ran = run_for(SHELL, &[id, "state"], OMARCHY_PING_TIMEOUT)
+        .ok()
+        .filter(|ran| ran.success)?;
+    let state: serde_json::Value = serde_json::from_str(ran.stdout.trim()).ok()?;
+    super::context::Context::from_json(&state.get("session")?.to_string())
+}
+
 /// Adds the plugin repository at `url` through Omarchy: `omarchy-plugin-add <url>
 /// --yes`, which checks the URL, clones it, validates it, refuses an id already in use,
 /// moves it into the plugins folder and asks the shell to rescan. `--yes`: running

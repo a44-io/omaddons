@@ -50,8 +50,17 @@ pub fn write_widget_repo(dir: &Path) {
     }
     copy(&Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy"), dir);
     fs::create_dir_all(dir.join(".git/objects")).unwrap();
+    fs::create_dir_all(dir.join(".git/refs/heads")).unwrap();
     fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    fs::write(
+        dir.join(".git/refs/heads/main"),
+        format!("{WIDGET_COMMIT}\n"),
+    )
+    .unwrap();
 }
+
+/// The commit [`write_widget_repo`]'s `main` names.
+pub const WIDGET_COMMIT: &str = "c0ffee0123456789abcdef0123456789abcdef01";
 
 /// A widget an older omaddons rendered into `dir`, as 0.2 wrote it (this build's version,
 /// as a rebuild of it would carry): the manifest's entry points in `r-0123456789abcdef/`,
@@ -101,7 +110,8 @@ pub fn context_json(env: &TestEnv) -> String {
 /// `-q`'s bare exit 0, `hang`, `orphan` for a hang that leaves a child running, its pid in
 /// `<root>/orphan.pid`), and `setPluginEnabled`, like `omarchy-plugin-disable` (which
 /// fails when `<root>/disable-mode` says `fail`), splices the bar layout out of
-/// `shell.json`.
+/// `shell.json`; `<id> state` answers as the widget's IPC does, its `session` the JSON in
+/// `<root>/session` (none without it, as an older widget answers).
 pub fn write_tool(at: &Path, name: &str) {
     let root = at.display();
     let log = format!(
@@ -135,6 +145,9 @@ case "$1 $2" in
     esac; echo ok ;;
   "shell setPluginEnabled")
     printf '{{"bar":{{"layout":{{}}}}}}' > "$XDG_CONFIG_HOME/omarchy/shell.json"; echo ok ;;
+  *" state")
+    if [ -f {root}/session ]; then IFS= read -r s < {root}/session; printf '{{"phase":"idle","session":%s}}\n' "$s"
+    else echo '{{"phase":"idle"}}'; fi ;;
 esac"#
         ),
         // As Omarchy's own: the id from the repository's manifest, refused when a folder

@@ -1460,6 +1460,9 @@ pub(crate) mod tests {
             context_matches: Some(context_matches),
             binary: None,
             doorbell_dir: std::path::PathBuf::from("/cache/omaddons"),
+            stale: Some(crate::omarchy::install::Stale::Rendered),
+            checkout: false,
+            contract_min: None,
         }
     }
 

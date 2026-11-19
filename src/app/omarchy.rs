@@ -1,8 +1,8 @@
 //! `omaddons omarchy [status|install|remove]` (M3-D8): the bar widget on the Omarchy
 //! desktop. Bare `omarchy` is `omarchy status`. The work is `crate::omarchy`'s:
-//! `status` reads, `install` renders the widget for this binary and this session's
-//! directories, swaps it in atomically and places it on the bar unless it is there
-//! already, and `remove` takes it off the bar and deletes it.
+//! `status` reads, `install` adds the widget's repository through Omarchy's plugin add
+//! (moving a widget an older omaddons rendered out first) and places it on the bar unless
+//! it is there already, and `remove` takes it off the bar and deletes it.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::cli::Context;
 use crate::error::{CommandHint, Result, Warning};
-use crate::omarchy::install::{self, Enabled, Installed, Options, PluginInfo, Section};
+use crate::omarchy::install::{self, Enabled, Installed, Options, PluginInfo, Section, Stale};
 use crate::omarchy::remove;
 use crate::omarchy::status::{self, OmarchyInfo, Validation};
 use crate::output::{Outcome, Style};
@@ -112,9 +112,10 @@ impl Outcome for StatusOutcome {
         let d = &self.data;
         let p = &d.plugin;
         if p.installed {
-            // A widget an older omaddons rendered under other HOME or XDG directories: it
-            // serves that state, and nothing is recommended from here. One whose context
-            // cannot be read serves none, and its reinstall is recommended.
+            // A widget serving other HOME or XDG directories (a render's Build.js, or the
+            // checkout's desktop session, says so): it serves that state, and nothing is
+            // recommended from here. One whose context cannot be read serves none, and its
+            // reinstall is recommended.
             let foreign = p.context_known && !p.context_matches;
             let state = if p.outdated { "outdated" } else { "current" };
             let place = match p.section {
@@ -123,20 +124,42 @@ impl Outcome for StatusOutcome {
             };
             writeln!(w, "{}: {state}, {place}", widget(p))?;
             writeln!(w, "  path: {}", p.path.display())?;
+            if p.checkout {
+                let commit = p.commit.as_deref().unwrap_or("unknown commit");
+                writeln!(
+                    w,
+                    "  checkout: {commit} (updates: omarchy plugin update {})",
+                    p.id
+                )?;
+            }
             if let Some(binary) = &p.binary {
                 writeln!(w, "  runs: {}", binary.display())?;
             }
-            if p.outdated {
-                writeln!(
+            let wanted = p.contract_min.as_deref().unwrap_or("?");
+            let speaks = crate::output::SCHEMA_VERSION;
+            match p.stale {
+                Some(Stale::Rendered) => writeln!(
                     w,
                     "  outdated: an older omaddons rendered it; omarchy install replaces it with the widget's checkout"
-                )?;
+                )?,
+                Some(Stale::WidgetOlder) => writeln!(
+                    w,
+                    "  outdated: it reads contract {wanted} and this omaddons speaks {speaks}; update it → omarchy plugin update {}",
+                    p.id
+                )?,
+                Some(Stale::OmaddonsOlder) => writeln!(
+                    w,
+                    "  outdated: it needs contract {wanted} and this omaddons speaks {speaks}; upgrade omaddons (with mise: mise upgrade github:a44-io/omaddons)"
+                )?,
+                None => {}
             }
             if foreign {
-                writeln!(
-                    w,
-                    "  note: it serves another omaddons state (other HOME or XDG directories); installing from here would point it at this one"
-                )?;
+                let why = if p.checkout {
+                    "its desktop session's HOME or XDG directories are not this run's"
+                } else {
+                    "other HOME or XDG directories; installing from here would point it at this one"
+                };
+                writeln!(w, "  note: it serves another omaddons state ({why})")?;
             }
             if let Some(validation) = d.validation.as_ref().filter(|v| !v.ok) {
                 writeln!(w, "  not a valid plugin:")?;
@@ -144,7 +167,10 @@ impl Outcome for StatusOutcome {
                     writeln!(w, "    {error}")?;
                 }
             }
-            if !foreign && (p.outdated || p.section.is_none()) {
+            // As the recommendations: a render's replacement, or a current widget's place on
+            // the bar; a checkout of another contract has its fix above.
+            let rendered = p.stale == Some(Stale::Rendered);
+            if !foreign && (rendered || !p.outdated && p.section.is_none()) {
                 writeln!(w, "  → omaddons omarchy install")?;
             }
         } else {
@@ -259,10 +285,10 @@ impl Outcome for InstallOutcome {
                 binary.display()
             )?;
         }
-        writeln!(
-            w,
-            "  note: reinstall after moving the binary or changing XDG directories → omaddons omarchy install"
-        )?;
+        // The checkout finds omaddons itself; Omarchy updates it.
+        if d.plugin.checkout {
+            writeln!(w, "  updates: omarchy plugin update {}", d.plugin.id)?;
+        }
         // What to do next, once it is on the bar (1n2p.35): where, how to move it, and
         // the line that gives it a key (the widget's own first-run tip offers the same).
         if !d.dry_run && matches!(d.enabled, Enabled::Yes | Enabled::Already) {
