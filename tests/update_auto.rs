@@ -1297,3 +1297,114 @@ fn the_deciding_modules_never_name_the_errors_ledger_or_memo() {
         }
     }
 }
+
+/// RG-69: the README's examples for slice 3 on a synthetic home, with its names: BigWigs
+/// first seen an hour ago (too new), LittleWigs newly needing LibFoo, first seen just
+/// now (held with it), Plater settled. `outdated`'s note, `status`'s client line,
+/// `update --auto`'s lines, and the Configuration row's range and `0`, each as the README
+/// quotes it.
+#[test]
+fn readme_the_automatic_update_examples_run_as_shown() {
+    let log = tlog!();
+    let home = behind(
+        &log,
+        &[
+            ("BigWigs", "bigwigs", &[]),
+            ("Plater", "plater", &[]),
+            ("LittleWigs", "littlewigs", &["LibFoo"]),
+        ],
+        &[("LibFoo", "libfoo")],
+    );
+    let settled = Epoch::ago(hours(7));
+    for repo in ["plater", "littlewigs"] {
+        settled.seen(&home, &format!("gh:o/{repo}"), "v2", SignedDuration::ZERO);
+    }
+    let young = Epoch::ago(hours(1));
+    young.seen(&home, "gh:o/bigwigs", "v2", SignedDuration::ZERO);
+    settled.assert_consistent(&home);
+    let hm = |at: Timestamp| at.strftime("%H:%M").to_string();
+    let (seen, after) = (hm(young.at(SignedDuration::ZERO)), hm(young.at(WAIT)));
+    let line = |text: &str, name: &str| {
+        text.lines()
+            .find(|l| l.trim_start().starts_with(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("no {name} line in:\n{text}")) // ubs:ignore — the test's own failure
+            .to_owned()
+    };
+
+    log.step("outdated: the waiting update says when an automatic update takes it");
+    let text = human(&log, &home, &["outdated"]);
+    log.assert_eq(
+        "BigWigs",
+        &line(&text, "BigWigs"),
+        &format!(
+            "  BigWigs     v1  → v2  gh:o/bigwigs · first seen {seen} · automatic updates take it after {after}"
+        ),
+    );
+    log.assert_eq(
+        "Plater has no note",
+        &line(&text, "Plater"),
+        &"  Plater      v1  → v2  gh:o/plater".to_owned(),
+    );
+
+    log.step("status: the client line counts the one that waits");
+    let text = human(&log, &home, &["status"]);
+    log.assert_eq(
+        "the client line",
+        &text.contains(" · 3 updates (1 waits to settle)"),
+        &true,
+    );
+
+    log.step("update --auto: the held ones say why, the rest updates");
+    let text = human(&log, &home, &["update", "--auto"]);
+    log.assert_eq(
+        "BigWigs",
+        &line(&text, "BigWigs"),
+        &format!(
+            "  BigWigs     left at v1 · v2 is too new for an automatic update (after {after})"
+        ),
+    );
+    log.assert_eq(
+        "LittleWigs",
+        &line(&text, "LittleWigs"),
+        &"  LittleWigs  left at v1 · it needs LibFoo v1, which is too new for an automatic update"
+            .to_owned(),
+    );
+    log.assert_eq(
+        "Plater",
+        &line(&text, "Plater"),
+        &"  Plater      v1 → v2".to_owned(),
+    );
+    log.assert_eq(
+        "the head",
+        &text
+            .lines()
+            .next()
+            .unwrap()
+            .starts_with("retail: updated 1 addon (tx "),
+        &true,
+    );
+
+    log.step("Configuration: 0 to 48, and 0 turns the wait off");
+    let ran = json(
+        &log,
+        &home,
+        &["config", "set", "update_min_age_hours", "49"],
+    );
+    ran.fails(2, "usage");
+    log.assert_eq(
+        "the range",
+        &ran.envelope()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("update_min_age_hours must be from 0 to 48"),
+        &true,
+    );
+    let text = human(&log, &home, &["config", "set", "update_min_age_hours", "0"]);
+    log.assert_eq("set", &text, &"set update_min_age_hours = 0\n".to_owned());
+    let text = human(&log, &home, &["outdated"]);
+    log.assert_eq(
+        "no note with the wait off",
+        &line(&text, "BigWigs"),
+        &"  BigWigs     v1  → v2  gh:o/bigwigs".to_owned(),
+    );
+}

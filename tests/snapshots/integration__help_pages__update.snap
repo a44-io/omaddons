@@ -21,9 +21,9 @@ Options:
       --auto               Take only releases first seen at least `update_min_age_hours` ago
 
 Examples:
-  omaddons update                every addon on every client
-  omaddons update dbm -t retail  one addon on one client
-  omaddons update --dry-run      what would change
+  omaddons update            every addon on every client
+  omaddons update --dry-run  what would change
+  omaddons update --auto     unattended: only releases that have settled
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons update --help <==

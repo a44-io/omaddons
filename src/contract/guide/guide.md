@@ -76,6 +76,12 @@ Update every addon on every client; one `omaddons undo` reverts it all:
 omaddons update --json --actor agent --reason "the user asked to update every addon"
 ```
 
+Unattended (a schedule, nobody to ask), add `--auto`: it takes only releases first seen `update_min_age_hours` ago (6 by default), with no exception; plain `update` takes everything:
+
+```sh
+omaddons update --auto --json --actor agent --reason "scheduled update"
+```
+
 What is broken (`doctor` exits 1 on findings):
 
 ```sh

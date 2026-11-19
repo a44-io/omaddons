@@ -306,8 +306,11 @@ pub const EXTRAS: &[Extras] = &[
         path: "update",
         examples: &[
             ("omaddons update", "every addon on every client"),
-            ("omaddons update dbm -t retail", "one addon on one client"),
             ("omaddons update --dry-run", "what would change"),
+            (
+                "omaddons update --auto",
+                "unattended: only releases that have settled",
+            ),
         ],
         see_also: &["outdated", "pin", "undo"],
     },
