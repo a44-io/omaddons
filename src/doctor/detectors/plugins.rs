@@ -331,6 +331,8 @@ mod tests {
             version: installed.then(|| "0.0.9".to_owned()),
             outdated,
             context_matches: context,
+            binary: None,
+            doorbell_dir: std::path::PathBuf::from("/cache/omaddons"),
         }
     }
 

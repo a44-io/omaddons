@@ -2203,6 +2203,8 @@ mod tests {
             version: Some("0.0.0".into()),
             outdated: true,
             context_matches: Some(true),
+            binary: None,
+            doorbell_dir: std::path::PathBuf::from("/cache/omaddons"),
         };
         use crate::app::issues::tests::registry_machine_issues;
         let machine = registry_machine_issues(Some(&widget), &[]);

@@ -389,6 +389,8 @@ fn moved_rules_match_status() {
         version: Some("0.0.9".to_owned()),
         outdated: true,
         context_matches: Some(true),
+        binary: None,
+        doorbell_dir: std::path::PathBuf::from("/cache/omaddons"),
     };
     let view = DoctorView::preloaded(
         paths,

@@ -4,6 +4,8 @@
 //! state, where it sits on the bar and whether it validates. Read-only: it writes
 //! nothing and makes no request; its one subprocess is the shell ping.
 
+use std::path::PathBuf;
+
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -48,6 +50,15 @@ pub struct WidgetInfo {
     /// It was installed under this run's `HOME` and XDG directories; `null` when none is
     /// installed, or when its `Build.js` cannot say (it then serves no state at all).
     pub context_matches: Option<bool>,
+    /// The absolute path the widget runs this omaddons by: mise's `latest` link to it
+    /// when mise installed it (so the widget follows mise's upgrades without its
+    /// wrapper), else this binary's canonical path; `null` when this process cannot read
+    /// its own path.
+    pub binary: Option<PathBuf>,
+    /// The absolute directory the doorbell rings in, as this process resolves its cache
+    /// directory: every write that can change `status --cached` renames `doorbell.json`
+    /// into it, so the widget watches it rather than polling.
+    pub doorbell_dir: PathBuf,
 }
 
 impl WidgetInfo {
@@ -73,6 +84,8 @@ pub fn widget(paths: &Paths) -> Option<WidgetInfo> {
         version: plugin.version,
         outdated: plugin.outdated,
         context_matches: plugin.context_known.then_some(plugin.context_matches),
+        binary: crate::binary::widget_binary().ok(),
+        doorbell_dir: paths.doorbell_dir().to_path_buf(),
     })
 }
 
@@ -210,6 +223,8 @@ mod tests {
             version: None,
             outdated,
             context_matches: context,
+            binary: None,
+            doorbell_dir: PathBuf::from("/cache/omaddons"),
         }
     }
 

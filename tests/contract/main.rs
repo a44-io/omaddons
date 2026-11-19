@@ -563,10 +563,21 @@ mod support {
         out
     }
 
-    /// Replaces the tempdir root, doctor run ids, ULIDs, RFC 3339 times and precondition
-    /// tokens (they hash file stamps) in a string.
+    /// The binary under test, by its canonical path (`status`'s `widget.binary`).
+    fn binary_path() -> &'static str {
+        static BINARY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        BINARY.get_or_init(|| {
+            std::fs::canonicalize(env!("CARGO_BIN_EXE_omaddons"))
+                .unwrap()
+                .display()
+                .to_string()
+        })
+    }
+
+    /// Replaces the tempdir root, the binary under test, doctor run ids, ULIDs, RFC 3339
+    /// times and precondition tokens (they hash file stamps) in a string.
     fn redact(s: &str, root: &str) -> String {
-        let s = s.replace(root, "<root>");
+        let s = s.replace(root, "<root>").replace(binary_path(), "<binary>");
         if s.parse::<jiff::Timestamp>().is_ok() {
             return "<time>".to_owned();
         }

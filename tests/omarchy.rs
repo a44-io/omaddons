@@ -1151,11 +1151,13 @@ fn status_reports_the_bar_widget() {
 
     let desk = Desk::new();
     let widget = |d: &Value| d["data"]["widget"].clone();
+    let binary = this_binary().display().to_string();
+    let doorbell = desk.env.cache().join("omaddons").display().to_string();
     let d = desk.run(&["status"]).expect(0);
     assert_eq!(
         widget(&d),
         serde_json::json!({"omarchy": true, "installed": false, "enabled": false, "version": null,
-            "outdated": false, "context_matches": null})
+            "outdated": false, "context_matches": null, "binary": binary, "doorbell_dir": doorbell})
     );
     assert!(warning_codes(&d).is_empty(), "{d:#}");
 
@@ -1169,7 +1171,8 @@ fn status_reports_the_bar_widget() {
         assert_eq!(
             widget(&d),
             serde_json::json!({"omarchy": true, "installed": true, "enabled": true,
-                "version": env!("CARGO_PKG_VERSION"), "outdated": false, "context_matches": true})
+                "version": env!("CARGO_PKG_VERSION"), "outdated": false, "context_matches": true,
+                "binary": binary, "doorbell_dir": doorbell})
         );
         assert_eq!(d["data"]["summary"]["widget_outdated"], false);
         assert_eq!(d["data"]["issues"], serde_json::json!([]));
@@ -1261,6 +1264,83 @@ fn status_reports_the_bar_widget() {
     assert_eq!(
         actions(&desk.run_with(&["omarchy"], &other).expect(0)),
         ["reinstall_widget"]
+    );
+}
+
+/// `status` tells the widget the path to run omaddons by and the directory the doorbell
+/// rings in (omad-widget-plugin-3bcbh.2), with or without `--cached`: mise's `latest`
+/// link for the version mise links there, any other binary (an older mise version
+/// included) by its canonical path, and the cache directory as this run resolves it, a
+/// relative `XDG_CACHE_HOME` ignored as everywhere. It starts no Omarchy tool for them.
+#[test]
+fn status_names_the_binary_and_the_doorbell_for_the_widget() {
+    use std::os::unix::fs::symlink;
+    let desk = Desk::new();
+    desk.run(&["status"]).expect(0);
+    let widget = |d: &Value| d["data"]["widget"].clone();
+    let doorbell = desk.env.cache().join("omaddons").display().to_string();
+
+    // A mise layout in the target's tmp dir, beside the binary, so a hard link usually
+    // does; a copy where it cannot.
+    let mise = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let tool = fs::canonicalize(mise.path())
+        .unwrap()
+        .join("installs/github-a44-io-omaddons");
+    let place = |version: &str| -> PathBuf {
+        let at = tool.join(version).join("omaddons");
+        fs::create_dir_all(at.parent().unwrap()).unwrap();
+        if fs::hard_link(this_binary(), &at).is_err() {
+            fs::copy(this_binary(), &at).unwrap();
+        }
+        at
+    };
+    let newest = place("0.3.0");
+    let older = place("0.2.1");
+    symlink("0.3.0", tool.join("latest")).unwrap();
+
+    let calls = desk.calls().len();
+    for args in [&["status"][..], &["status", "--cached"]] {
+        for (binary, expected) in [
+            (this_binary(), this_binary()),
+            (newest.clone(), tool.join("latest/omaddons")),
+            (older.clone(), older.clone()),
+        ] {
+            let d = desk.run_binary(&binary, args, &[]).expect(0);
+            assert_eq!(
+                (
+                    args,
+                    binary.display().to_string(),
+                    widget(&d)["binary"].clone()
+                ),
+                (
+                    args,
+                    binary.display().to_string(),
+                    Value::from(expected.display().to_string())
+                )
+            );
+            assert_eq!(widget(&d)["doorbell_dir"], doorbell.as_str());
+        }
+    }
+    assert_eq!(desk.calls().len(), calls, "status runs no Omarchy tool");
+
+    // A relative XDG_CACHE_HOME is not a cache directory: the default one, as every
+    // command resolves it.
+    let d = desk
+        .run_with(&["status"], &[("XDG_CACHE_HOME", "relative/cache")])
+        .expect(0);
+    assert_eq!(
+        widget(&d)["doorbell_dir"],
+        desk.env
+            .home()
+            .join(".cache/omaddons")
+            .display()
+            .to_string()
+    );
+
+    // Without Omarchy there is no widget to tell.
+    assert_eq!(
+        Desk::bare().run(&["status"]).expect(0)["data"]["widget"],
+        Value::Null
     );
 }
 

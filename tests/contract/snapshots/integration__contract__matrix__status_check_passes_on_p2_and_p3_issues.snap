@@ -301,7 +301,9 @@ expression: s.stable(&c.envelope)
       }
     ],
     "widget": {
+      "binary": "<binary>",
       "context_matches": null,
+      "doorbell_dir": "<root>/cache/omaddons",
       "enabled": false,
       "installed": true,
       "omarchy": true,

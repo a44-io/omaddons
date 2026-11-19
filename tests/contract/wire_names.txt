@@ -10096,7 +10096,9 @@ output status data.targets[].updates.too_new integer! minimum=0
 output status data.targets[].updates.unchecked integer! minimum=0
 output status data.targets[].version string!
 output status data.widget object?!
+output status data.widget.binary string?!
 output status data.widget.context_matches boolean?!
+output status data.widget.doorbell_dir string!
 output status data.widget.enabled boolean!
 output status data.widget.installed boolean!
 output status data.widget.omarchy boolean!

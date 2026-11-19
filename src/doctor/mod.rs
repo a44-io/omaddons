@@ -486,6 +486,8 @@ pub(crate) mod tests {
             version: Some("0.0.9".to_owned()),
             outdated: true,
             context_matches: Some(true),
+            binary: None,
+            doorbell_dir: std::path::PathBuf::from("/cache/omaddons"),
         };
         let rules: [(&str, Vec<finding::Observation>); 6] = [
             (

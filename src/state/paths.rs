@@ -558,7 +558,13 @@ impl Paths {
 
     /// The bar widget's doorbell: rung by every write that can change `status --cached`.
     pub fn doorbell_file(&self) -> PathBuf {
-        self.cache.join("doorbell.json")
+        self.doorbell_dir().join("doorbell.json")
+    }
+
+    /// The directory the doorbell rings in, `<cache>/omaddons`: each ring renames
+    /// [`Self::doorbell_file`] into it, which the bar widget watches for.
+    pub fn doorbell_dir(&self) -> &Path {
+        &self.cache
     }
 
     /// One transaction's temp dir (git clones, partial downloads).
