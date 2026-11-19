@@ -3370,16 +3370,18 @@ fn step_releases(step: &Step, record: &TargetRecord) -> Vec<(FolderName, String)
 
 /// The addons, by key, that `works` take a folder from as handed over while no work of
 /// theirs removes it: their own work failed after the claim was judged, so they never
-/// let it go. Read before [`settle_handovers`] takes each removal handed over out of its
-/// work.
-fn unagreed_handovers(works: &[AddonWork]) -> BTreeSet<String> {
+/// let it go; under the lock, their work re-judged unchanged or dropped
+/// (omad-bug-hunt-0shtt.43). Read before [`settle_handovers`] takes each removal handed
+/// over out of its work; a removal it already took counts (`handed_over`).
+pub(crate) fn unagreed_handovers(works: &[AddonWork]) -> BTreeSet<String> {
     let key = |addon: &str| TargetRecord::addon_key(addon);
     let removes = |from: &str, folder: &FolderName| {
         works.iter().any(|w| {
             key(&w.addon) == key(from)
-                && w.swap().iter().any(
+                && (w.swap().iter().any(
                     |op| matches!(op, SwapOp::Remove { live, .. } if live.key() == folder.key()),
-                )
+                ) || matches!(&w.mode, WorkMode::Folders(f)
+                        if f.handed_over.iter().any(|h| h.key() == folder.key())))
         })
     };
     works
@@ -3492,8 +3494,17 @@ fn live_inventory(ctx: &PlanCtx<'_>, target: &Target, record: &TargetRecord) -> 
 
 /// The view a replay of `works` starts from: every folder their addons stop shipping.
 pub fn released_view(works: &[AddonWork]) -> WorkingView {
+    released_view_keeping(works, &BTreeSet::new())
+}
+
+/// [`released_view`] without the releases of the addons in `keeping` (by key): those
+/// whose work no longer releases under the lock (omad-bug-hunt-0shtt.43).
+pub fn released_view_keeping(works: &[AddonWork], keeping: &BTreeSet<String>) -> WorkingView {
     let mut view = WorkingView::default();
-    for w in works {
+    for w in works
+        .iter()
+        .filter(|w| !keeping.contains(&TargetRecord::addon_key(&w.addon)))
+    {
         release_work(&mut view, w);
     }
     view

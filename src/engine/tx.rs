@@ -28,10 +28,11 @@ use super::journal::{
     self, CommitPayload, IndexChanges, Journal, Prepared, Recovered, RecoveryAction, RecoveryEnv,
     recover_tx,
 };
+use super::ownership::WorkingView;
 use super::plan::{
     self, AddonWork, Against, Change, Plan, PlanCtx, PlanFailure, PlanRequest, Planned,
     RequestedChange, TargetPlan, TargetRequest, TargetState, WorkMode, claim, one_addons_dir,
-    push_new, rejudge, released_view, target_kind,
+    push_new, rejudge, target_kind,
 };
 use super::stage::{Staged, stage};
 use super::swap::{
@@ -1162,6 +1163,50 @@ fn rejudge_target(
     changed: bool,
     bound: bool,
 ) -> Result<Rejudged> {
+    // One fresh look at the target, and the planned works replayed over it in order:
+    // releases first, then each claim (M2-D6).
+    let state = TargetState::now(plan_ctx, target)?;
+    // A handover's releaser whose work re-judges unchanged (pinned meanwhile) or drops
+    // out no longer lets its folder go: replayed again without its releases, so the
+    // claimant meets the folder as that addon's and is refused, never handed it while
+    // the releaser still records it (omad-bug-hunt-0shtt.43). Each pass keeps more
+    // releasers, so this ends.
+    let mut keeping: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let view = plan::released_view_keeping(&tp.work, &keeping);
+        let mut rejudged = replay(plan_req, plan_ctx, target, tp, changed, bound, &state, view)?;
+        let unagreed = plan::unagreed_handovers(&rejudged.works);
+        if unagreed.is_empty() {
+            plan::settle_handovers(&mut rejudged.works, &mut rejudged.changes, None);
+            return Ok(rejudged);
+        }
+        if unagreed.is_subset(&keeping) {
+            // A claim judged a handover against a view that holds no such release.
+            let cause = Error::internal(format!(
+                "a handover from {} was judged although it no longer releases",
+                unagreed.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+            return Err(stale(&cause));
+        }
+        keeping.extend(unagreed);
+    }
+}
+
+/// One replay of `tp`'s works over `state`, from `view`: [`rejudge_target`]'s pass.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a pass of rejudge_target, with its arguments and the view it replays from"
+)]
+fn replay(
+    plan_req: &PlanRequest,
+    plan_ctx: &PlanCtx<'_>,
+    target: &Target,
+    tp: &TargetPlan,
+    changed: bool,
+    bound: bool,
+    state: &TargetState,
+    mut view: WorkingView,
+) -> Result<Rejudged> {
     let mut works = Vec::new();
     let mut changes = Vec::new();
     let mut reload_required = ReloadRequired::None;
@@ -1169,10 +1214,6 @@ fn rejudge_target(
     // judged again.
     let mut warnings = tp.unchanged_warnings.clone();
     let mut notes = tp.notes.clone();
-    // One fresh look at the target, and the planned works replayed over it in order:
-    // releases first, then each claim (M2-D6).
-    let state = TargetState::now(plan_ctx, target)?;
-    let mut view = released_view(&tp.work);
     // The addons whose works still commit: a dependency (or a `required_by` edit) whose
     // every requester was planned and dropped out goes too.
     let planned_addons: BTreeSet<String> = tp
@@ -1189,7 +1230,7 @@ fn rejudge_target(
             generation: tp.generation,
             bound,
         };
-        match rejudge(plan_req, plan_ctx, target, &state, planned, against, &view) {
+        match rejudge(plan_req, plan_ctx, target, state, planned, against, &view) {
             Ok(Planned::Change(p)) => {
                 let p = *p;
                 claim(&mut view, &p.work);
@@ -1214,7 +1255,6 @@ fn rejudge_target(
             Err(error) => return Err(error),
         }
     }
-    plan::settle_handovers(&mut works, &mut changes, None);
     Ok(Rejudged {
         works,
         changes,
@@ -3225,6 +3265,66 @@ mod tests {
                     .contains("## Dependencies: X"),
                 "{meanwhile}: Y's update committed"
             );
+        }
+    }
+
+    /// A handover agreed at plan time (A's update drops Old, B ships it) whose releaser
+    /// turns unchanged under the lock, pinned by a commit between planning and the lock,
+    /// never commits: B does not take Old while A, unchanged, still records it, and no
+    /// folder ends with two owners or none (omad-bug-hunt-0shtt.43). When the commit
+    /// meanwhile is A's very update, A has let Old go and B installs it.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_handover_whose_releaser_turns_unchanged_under_the_lock_is_not_taken() {
+        for meanwhile in ["a pin", "the same release"] {
+            let (scene, changes, _, _) = update_with_a_handover();
+            let pause = Pause::new();
+            let slow = std::thread::scope(|s| {
+                let slow = s.spawn(|| {
+                    failpoint::with_spec_in(pause.dir(), "engine.plan.done=pause", || {
+                        scene.run(changes.clone())
+                    })
+                });
+                pause.reached("engine.plan.done");
+                let concurrent = match meanwhile {
+                    "a pin" => scene.edit("A", RecordEdit::SetPinned(true)),
+                    _ => changes[0].clone(),
+                };
+                let done = scene.run(vec![concurrent]).unwrap();
+                assert!(done.failures.is_empty(), "{meanwhile}: {:?}", done.failures);
+                pause.resume("engine.plan.done");
+                slow.join().unwrap()
+            });
+            let record = scene.record();
+            let owners: Vec<&str> = record
+                .addons
+                .iter()
+                .filter(|(_, a)| names(&a.folders).contains(&"Old"))
+                .map(|(key, _)| key.as_str())
+                .collect();
+            let on_disk = std::fs::read_to_string(scene.client.addons().join("Old/Old.toc"))
+                .unwrap_or_default();
+            match meanwhile {
+                "a pin" => {
+                    // B meets Old as A's again: the plan is stale, nothing committed.
+                    let codes: Vec<ErrorCode> = match &slow {
+                        Ok(o) => o.failures.iter().map(|f| f.error.code).collect(),
+                        Err(e) => vec![e.code],
+                    };
+                    assert_eq!(codes, [ErrorCode::PlanStale], "{meanwhile}: {slow:?}");
+                    assert_eq!(owners, ["a"], "{meanwhile}: A keeps Old: {slow:?}");
+                    assert!(on_disk.contains("## Version: 1"), "{meanwhile}: {on_disk}");
+                    assert!(!record.addons.contains_key("b"), "{meanwhile}: {slow:?}");
+                }
+                _ => {
+                    assert!(
+                        slow.as_ref().is_ok_and(|o| o.failures.is_empty()),
+                        "{meanwhile}: {slow:?}"
+                    );
+                    assert_eq!(owners, ["b"], "{meanwhile}: {slow:?}");
+                    assert!(on_disk.contains("## Version: 2"), "{meanwhile}: {on_disk}");
+                }
+            }
         }
     }
 
