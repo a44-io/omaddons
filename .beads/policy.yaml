@@ -1,0 +1,3 @@
+allow_bypass: true
+close_policy:
+  attribution: {tier: capture}
